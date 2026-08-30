@@ -1,0 +1,34 @@
+# virtual environment
+.venv/
+venv/
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# packaging output
+build/
+dist/
+*.spec.bak
+
+# generated audio and archives (tests and projects write these)
+*.wav
+*.mp3
+*.flac
+*.zip
+*.mid
+*.musicxml
+
+# local configuration and credentials - never committed
+credentials.json
+settings.json
+voices.json
+raagas_user.json
+
+# editors and OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

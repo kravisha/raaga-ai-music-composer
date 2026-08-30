@@ -1,0 +1,2 @@
+# Test tooling. The application itself does not need these.
+pytest>=8.0

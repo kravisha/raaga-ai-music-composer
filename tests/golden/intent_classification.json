@@ -1,0 +1,178 @@
+{
+ "Add veena here.": {
+  "intent": "arrange.add",
+  "instrument": "veena",
+  "target": "",
+  "raaga": "",
+  "value": null,
+  "time": [
+   45.0,
+   null
+  ]
+ },
+ "Use saxophone for this interlude.": {
+  "intent": "arrange.add",
+  "instrument": "saxophone",
+  "target": "",
+  "raaga": "",
+  "value": null,
+  "time": [
+   40,
+   52
+  ]
+ },
+ "Bring strings after this line.": {
+  "intent": "arrange.add",
+  "instrument": "strings",
+  "target": "",
+  "raaga": "",
+  "value": null,
+  "time": null
+ },
+ "Take the drums out here.": {
+  "intent": "arrange.remove",
+  "instrument": "drum_kit",
+  "target": "",
+  "raaga": "",
+  "value": null,
+  "time": [
+   45.0,
+   null
+  ]
+ },
+ "Use only piano for the first 15 seconds.": {
+  "intent": "arrange.add",
+  "instrument": "piano",
+  "target": "",
+  "raaga": "",
+  "value": null,
+  "time": [
+   0.0,
+   15.0
+  ]
+ },
+ "Add mridangam after the chorus.": {
+  "intent": "arrange.add",
+  "instrument": "mridangam",
+  "target": "",
+  "raaga": "",
+  "value": null,
+  "time": [
+   40,
+   null
+  ]
+ },
+ "Replace violin with veena.": {
+  "intent": "arrange.replace",
+  "instrument": "violin",
+  "target": "veena",
+  "raaga": "",
+  "value": null,
+  "time": null
+ },
+ "Make this part lighter.": {
+  "intent": "arrange.level",
+  "instrument": "",
+  "target": "",
+  "raaga": "",
+  "value": 0.7,
+  "time": [
+   40,
+   52
+  ]
+ },
+ "Give me another instrument that fits this feel.": {
+  "intent": "arrange.suggest",
+  "instrument": "violin",
+  "target": "",
+  "raaga": "",
+  "value": null,
+  "time": null
+ },
+ "I want this to feel lonely, late at night, but still warm.": {
+  "intent": "arrange.suggest",
+  "instrument": "",
+  "target": "",
+  "raaga": "",
+  "value": null,
+  "time": null
+ },
+ "Give me the song without instruments.": {
+  "intent": "voice.vocal_only",
+  "instrument": "",
+  "target": "",
+  "raaga": "",
+  "value": null,
+  "time": null
+ },
+ "No, change that violin to saxophone.": {
+  "intent": "arrange.replace",
+  "instrument": "violin",
+  "target": "saxophone",
+  "raaga": "",
+  "value": null,
+  "time": null
+ },
+ "Play from the second minute to the third minute.": {
+  "intent": "transport.play",
+  "instrument": "",
+  "target": "",
+  "raaga": "",
+  "value": null,
+  "time": [
+   60.0,
+   180.0
+  ]
+ },
+ "Set the tempo to 96 bpm": {
+  "intent": "tune.tempo",
+  "instrument": "",
+  "target": "",
+  "raaga": "",
+  "value": 96.0,
+  "time": null
+ },
+ "Use raaga Kalyani.": {
+  "intent": "raaga.set",
+  "instrument": "",
+  "target": "",
+  "raaga": "Kalyani",
+  "value": null,
+  "time": null
+ },
+ "Lock the pallavi.": {
+  "intent": "region.lock",
+  "instrument": "",
+  "target": "",
+  "raaga": "",
+  "value": null,
+  "time": [
+   12,
+   40
+  ]
+ },
+ "turn the violin up": {
+  "intent": "arrange.level",
+  "instrument": "violin",
+  "target": "",
+  "raaga": "",
+  "value": 1.25,
+  "time": null
+ },
+ "Mix the song.": {
+  "intent": "mix.full",
+  "instrument": "",
+  "target": "",
+  "raaga": "",
+  "value": null,
+  "time": null
+ },
+ "Undo.": {
+  "intent": "project.undo",
+  "instrument": "",
+  "target": "",
+  "raaga": "",
+  "value": null,
+  "time": null
+ }
+}

@@ -1,0 +1,92 @@
+{
+ "Play the first minute.": {
+  "start": 0.0,
+  "end": 60.0,
+  "relative": null,
+  "source": "first"
+ },
+ "Play from the second minute to the third minute.": {
+  "start": 60.0,
+  "end": 180.0,
+  "relative": null,
+  "source": "range"
+ },
+ "Play the end.": {
+  "start": 210.0,
+  "end": 240.0,
+  "relative": null,
+  "source": "end"
+ },
+ "Play the last 30 seconds.": {
+  "start": 210.0,
+  "end": 240.0,
+  "relative": null,
+  "source": "last"
+ },
+ "Play from the chorus.": {
+  "start": 12,
+  "end": null,
+  "relative": null,
+  "source": "section"
+ },
+ "Play this section again.": {
+  "start": 40,
+  "end": 52,
+  "relative": null,
+  "source": "section"
+ },
+ "Start five seconds before this point.": {
+  "start": 40.0,
+  "end": null,
+  "relative": null,
+  "source": "playhead-relative"
+ },
+ "Go back 10 seconds.": {
+  "start": null,
+  "end": null,
+  "relative": -10.0,
+  "source": "relative"
+ },
+ "play from 1:20 to 2:05": {
+  "start": 80,
+  "end": 125,
+  "relative": null,
+  "source": "range"
+ },
+ "play the whole song": {
+  "start": 0.0,
+  "end": 240.0,
+  "relative": null,
+  "source": "whole"
+ },
+ "use only piano for the first 15 seconds": {
+  "start": 0.0,
+  "end": 15.0,
+  "relative": null,
+  "source": "first"
+ },
+ "add mridangam after the chorus": {
+  "start": 40,
+  "end": null,
+  "relative": null,
+  "source": "section"
+ },
+ "bring strings before the charanam": {
+  "start": 52,
+  "end": null,
+  "relative": null,
+  "source": "section"
+ },
+ "play the outro": {
+  "start": 80,
+  "end": 92,
+  "relative": null,
+  "source": "section"
+ },
+ "skip forward 20 seconds": {
+  "start": null,
+  "end": null,
+  "relative": 20.0,
+  "source": "relative"
+ }
+}

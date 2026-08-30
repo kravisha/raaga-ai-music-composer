@@ -1,0 +1,9 @@
+# Continuous speech recognition (either one is enough)
+vosk>=0.3.45
+faster-whisper>=1.0
+
+# Cloud language model for richer lyrics and fuzzy intent
+anthropic>=0.40
+
+# Windows packaging
+pyinstaller>=6.4

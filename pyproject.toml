@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "raaga-composer"
+version = "0.2.0"
+description = "Raaga-aware interactive AI music composer - a Windows desktop music-director workstation"
+requires-python = ">=3.10"
+license = { text = "Proprietary" }
+authors = [{ name = "Krish" }]
+dependencies = [
+    "PySide6>=6.6",
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "soundfile>=0.12",
+    "sounddevice>=0.4.6",
+]
+
+[project.optional-dependencies]
+# Speech recognition backends. Either one enables continuous voice control;
+# without them the identical command pipeline runs from typed input.
+speech = ["vosk>=0.3.45"]
+speech-whisper = ["faster-whisper>=1.0"]
+# Cloud language model for richer lyric writing and fuzzy intent.
+llm = ["anthropic>=0.40"]
+build = ["pyinstaller>=6.4"]
+dev = ["pytest>=8.0"]
+
+[project.gui-scripts]
+raaga-composer = "raagacomposer.__main__:main"
+
+[tool.setuptools]
+packages = [
+    "raagacomposer",
+    "raagacomposer.core",
+    "raagacomposer.raaga",
+    "raagacomposer.music",
+    "raagacomposer.lyrics",
+    "raagacomposer.voice",
+    "raagacomposer.audio",
+    "raagacomposer.speech",
+    "raagacomposer.providers",
+    "raagacomposer.ui",
+    "raagacomposer.ui.panels",
+]
+
+[tool.setuptools.package-data]
+"raagacomposer.raaga" = ["data/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+    "unit: fast, isolated tests of one module",
+    "integration: several subsystems working together",
+    "regression: guards a defect that was found and fixed",
+    "slow: takes more than a few seconds",
+    "ui: builds real Qt widgets (offscreen)",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning:sounddevice",
+]
