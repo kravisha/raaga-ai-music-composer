@@ -96,6 +96,31 @@ an undo.
 command log. Heavier, but it cannot desynchronise - and losing an accepted tune
 to a buggy undo entry is the failure the spec is most explicit about avoiding.
 
+## Testing
+
+**Three suites, separated by what they cost and what they prove.** Unit tests
+touch one module and finish in seconds, so they are worth running on every
+edit. Integration tests drive the real controller and the real Qt window with
+real synthesis and real files, because the defects that mattered here appeared
+only when subsystems met. Regression tests each name a defect that was
+actually found and fixed, so a future failure explains itself rather than
+needing archaeology.
+
+**No mocks for the engines.** The generators, DSP and file handling are
+deterministic and fast enough to exercise directly. Mocking them would test
+the mock. The one substitution is the audio *device*, which is absent on a
+build machine; the playback engine reports device failure rather than raising,
+and that path is tested.
+
+**Golden files for the deterministic output.** Melody, structure, timeline
+parsing, intent classification and lyric assembly are all seeded and
+reproducible, so their output is pinned in `tests/golden/`. A musical change
+is legitimate; a silent one is not. `RAAGA_UPDATE_GOLDEN=1` re-writes them for
+review.
+
+**The spelling is "raaga" throughout** - package, modules, data files, API and
+prose. It matches how the word is pronounced and how the project is named.
+
 ## Not built, deliberately
 
 * Video, dialogue, scene generation and lip sync - specification section 24
