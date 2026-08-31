@@ -75,6 +75,10 @@ class Settings:
     learning_max_storage_mb: int = 512
     # Real recordings carry a drone and a teacher talking; rendered exercises
     # carry neither, so preparation is applied to supplied audio only.
+    # --- training tab ---------------------------------------------------
+    training_db: str = ""                  # blank = <config>/training.db
+    training_allow_web: bool = False       # leads only; never fetches
+    training_max_results: int = 10
     learning_preprocess_recordings: bool = True
     learning_remove_drone: bool = True
     learning_gate_speech: bool = True

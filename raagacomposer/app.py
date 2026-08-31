@@ -18,6 +18,7 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 import numpy as np
 
 from .agent.music_agent import MusicAgent
+from .training.controller import TrainingController
 from .agent.originality import check as check_originality
 from .audio import export as export_engine
 from .audio.playback import PlaybackEngine
@@ -83,6 +84,15 @@ class AppController:
         # and everything it has learned so far.
         self.agent = MusicAgent(self.settings, self.raagas,
                                 llm=self.providers.llm)
+        # The Training tab: search for material, approve it, learn from it.
+        # It shares the agent's memory so what it learns reaches the composer.
+        try:
+            self.training = TrainingController(
+                self.settings, self.raagas, agent_repo=self.agent.repo,
+                curriculum=self.agent.curriculum)
+        except Exception as exc:  # noqa: BLE001 - never block startup on it
+            log.warning("the training system is unavailable: %s", exc)
+            self.training = None
 
         self.project: Project = Project()
         self.project_dir: Optional[Path] = None
@@ -258,6 +268,11 @@ class AppController:
         self.voice_input.close()
         self.playback.close()
         self.jobs.shutdown()
+        try:
+            if getattr(self, "training", None) is not None:
+                self.training.close()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("closing the training system failed: %s", exc)
         try:
             self.agent.close()
         except Exception as exc:  # noqa: BLE001

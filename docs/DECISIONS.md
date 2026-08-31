@@ -261,6 +261,86 @@ than a lesson with no singing in it, so the audio is left alone and the warning
 says so.  A phrase never learned costs one phrase; a wrong phrase in permanent
 memory costs the confidence of everything that reads it.
 
+## The Training tab
+
+Added 2026-08-31 from the Training tab / autonomous learning specification.
+The creator searches for material, chooses what may be learned from, and gets
+a report saying what was understood, what was learned, and where every fact
+came from.
+
+**A second store, not more tables in `knowledge.db`.** The two answer different
+questions - one holds what the agent knows about music, the other the record of
+how training was conducted - and keeping them apart means a training history
+can be thrown away without touching what the agent learned from the creator's
+own recordings. The link between them is the provenance on each knowledge
+entry, which names the source and the run.
+
+**Search is providers behind one normalised result.** The tab never learns what
+a provider is; it asks for candidates and gets `LearningSource` objects. Three
+ship. `exercises` renders material from the shipped raaga library and listens
+to its own playing - always available, no network, no rights question, and the
+reason the whole loop works on a machine with nothing else. `library` searches
+the creator's own learning folder. `web` is off by default and records *leads*
+only.
+
+**Ranking is by usefulness for learning, not textual relevance.** A source
+whose content can actually be analysed outranks one we can only name, because
+the second cannot teach anybody anything. A perfectly-titled lead therefore
+loses its place to an exercise, which is the correct answer to "which of these
+will teach the system something".
+
+**Raaga names are matched across transliterations.** The specification's own
+acceptance test asks for "Kamboji"; the library calls it "Kambhoji". Matched
+literally, the one search the specification names returned nothing. Aspirates,
+doubled vowels and the v/w and i/y pairs are normalised away for matching only -
+never for renaming.
+
+**Nothing is fetched.** `access.py` is the single gate, and there is no code
+anywhere in the feature that logs in, follows a paywall, strips DRM or
+downloads from a platform that has not handed the file over. A source on the
+network is marked metadata-only and its report says
+`METADATA ONLY - CONTENT NOT ANALYZED` in the specification's own words, with
+the two honest ways forward offered: supply the file, or supply a transcript.
+Both work, and turning a lead into a real lesson that way is tested end to end.
+
+**Video files are refused with a reason.** There is no demuxer in the
+application, so an `.mp4` is reported as needing its audio extracted rather
+than failing three phases later with something that reads like a bug.
+
+**Heard and stated are different kinds of evidence.** A phrase the system
+tracked, identified and timestamped is an observation and may reach the
+composer. A phrase a teacher merely stated in a transcript has not been
+verified by ear: it is stored in the training record where a person can see it,
+and deliberately withheld from the music. Storing both and playing only one is
+what keeps "we read that this is a Kambhoji phrase" from becoming "this is a
+Kambhoji phrase".
+
+**Uncertain inference does not become fact.** Below a confidence floor an
+observation is reported as uncertain in the report and left out of the
+knowledge base, rather than written down slightly hedged where it will later
+look authoritative.
+
+**A conflict is never resolved by overwriting.** The existing claim stays
+exactly as it was and is flagged; the new one is kept beside it with its
+evidence, and a recommendation is offered to a person. Two teachers disagreeing
+is a fact about the material, not a bug to be tidied away.
+
+**Approval is never a default.** Search results arrive with an unticked
+checkbox. A pre-ticked box is not approval, and section 20 rule 1 makes the
+choice the creator's alone. Autonomous search does not mean autonomous
+approval: the tab will suggest a phrase from a curriculum gap, and still queue
+nothing until somebody picks it.
+
+**The queue is the `runs` table.** There is no separate in-memory queue to keep
+in step with the database, which is what makes surviving a close trivial rather
+than careful. A run left mid-flight by a crash is in a working status with
+nobody working on it, so on startup those are returned to Queued with their
+attempt count intact rather than sitting in "Analyzing" for ever.
+
+**Every completed source has a report, including the ones that failed.** A
+source that taught us nothing still has to say so and why; rule 4 has no
+exception for failure.
+
 ## Not built, deliberately
 
 * Video, dialogue, scene generation and lip sync - specification section 24

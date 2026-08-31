@@ -83,6 +83,51 @@ learning** to let it work in the background while you compose.
 * **Your corrections count.** Say *"This does not sound like Keeravani"* and it
   lowers its confidence in the phrases it leaned on, and stops using them.
 
+### The Training tab
+
+A second way to teach it, and the one that scales: **search for material,
+choose what it may learn from, and read what it made of each source.**
+
+1. Type what you are after - *Kamboji raga beginner lesson*, *Carnatic gamaka
+   techniques*, *Keeravani arohanam avarohanam tutorial*. Raaga names are
+   matched across spellings, so *Kamboji*, *Kambhoji*, *Yaman* and *Bhoop* all
+   find the right one.
+2. Press **Search**. About ten candidates come back, each showing what it is,
+   how relevant it looks, and - the column that matters - whether its content
+   can actually be reached.
+3. **Tick the ones it may learn from.** Nothing is ticked for you. Searching is
+   not approving, and the system never learns from a result you did not choose.
+4. **Add to learning queue**, then **Start learning**. One source at a time,
+   with the stage it has reached shown as it goes.
+5. Read the **Learning Report**: what the source contained, what it understood,
+   what it *learned* (kept separate), what it already knew that this confirmed,
+   anything that contradicted what it held, what this changes about the music,
+   and what to study next.
+
+Every learned item keeps its provenance - which source, which run, which
+objective, which timestamp, what evidence, what confidence - and the
+**Knowledge base** tab will show you all of it for any item you select. You can
+mark an item incorrect or approve a disputed one; nothing important ever
+changes without leaving a trace.
+
+**What it will and will not do.** It does not download from the internet. A
+source on the network is listed honestly as `Metadata only` and its report says
+`METADATA ONLY - CONTENT NOT ANALYZED` rather than pretending it sat through
+the lesson. Nothing here logs in, follows a paywall, or works around a
+download protection. When a source is out of reach it offers you the two ways
+forward that are actually yours to take: **supply the file** or **provide the
+transcript**. Do either and the same source becomes a real lesson.
+
+There is also a **third** kind of source, and it is the one that works on a
+machine with no network and nothing of your own: exercises the system builds
+from its own raaga library, plays, and then listens back to. A student playing
+a scale to hear it.
+
+**Heard is not the same as read.** A phrase it tracked and identified by ear
+becomes something the composer can quote. A phrase a teacher merely *stated* in
+a transcript is recorded for you to see but deliberately withheld from the
+music, because nothing has verified it. The report says which is which.
+
 ### Teaching it from your own recordings
 
 **Choose my learning folder...** points it at audio you are entitled to use.
@@ -205,6 +250,9 @@ raagacomposer/
   voice/            singer profiles, singing synthesis, vocal mastering
   audio/            DSP, playback engine, export (WAV/MP3/MIDI/MusicXML/stems)
   speech/           microphone capture, speech adapters, intent and timeline parsing
+  agent/            the student: memory, curriculum, ears, practice, critic
+  training/         the Training tab: search providers, access policy, ingestion
+                    pipeline, objectives, validation, knowledge base, queue
   providers/        provider abstraction and adapters
   ui/               PySide6 desktop UI: main window, timeline widget, panels
 tests/
@@ -217,7 +265,7 @@ packaging/          PyInstaller spec, Windows build and shortcut scripts
 
 ## Tests
 
-650 tests in three suites, all run with pytest.
+768 tests in three suites, all run with pytest.
 
 ```
 tests\run_all.bat                 everything (about five minutes)
@@ -227,9 +275,9 @@ tests\run_fast.bat                unit + regression only (about ten seconds)
 or directly:
 
 ```
-.venv\Scripts\python.exe -m pytest tests\unit -q          458 tests
-.venv\Scripts\python.exe -m pytest tests\integration -q   149 tests
-.venv\Scripts\python.exe -m pytest tests\regression -q     43 tests
+.venv\Scripts\python.exe -m pytest tests\unit -q          534 tests
+.venv\Scripts\python.exe -m pytest tests\integration -q   184 tests
+.venv\Scripts\python.exe -m pytest tests\regression -q     50 tests
 .venv\Scripts\python.exe -m pytest tests -q -m "not slow"
 ```
 
@@ -265,6 +313,17 @@ with real synthesis and real files on disk:
   Brief answered from memory, Generate Tune composing from learned phrases,
   learning controlled from the UI, and the whole original workflow still
   running.
+* `test_training_acceptance.py` - the Training specification's section 19
+  demonstration, one test per numbered step, from typing the search phrase
+  through to closing the application and finding the history and the learned
+  knowledge still there.
+* `test_training_flow.py` - what the specification spends most of its words
+  on: a source that cannot be fetched saying so, supplying the file or the
+  transcript turning it into a real lesson, relearning without destroying the
+  earlier report, a failed source that still produces a report, and a run
+  interrupted by a crash being returned to the queue.
+* `test_preprocess_in_research.py` - a lesson recording dropped in the
+  learning folder, prepared and then heard.
 
 **Regression** - each test names a defect that was actually found here and
 fixed, so a failure explains itself: a control character that silently killed a

@@ -22,6 +22,7 @@ from ..core.logging_setup import get_logger
 from ..music.theory import format_time
 from . import theme
 from .panels.agent_panel import AgentPanel
+from .panels.training_panel import TrainingPanel
 from .panels.arrangement_panel import ArrangementPanel
 from .panels.brief_panel import BriefPanel
 from .panels.conversation_panel import ConversationPanel
@@ -102,6 +103,8 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.voice, "Voice")
         self.tabs.addTab(self.output, "Output")
         self.tabs.addTab(self.agent_panel, "Learning")
+        self.training_panel = TrainingPanel(self.app)
+        self.tabs.addTab(self.training_panel, "Training")
 
         self.arrangement = ArrangementPanel(self.app)
         self.arrangement.changed.connect(self.refresh)

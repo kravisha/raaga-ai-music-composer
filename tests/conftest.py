@@ -203,6 +203,48 @@ def settings(tmp_path: Path) -> Settings:
 
 
 @pytest.fixture
+def training_settings(settings: Settings, tmp_path: Path) -> Settings:
+    settings.training_db = str(tmp_path / "training.db")
+    settings.training_allow_web = False
+    return settings
+
+
+@pytest.fixture
+def agent_repo(tmp_path: Path):
+    """The agent's own memory, so the training bridge has somewhere to land."""
+    from raagacomposer.agent.knowledge import KnowledgeRepository
+
+    repo = KnowledgeRepository(tmp_path / "knowledge.db")
+    try:
+        yield repo
+    finally:
+        repo.close()
+
+
+@pytest.fixture
+def training(training_settings: Settings, agent_repo):
+    """A Training controller with its own store, wired to the agent."""
+    from raagacomposer.training.controller import TrainingController
+
+    controller = TrainingController(training_settings, agent_repo=agent_repo)
+    try:
+        yield controller
+    finally:
+        controller.close()
+
+
+@pytest.fixture
+def training_store(tmp_path: Path):
+    from raagacomposer.training.store import TrainingStore
+
+    store = TrainingStore(tmp_path / "training-only.db")
+    try:
+        yield store
+    finally:
+        store.close()
+
+
+@pytest.fixture
 def app(settings: Settings):
     """A fully wired application controller with no window attached."""
     from raagacomposer.app import AppController
