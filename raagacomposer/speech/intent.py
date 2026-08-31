@@ -35,6 +35,7 @@ INTENTS = (
     "mix.full", "mix.instrumental", "mix.export",
     "region.lock", "region.unlock",
     "project.save", "project.undo", "project.redo", "project.cancel",
+    "agent.learn", "agent.explain", "agent.feedback", "agent.status",
     "unknown",
 )
 
@@ -79,6 +80,8 @@ class Command:
             return "vocal"
         if self.intent.startswith("mix"):
             return "mix"
+        if self.intent.startswith("agent"):
+            return "agent"
         return self.intent
 
 
@@ -86,6 +89,17 @@ class Command:
 # rule tables
 # --------------------------------------------------------------------------
 _RULES: List[Tuple[str, str]] = [
+    # The learning agent, checked first so "study this raaga" is not read as
+    # an arrangement instruction.
+    (r"\b(does not sound like|doesn't sound like|does not sound|"
+     r"doesn't sound|too mechanical|sounds wrong|that is wrong|"
+     r"i like the|keep the (first|second|third)|that was (good|lovely|nice))\b",
+     "agent.feedback"),
+    (r"\b(learn|study|practise|practice)\b", "agent.learn"),
+    (r"\b(why did you|why do you|explain|how do you know|what do you know|"
+     r"where did you learn|what have you learned)\b", "agent.explain"),
+    (r"\b(how is your learning|learning progress|what are you learning|"
+     r"how much have you learned|what are you studying)\b", "agent.status"),
     # transport
     (r"\b(pause|hold on|wait)\b", "transport.pause"),
     (r"\b(stop|halt)\b(?!.*\b(drum|instrument|violin|adding)\b)", "transport.stop"),

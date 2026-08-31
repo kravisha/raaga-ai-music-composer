@@ -21,6 +21,7 @@ from ..app import AppController
 from ..core.logging_setup import get_logger
 from ..music.theory import format_time
 from . import theme
+from .panels.agent_panel import AgentPanel
 from .panels.arrangement_panel import ArrangementPanel
 from .panels.brief_panel import BriefPanel
 from .panels.conversation_panel import ConversationPanel
@@ -90,7 +91,9 @@ class MainWindow(QMainWindow):
         self.lyrics = LyricsPanel(self.app)
         self.voice = VoicePanel(self.app)
         self.output = OutputPanel(self.app)
-        for panel in (self.tune, self.lyrics, self.voice, self.output):
+        self.agent_panel = AgentPanel(self.app)
+        for panel in (self.tune, self.lyrics, self.voice, self.output,
+                      self.agent_panel):
             panel.changed.connect(self.refresh)
 
         self.tabs = QTabWidget()
@@ -98,6 +101,7 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.lyrics, "Lyrics")
         self.tabs.addTab(self.voice, "Voice")
         self.tabs.addTab(self.output, "Output")
+        self.tabs.addTab(self.agent_panel, "Learning")
 
         self.arrangement = ArrangementPanel(self.app)
         self.arrangement.changed.connect(self.refresh)
@@ -213,6 +217,20 @@ class MainWindow(QMainWindow):
                      lambda: self.app.auto_arrange())
         self._action(make_menu, "Render full mix", "Ctrl+M",
                      lambda: self.app.render("full"))
+
+        learn_menu = menu.addMenu("&Learning")
+        self._action(learn_menu, "Start / pause learning", "Ctrl+Shift+L",
+                     self.agent_panel._toggle_learning)
+        self._action(learn_menu, "Study one lesson now", None,
+                     self.agent_panel._step)
+        self._action(learn_menu, "Stop learning", None, self.app.stop_learning)
+        learn_menu.addSeparator()
+        self._action(learn_menu, "Mark the current tune", None,
+                     self.agent_panel._critique)
+        self._action(learn_menu, "Choose my learning folder...", None,
+                     self.agent_panel._choose_corpus)
+        self._action(learn_menu, "What the agent knows", None,
+                     self._show_knowledge)
 
         voice_menu = menu.addMenu("&Voice control")
         self._action(voice_menu, "Start / stop listening", "Ctrl+Space",
@@ -346,6 +364,7 @@ class MainWindow(QMainWindow):
         self.lyrics.refresh()
         self.voice.refresh()
         self.output.refresh()
+        self.agent_panel.refresh()
         self.arrangement.refresh()
         self.undo_action.setText(f"Undo {self.app.undo.undo_label()}".strip())
         self.redo_action.setText(f"Redo {self.app.undo.redo_label()}".strip())
@@ -359,6 +378,11 @@ class MainWindow(QMainWindow):
 
     def _show_error(self, text: str) -> None:
         self.statusBar().showMessage(text, 20000)
+
+    def _show_knowledge(self) -> None:
+        self.tabs.setCurrentWidget(self.agent_panel)
+        self.agent_panel.tabs.setCurrentIndex(0)
+        self.agent_panel.refresh()
 
     def _show_help(self) -> None:
         QMessageBox.information(self, "Voice commands", HELP_TEXT)

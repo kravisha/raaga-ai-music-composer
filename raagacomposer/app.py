@@ -17,6 +17,8 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from .agent.music_agent import MusicAgent
+from .agent.originality import check as check_originality
 from .audio import export as export_engine
 from .audio.playback import PlaybackEngine
 from .core.jobs import JobContext, JobManager
@@ -77,6 +79,10 @@ class AppController:
         self.voice_input = VoiceInputManager(self.settings)
         self.providers = provider_registry.build(
             self.settings, stt_name=self.voice_input.adapter.status())
+        # The musician behind the instrument: permanent memory, a curriculum
+        # and everything it has learned so far.
+        self.agent = MusicAgent(self.settings, self.raagas,
+                                llm=self.providers.llm)
 
         self.project: Project = Project()
         self.project_dir: Optional[Path] = None
@@ -86,6 +92,7 @@ class AppController:
         self.status_text = "Ready"
         self.selection: Optional[Tuple[float, float]] = None
         self._playhead = 0.0
+        self.last_evaluation = None
 
         # UI callbacks
         self.on_project_changed: Optional[Callable[[], None]] = None
@@ -251,6 +258,10 @@ class AppController:
         self.voice_input.close()
         self.playback.close()
         self.jobs.shutdown()
+        try:
+            self.agent.close()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("closing the agent failed: %s", exc)
 
     # ==================================================================
     # creative brief and raaga
@@ -263,8 +274,14 @@ class AppController:
         self.project.current_stage = Stage.RAAGA if brief.summary() else Stage.BRIEF
         self._changed("brief.update", "Updated the creative brief")
 
-    def raaga_suggestions(self, limit: int = 4) -> List[RaagaSuggestion]:
-        suggestions = suggest_raagas(self.project.brief, self.raagas, limit=limit)
+    def raaga_suggestions(self, limit: int = 4) -> List:
+        """Ask the agent, which answers from what it has learned."""
+        try:
+            suggestions = self.agent.suggest_raagas(self.project.brief, limit)
+        except Exception as exc:  # noqa: BLE001 - never leave the panel empty
+            self.error("brief", f"The agent could not answer: {exc}")
+            suggestions = suggest_raagas(self.project.brief, self.raagas,
+                                         limit=limit)
         llm = self.providers.llm
         if llm is not None and llm.available:
             try:
@@ -272,10 +289,12 @@ class AppController:
                 extra = llm.suggest_raagas(self.project.brief, names)
                 order = {str(e.get("raaga", "")).lower(): str(e.get("reason", ""))
                          for e in extra}
-                for s in suggestions:
-                    if s.name.lower() in order:
-                        s.rationale = order[s.name.lower()] or s.rationale
-                suggestions.sort(key=lambda s: (s.name.lower() not in order, -s.score))
+                for item in suggestions:
+                    reason = order.get(item.name.lower())
+                    if reason and hasattr(item, "reason"):
+                        item.reason = reason
+                suggestions.sort(key=lambda s: (s.name.lower() not in order,
+                                                -s.score))
             except Exception as exc:  # noqa: BLE001
                 log.warning("LLM raaga advice failed: %s", exc)
         self.project.raaga.alternatives = [s.name for s in suggestions]
@@ -310,6 +329,21 @@ class AppController:
             raaga = self.select_raaga(suggestions[0].name, suggestions[0].rationale)
         return raaga
 
+    def composing_raaga(self) -> Raaga:
+        """The raaga as the agent knows it: learned phrases included."""
+        reference = self.require_raaga()
+        try:
+            learned, completeness = self.agent.raaga_for_composition(reference.name)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("falling back to the reference raaga: %s", exc)
+            return reference
+        if learned is None:
+            return reference
+        if completeness:
+            log.info("composing in %s from memory (%.0f%% learned, %d phrases)",
+                     learned.name, completeness * 100, len(learned.prayogas))
+        return learned
+
     # ==================================================================
     # tune
     # ==================================================================
@@ -328,21 +362,37 @@ class AppController:
             song_type=brief.song_type, duration_target=brief.duration_target)
 
     def generate_tune(self, seed: Optional[int] = None) -> None:
-        raaga = self.require_raaga()
+        raaga = self.composing_raaga()
         opts = self.melody_options(seed)
         opts.tempo_bpm = infer_tempo(self.project.brief, raaga)
         version = (max((m.version for m in self.project.melodies), default=0)) + 1
         self.status(f"Composing a tune in {raaga.name}...")
 
+        index = self.agent.phrase_index(raaga.name)
+
         def work(ctx: JobContext) -> MelodyVersion:
             ctx.progress(0.15, "Planning sections")
             sections = plan_sections(opts.duration_target, opts.tempo_bpm,
                                      opts.beats_per_cycle, opts.song_type)
-            ctx.progress(0.45, "Writing phrases")
+            ctx.progress(0.4, "Writing phrases")
             melody = melody_engine.generate(raaga, opts, sections, version=version)
+
+            # A tune must be the agent's own. If it has drifted into repeating
+            # something it learned, write a different one.
+            for attempt in range(3):
+                ctx.check()
+                report = check_originality([n.swara for n in melody.notes], index)
+                if report.is_original:
+                    break
+                log.info("regenerating the tune: %s", report.summary())
+                ctx.progress(0.5 + 0.1 * attempt, "Rewriting to stay original")
+                opts.seed += 7919
+                melody = melody_engine.generate(raaga, opts, sections,
+                                                version=version)
+
             ctx.progress(0.85, "Checking raaga fidelity")
-            report = validate(melody, raaga, opts.voice_low, opts.voice_high)
-            melody.validation = report.issues
+            check = validate(melody, raaga, opts.voice_low, opts.voice_high)
+            melody.validation = check.issues
             return melody
 
         self.jobs.submit("tune.generate", "melody:all", work,
@@ -354,7 +404,7 @@ class AppController:
         melody = self.project.melody()
         if melody is None:
             return self.generate_tune()
-        raaga = self.require_raaga()
+        raaga = self.composing_raaga()
         opts = self.melody_options()
         version = max(m.version for m in self.project.melodies) + 1
         self.status("Writing a variation...")
@@ -378,7 +428,7 @@ class AppController:
         if section is None:
             return
         assert_melody_editable(self.project, section.start, section.end)
-        raaga = self.require_raaga()
+        raaga = self.composing_raaga()
         opts = self.melody_options()
         version = max(m.version for m in self.project.melodies) + 1
         self.status(f"Rewriting {section.name}...")
@@ -410,8 +460,27 @@ class AppController:
         self.project.approved_melody = melody.version
         self.project.current_stage = Stage.TUNE
         self._changed("tune.version", f"{what} tune v{melody.version}")
+
+        # The agent marks its own work and remembers how it went.
+        critique = ""
+        try:
+            _, evaluation = self.agent.record_composition(
+                project_id=self.project.project_id, title=self.project.title,
+                raaga=melody.raaga, brief=self.project.brief,
+                notes=melody.notes, tempo_bpm=melody.tempo_bpm,
+                structure={"sections": [s.name for s in melody.sections],
+                           "version": melody.version})
+            self.last_evaluation = evaluation
+            if evaluation.scores:
+                critique = f" - the agent scores it {evaluation.overall():.2f}"
+                if evaluation.recommendation:
+                    critique += f"; {evaluation.recommendation}"
+        except Exception as exc:  # noqa: BLE001 - critique must never block a tune
+            log.warning("the agent could not mark the tune: %s", exc)
+
         self.status(f"{what} tune v{melody.version} "
-                    f"({melody.duration:.0f}s, {len(melody.notes)} notes)")
+                    f"({melody.duration:.0f}s, {len(melody.notes)} notes)"
+                    f"{critique}")
         self.render(kind="tune", autoplay=False)
 
     def accept_tune(self, lock: bool = True) -> None:
@@ -441,6 +510,83 @@ class AppController:
         self.project.approved_melody = version
         self._changed("tune.select", f"Switched to tune v{version}")
         self.render(kind="tune", autoplay=False)
+
+    # ==================================================================
+    # the learning agent
+    # ==================================================================
+    def agent_status(self) -> Dict[str, object]:
+        return self.agent.status()
+
+    def agent_events(self, limit: int = 30) -> List[Dict[str, object]]:
+        return self.agent.recent_events(limit)
+
+    def start_learning(self) -> bool:
+        started = self.agent.start_learning()
+        self.status("The agent is studying in the background."
+                    if started else "The agent could not start learning.")
+        return started
+
+    def pause_learning(self) -> None:
+        self.agent.pause_learning()
+        self.status("Learning paused.")
+
+    def resume_learning(self) -> None:
+        self.agent.resume_learning()
+        self.status("Learning resumed.")
+
+    def stop_learning(self) -> None:
+        self.agent.stop_learning(wait=False)
+        self.status("Learning stopped.")
+
+    def learn_now(self, cycles: int = 1) -> str:
+        """Run the learning loop on this thread; used by the UI's step button."""
+        steps = self.agent.learn(cycles)
+        last = steps[-1] if steps else None
+        message = last.summary() if last else "nothing to study"
+        self.status(message)
+        if self.on_project_changed:
+            self.on_project_changed()
+        return message
+
+    def study_raaga(self, name: str) -> str:
+        message = self.agent.study_raaga(name)
+        self.status(message)
+        return message
+
+    def ask_agent(self, question: str) -> str:
+        raaga = self.project.raaga.selected or ""
+        return self.agent.explain(question, raaga)
+
+    def agent_knowledge(self, name: str = "") -> str:
+        return self.agent.knowledge_report(
+            name or self.project.raaga.selected
+            or self.agent.curriculum.current_raaga())
+
+    def critique_tune(self) -> str:
+        """What the agent thinks of the tune on the desk."""
+        melody = self.project.melody()
+        if melody is None:
+            return "There is no tune to look at yet."
+        raaga = self.composing_raaga()
+        evaluation = self.agent.evaluator(raaga.name).evaluate(
+            melody.notes, raaga, tonic_midi=melody.tonic_midi,
+            brief=self.project.brief, tempo_bpm=melody.tempo_bpm,
+            expected_seconds=self.project.brief.duration_target,
+            learned_phrases=self.agent.phrase_bank(raaga.name))
+        self.last_evaluation = evaluation
+        return evaluation.report()
+
+    def give_feedback(self, text: str) -> str:
+        """Creator feedback is education: it is stored and it changes behaviour."""
+        melody = self.project.melody()
+        swaras = [n.swara for n in melody.notes] if melody else None
+        answer = self.agent.record_feedback(
+            text, raaga=self.project.raaga.selected, swaras=swaras,
+            target_kind="composition", target_id=self.project.project_id)
+        self.project.log_history("agent.feedback", text[:200])
+        self._changed("", "", undoable=False)
+        self.status(answer)
+        return answer
 
     def validation_report(self) -> str:
         melody = self.project.melody()
@@ -1310,6 +1456,22 @@ class AppController:
         elif intent == "region.unlock":
             if start is not None:
                 self.lock_range(start, end or self.project.duration, False)
+
+        elif intent == "agent.learn":
+            named = self.raagas.find_in_text(cmd.text)
+            if named:
+                self.study_raaga(named.name)
+                self.learn_now(1)
+            else:
+                self.learn_now(2)
+        elif intent == "agent.explain":
+            self.status(self.ask_agent(cmd.text).splitlines()[0][:200])
+        elif intent == "agent.feedback":
+            self.give_feedback(cmd.text)
+        elif intent == "agent.status":
+            state = self.agent_status()
+            self.status(f"Stage {state['stage']}, studying "
+                        f"{state['current_raaga']}: {state['next_goal']}")
 
         elif intent == "project.save":
             self.save()

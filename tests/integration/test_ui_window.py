@@ -91,11 +91,11 @@ def test_the_window_builds_with_every_panel(window):
     assert window.windowTitle().startswith("Raaga AI Music Composer")
     for panel in (window.project_panel, window.brief_panel, window.raaga_panel,
                   window.tune, window.lyrics, window.voice, window.output,
-                  window.arrangement, window.conversation):
+                  window.arrangement, window.conversation, window.agent_panel):
         assert panel is not None
-    assert window.tabs.count() == 4
-    assert [window.tabs.tabText(i) for i in range(4)] == \
-        ["Tune", "Lyrics", "Voice", "Output"]
+    assert window.tabs.count() == 5
+    assert [window.tabs.tabText(i) for i in range(5)] == \
+        ["Tune", "Lyrics", "Voice", "Output", "Learning"]
 
 
 def test_the_window_fits_an_ordinary_screen(window):

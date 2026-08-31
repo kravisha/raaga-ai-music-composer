@@ -1,0 +1,409 @@
+{
+  "curriculum_version": 1,
+  "notes": "Executable curriculum. Stage A is universal; Stage B is instantiated per raaga; Stage C needs two mastered raagas. skill_type selects the practice handler; params configure it.",
+  "units": [
+    {
+      "curriculum_unit_id": "a01.sound",
+      "level": 1, "stage": "A", "scope": "universal",
+      "skill_type": "listen.compare",
+      "learning_goal": "Tell a musical tone from noise.",
+      "prerequisite_units": [],
+      "source_requirements": "internally rendered examples",
+      "exercises": 8, "minimum_examples_required": 8, "minimum_pass_score": 0.75,
+      "retry_policy": "retry_until_3_failures",
+      "params": {"compare": "tone_or_noise"}
+    },
+    {
+      "curriculum_unit_id": "a02.pitch",
+      "level": 1, "stage": "A", "scope": "universal",
+      "skill_type": "listen.compare",
+      "learning_goal": "Hear which of two tones is higher.",
+      "prerequisite_units": ["a01.sound"],
+      "source_requirements": "internally rendered examples",
+      "exercises": 10, "minimum_examples_required": 10, "minimum_pass_score": 0.8,
+      "retry_policy": "retry_until_3_failures",
+      "params": {"compare": "higher_lower", "min_semitones": 2}
+    },
+    {
+      "curriculum_unit_id": "a03.tonic",
+      "level": 2, "stage": "A", "scope": "universal",
+      "skill_type": "listen.identify",
+      "learning_goal": "Find the tonic (Sa) of a phrase by ear.",
+      "prerequisite_units": ["a02.pitch"],
+      "source_requirements": "internally rendered phrases with a known tonic",
+      "exercises": 8, "minimum_examples_required": 8, "minimum_pass_score": 0.7,
+      "retry_policy": "retry_until_3_failures",
+      "params": {"identify": "tonic", "tolerance_semitones": 1.0}
+    },
+    {
+      "curriculum_unit_id": "a04.swara",
+      "level": 2, "stage": "A", "scope": "universal",
+      "skill_type": "listen.identify",
+      "learning_goal": "Name a swara heard against a known tonic.",
+      "prerequisite_units": ["a03.tonic"],
+      "source_requirements": "internally rendered swaras",
+      "exercises": 12, "minimum_examples_required": 12, "minimum_pass_score": 0.75,
+      "retry_policy": "retry_until_3_failures",
+      "params": {"identify": "swara"}
+    },
+    {
+      "curriculum_unit_id": "a05.scale",
+      "level": 2, "stage": "A", "scope": "universal",
+      "skill_type": "listen.transcribe",
+      "learning_goal": "Follow Sa Ri Ga Ma Pa Dha Ni Sa up and down.",
+      "prerequisite_units": ["a04.swara"],
+      "source_requirements": "internally rendered scales",
+      "exercises": 6, "minimum_examples_required": 6, "minimum_pass_score": 0.7,
+      "retry_policy": "retry_until_3_failures",
+      "params": {"material": "scale"}
+    },
+    {
+      "curriculum_unit_id": "a06.variants",
+      "level": 3, "stage": "A", "scope": "universal",
+      "skill_type": "listen.identify",
+      "learning_goal": "Distinguish swara variants such as R1 from R2.",
+      "prerequisite_units": ["a04.swara"],
+      "source_requirements": "internally rendered swara pairs",
+      "exercises": 10, "minimum_examples_required": 10, "minimum_pass_score": 0.7,
+      "retry_policy": "retry_until_3_failures",
+      "params": {"identify": "variant"}
+    },
+    {
+      "curriculum_unit_id": "a07.direction",
+      "level": 3, "stage": "A", "scope": "universal",
+      "skill_type": "listen.compare",
+      "learning_goal": "Hear whether a phrase ascends or descends.",
+      "prerequisite_units": ["a05.scale"],
+      "source_requirements": "internally rendered phrases",
+      "exercises": 10, "minimum_examples_required": 10, "minimum_pass_score": 0.8,
+      "retry_policy": "retry_until_3_failures",
+      "params": {"compare": "direction"}
+    },
+    {
+      "curriculum_unit_id": "a08.interval",
+      "level": 3, "stage": "A", "scope": "universal",
+      "skill_type": "listen.identify",
+      "learning_goal": "Measure the distance between two notes.",
+      "prerequisite_units": ["a04.swara"],
+      "source_requirements": "internally rendered intervals",
+      "exercises": 10, "minimum_examples_required": 10, "minimum_pass_score": 0.7,
+      "retry_policy": "retry_until_3_failures",
+      "params": {"identify": "interval", "tolerance_semitones": 1.0}
+    },
+    {
+      "curriculum_unit_id": "a09.pulse",
+      "level": 3, "stage": "A", "scope": "universal",
+      "skill_type": "listen.identify",
+      "learning_goal": "Feel the pulse and estimate the tempo.",
+      "prerequisite_units": ["a01.sound"],
+      "source_requirements": "internally rendered rhythms",
+      "exercises": 6, "minimum_examples_required": 6, "minimum_pass_score": 0.65,
+      "retry_policy": "retry_until_3_failures",
+      "params": {"identify": "tempo", "tolerance_ratio": 0.18}
+    },
+    {
+      "curriculum_unit_id": "a10.pattern_hear",
+      "level": 4, "stage": "A", "scope": "universal",
+      "skill_type": "listen.transcribe",
+      "learning_goal": "Hold a short melodic pattern in mind.",
+      "prerequisite_units": ["a05.scale", "a07.direction"],
+      "source_requirements": "internally rendered motifs",
+      "exercises": 8, "minimum_examples_required": 8, "minimum_pass_score": 0.65,
+      "retry_policy": "retry_until_3_failures",
+      "params": {"material": "motif", "length": 4}
+    },
+    {
+      "curriculum_unit_id": "a11.pattern_repeat",
+      "level": 4, "stage": "A", "scope": "universal",
+      "skill_type": "listen.transcribe",
+      "learning_goal": "Reproduce a heard pattern accurately.",
+      "prerequisite_units": ["a10.pattern_hear"],
+      "source_requirements": "internally rendered motifs",
+      "exercises": 8, "minimum_examples_required": 8, "minimum_pass_score": 0.7,
+      "retry_policy": "retry_until_3_failures",
+      "params": {"material": "motif", "length": 6, "round_trip": true}
+    },
+    {
+      "curriculum_unit_id": "a12.pattern_make",
+      "level": 5, "stage": "A", "scope": "universal",
+      "skill_type": "generate.pattern",
+      "learning_goal": "Invent a short pattern that stays inside the scale.",
+      "prerequisite_units": ["a11.pattern_repeat"],
+      "source_requirements": "none - the agent composes",
+      "exercises": 8, "minimum_examples_required": 8, "minimum_pass_score": 0.7,
+      "retry_policy": "retry_until_3_failures",
+      "params": {"length": 4}
+    },
+    {
+      "curriculum_unit_id": "a13.pattern_vary",
+      "level": 5, "stage": "A", "scope": "universal",
+      "skill_type": "generate.pattern",
+      "learning_goal": "Vary a pattern without losing its identity.",
+      "prerequisite_units": ["a12.pattern_make"],
+      "source_requirements": "none - the agent composes",
+      "exercises": 8, "minimum_examples_required": 8, "minimum_pass_score": 0.7,
+      "retry_policy": "retry_until_3_failures",
+      "params": {"length": 5, "variations": 3}
+    }
+  ],
+  "raaga_template": [
+    {
+      "curriculum_unit_id": "b01.identity",
+      "level": 6, "stage": "B", "skill_type": "recall.fact",
+      "learning_goal": "Know which raaga this is and what it is called.",
+      "prerequisite_units": ["a13.pattern_vary"],
+      "source_requirements": "at least one analysed source or the structural library",
+      "exercises": 1, "minimum_examples_required": 1, "minimum_pass_score": 1.0,
+      "retry_policy": "retry_until_3_failures",
+      "params": {"facts": ["name", "aliases"]}
+    },
+    {
+      "curriculum_unit_id": "b02.arohanam",
+      "level": 6, "stage": "B", "skill_type": "recall.fact",
+      "learning_goal": "Recall the ascending scale.",
+      "prerequisite_units": ["b01.identity"],
+      "source_requirements": "structural knowledge or analysed ascent",
+      "exercises": 1, "minimum_examples_required": 1, "minimum_pass_score": 1.0,
+      "retry_policy": "retry_until_3_failures",
+      "params": {"facts": ["arohanam"]}
+    },
+    {
+      "curriculum_unit_id": "b03.avarohanam",
+      "level": 6, "stage": "B", "skill_type": "recall.fact",
+      "learning_goal": "Recall the descending scale.",
+      "prerequisite_units": ["b02.arohanam"],
+      "source_requirements": "structural knowledge or analysed descent",
+      "exercises": 1, "minimum_examples_required": 1, "minimum_pass_score": 1.0,
+      "retry_policy": "retry_until_3_failures",
+      "params": {"facts": ["avarohanam"]}
+    },
+    {
+      "curriculum_unit_id": "b04.swaras",
+      "level": 6, "stage": "B", "skill_type": "recall.fact",
+      "learning_goal": "Know the full swara inventory.",
+      "prerequisite_units": ["b03.avarohanam"],
+      "source_requirements": "structural knowledge",
+      "exercises": 1, "minimum_examples_required": 1, "minimum_pass_score": 1.0,
+      "retry_policy": "retry_until_3_failures",
+      "params": {"facts": ["swaras"]}
+    },
+    {
+      "curriculum_unit_id": "b05.nyasa",
+      "level": 7, "stage": "B", "skill_type": "recall.fact",
+      "learning_goal": "Know the life-giving and resting notes.",
+      "prerequisite_units": ["b04.swaras"],
+      "source_requirements": "structural knowledge or phrase endings observed",
+      "exercises": 1, "minimum_examples_required": 1, "minimum_pass_score": 1.0,
+      "retry_policy": "retry_until_3_failures",
+      "params": {"facts": ["jeeva", "nyasa"]}
+    },
+    {
+      "curriculum_unit_id": "b06.prayogas",
+      "level": 7, "stage": "B", "skill_type": "recall.phrases",
+      "learning_goal": "Hold characteristic phrases of the raaga in memory.",
+      "prerequisite_units": ["b05.nyasa"],
+      "source_requirements": "analysed audio yielding phrases",
+      "exercises": 1, "minimum_examples_required": 6, "minimum_pass_score": 0.6,
+      "retry_policy": "ingest_more_sources",
+      "params": {"min_phrases": 6, "min_confidence": 0.4}
+    },
+    {
+      "curriculum_unit_id": "b07.boundaries",
+      "level": 7, "stage": "B", "skill_type": "recall.phrases",
+      "learning_goal": "Know where phrases begin and end.",
+      "prerequisite_units": ["b06.prayogas"],
+      "source_requirements": "segmented phrases with timing",
+      "exercises": 1, "minimum_examples_required": 8, "minimum_pass_score": 0.6,
+      "retry_policy": "ingest_more_sources",
+      "params": {"min_phrases": 8, "require_endings_on_nyasa": true}
+    },
+    {
+      "curriculum_unit_id": "b08.contour",
+      "level": 8, "stage": "B", "skill_type": "recall.phrases",
+      "learning_goal": "Know the shapes phrases take in this raaga.",
+      "prerequisite_units": ["b07.boundaries"],
+      "source_requirements": "segmented phrases",
+      "exercises": 1, "minimum_examples_required": 8, "minimum_pass_score": 0.6,
+      "retry_policy": "ingest_more_sources",
+      "params": {"min_phrases": 8, "require_contours": 2}
+    },
+    {
+      "curriculum_unit_id": "b09.gamaka",
+      "level": 8, "stage": "B", "skill_type": "recall.fact",
+      "learning_goal": "Know which notes are ornamented and how.",
+      "prerequisite_units": ["b05.nyasa"],
+      "source_requirements": "structural knowledge or pitch-contour analysis",
+      "exercises": 1, "minimum_examples_required": 1, "minimum_pass_score": 1.0,
+      "retry_policy": "retry_until_3_failures",
+      "params": {"facts": ["gamaka"]}
+    },
+    {
+      "curriculum_unit_id": "b10.grammar",
+      "level": 8, "stage": "B", "skill_type": "classify.valid",
+      "learning_goal": "Tell a phrase that obeys the raaga from one that does not.",
+      "prerequisite_units": ["b06.prayogas", "b09.gamaka"],
+      "source_requirements": "none - generated from learned grammar",
+      "exercises": 12, "minimum_examples_required": 12, "minimum_pass_score": 0.8,
+      "retry_policy": "retry_until_3_failures",
+      "params": {"mode": "in_raaga_vs_out"}
+    },
+    {
+      "curriculum_unit_id": "b11.drift",
+      "level": 9, "stage": "B", "skill_type": "classify.valid",
+      "learning_goal": "Notice when a phrase drifts into a neighbouring raaga.",
+      "prerequisite_units": ["b10.grammar"],
+      "source_requirements": "none - generated from neighbouring raagas",
+      "exercises": 10, "minimum_examples_required": 10, "minimum_pass_score": 0.75,
+      "retry_policy": "retry_until_3_failures",
+      "params": {"mode": "neighbour_drift"}
+    },
+    {
+      "curriculum_unit_id": "b12.micro",
+      "level": 9, "stage": "B", "skill_type": "generate.pattern",
+      "learning_goal": "Make very short patterns that are unmistakably this raaga.",
+      "prerequisite_units": ["b10.grammar"],
+      "source_requirements": "none - the agent composes",
+      "exercises": 8, "minimum_examples_required": 8, "minimum_pass_score": 0.75,
+      "retry_policy": "retry_until_3_failures",
+      "params": {"length": 3, "use_learned_phrases": true}
+    },
+    {
+      "curriculum_unit_id": "b13.short_phrase",
+      "level": 10, "stage": "B", "skill_type": "generate.pattern",
+      "learning_goal": "Make original short phrases.",
+      "prerequisite_units": ["b12.micro"],
+      "source_requirements": "none - the agent composes",
+      "exercises": 8, "minimum_examples_required": 8, "minimum_pass_score": 0.75,
+      "retry_policy": "retry_until_3_failures",
+      "params": {"length": 6, "use_learned_phrases": true, "check_originality": true}
+    },
+    {
+      "curriculum_unit_id": "b14.chains",
+      "level": 10, "stage": "B", "skill_type": "generate.pattern",
+      "learning_goal": "Join phrases into longer chains that still breathe.",
+      "prerequisite_units": ["b13.short_phrase"],
+      "source_requirements": "none - the agent composes",
+      "exercises": 6, "minimum_examples_required": 6, "minimum_pass_score": 0.72,
+      "retry_policy": "retry_until_3_failures",
+      "params": {"length": 12, "use_learned_phrases": true, "check_originality": true}
+    },
+    {
+      "curriculum_unit_id": "b15.geetham",
+      "level": 11, "stage": "B", "skill_type": "generate.section",
+      "learning_goal": "Build simple geetham-level material.",
+      "prerequisite_units": ["b14.chains"],
+      "source_requirements": "none - the agent composes",
+      "exercises": 3, "minimum_examples_required": 3, "minimum_pass_score": 0.7,
+      "retry_policy": "retry_until_3_failures",
+      "params": {"section": "pallavi", "seconds": 16, "intensity": 0.5}
+    },
+    {
+      "curriculum_unit_id": "b16.swarajathi",
+      "level": 11, "stage": "B", "skill_type": "generate.section",
+      "learning_goal": "Build swarajathi-level material with clearer structure.",
+      "prerequisite_units": ["b15.geetham"],
+      "source_requirements": "none - the agent composes",
+      "exercises": 3, "minimum_examples_required": 3, "minimum_pass_score": 0.7,
+      "retry_policy": "retry_until_3_failures",
+      "params": {"section": "charanam", "seconds": 24, "intensity": 0.6}
+    },
+    {
+      "curriculum_unit_id": "b17.varnam",
+      "level": 12, "stage": "B", "skill_type": "generate.section",
+      "learning_goal": "Build varnam-level material that moves through the range.",
+      "prerequisite_units": ["b16.swarajathi"],
+      "source_requirements": "none - the agent composes",
+      "exercises": 3, "minimum_examples_required": 3, "minimum_pass_score": 0.72,
+      "retry_policy": "retry_until_3_failures",
+      "params": {"section": "charanam", "seconds": 32, "intensity": 0.75}
+    },
+    {
+      "curriculum_unit_id": "b18.kriti",
+      "level": 12, "stage": "B", "skill_type": "generate.section",
+      "learning_goal": "Shape a kriti-like melodic statement.",
+      "prerequisite_units": ["b17.varnam"],
+      "source_requirements": "none - the agent composes",
+      "exercises": 3, "minimum_examples_required": 3, "minimum_pass_score": 0.72,
+      "retry_policy": "retry_until_3_failures",
+      "params": {"section": "pallavi", "seconds": 28, "intensity": 0.65}
+    },
+    {
+      "curriculum_unit_id": "b19.alapana",
+      "level": 13, "stage": "B", "skill_type": "generate.section",
+      "learning_goal": "Develop free alapana phrases without a fixed pulse.",
+      "prerequisite_units": ["b18.kriti"],
+      "source_requirements": "none - the agent composes",
+      "exercises": 3, "minimum_examples_required": 3, "minimum_pass_score": 0.7,
+      "retry_policy": "retry_until_3_failures",
+      "params": {"section": "prelude", "seconds": 24, "intensity": 0.4,
+                 "free_rhythm": true}
+    },
+    {
+      "curriculum_unit_id": "b20.kalpana",
+      "level": 13, "stage": "B", "skill_type": "generate.pattern",
+      "learning_goal": "Improvise swara passages that land correctly.",
+      "prerequisite_units": ["b19.alapana"],
+      "source_requirements": "none - the agent composes",
+      "exercises": 6, "minimum_examples_required": 6, "minimum_pass_score": 0.75,
+      "retry_policy": "retry_until_3_failures",
+      "params": {"length": 8, "use_learned_phrases": true, "cadence": true}
+    },
+    {
+      "curriculum_unit_id": "b21.development",
+      "level": 14, "stage": "B", "skill_type": "generate.section",
+      "learning_goal": "Sustain a longer original development.",
+      "prerequisite_units": ["b20.kalpana"],
+      "source_requirements": "none - the agent composes",
+      "exercises": 2, "minimum_examples_required": 2, "minimum_pass_score": 0.72,
+      "retry_policy": "retry_until_3_failures",
+      "params": {"section": "charanam", "seconds": 45, "intensity": 0.7}
+    },
+    {
+      "curriculum_unit_id": "b22.expressive",
+      "level": 14, "stage": "B", "skill_type": "generate.section",
+      "learning_goal": "Compose to a mood and a situation, not just to a scale.",
+      "prerequisite_units": ["b21.development"],
+      "source_requirements": "none - the agent composes",
+      "exercises": 3, "minimum_examples_required": 3, "minimum_pass_score": 0.75,
+      "retry_policy": "retry_until_3_failures",
+      "params": {"section": "pallavi", "seconds": 30, "intensity": 0.65,
+                 "mood_match": true}
+    }
+  ],
+  "cross_raaga": [
+    {
+      "curriculum_unit_id": "c01.compare",
+      "level": 15, "stage": "C", "scope": "cross",
+      "skill_type": "classify.valid",
+      "learning_goal": "Tell two learned raagas apart by phrase.",
+      "prerequisite_units": [],
+      "source_requirements": "two raagas at b11 or beyond",
+      "exercises": 12, "minimum_examples_required": 12, "minimum_pass_score": 0.75,
+      "retry_policy": "retry_until_3_failures",
+      "params": {"mode": "which_raaga", "requires_mastered_raagas": 2}
+    },
+    {
+      "curriculum_unit_id": "c02.ambiguous",
+      "level": 15, "stage": "C", "scope": "cross",
+      "skill_type": "classify.valid",
+      "learning_goal": "Recognise a phrase that could belong to either.",
+      "prerequisite_units": ["c01.compare"],
+      "source_requirements": "two raagas at b11 or beyond",
+      "exercises": 10, "minimum_examples_required": 10, "minimum_pass_score": 0.7,
+      "retry_policy": "retry_until_3_failures",
+      "params": {"mode": "ambiguous", "requires_mastered_raagas": 2}
+    },
+    {
+      "curriculum_unit_id": "c03.no_drift",
+      "level": 16, "stage": "C", "scope": "cross",
+      "skill_type": "generate.pattern",
+      "learning_goal": "Compose in one raaga without sliding into its neighbour.",
+      "prerequisite_units": ["c02.ambiguous"],
+      "source_requirements": "none - the agent composes",
+      "exercises": 10, "minimum_examples_required": 10, "minimum_pass_score": 0.8,
+      "retry_policy": "retry_until_3_failures",
+      "params": {"length": 8, "use_learned_phrases": true,
+                 "reject_neighbour_phrases": true}
+    }
+  ]
+}

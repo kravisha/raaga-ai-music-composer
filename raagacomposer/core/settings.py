@@ -61,6 +61,18 @@ class Settings:
     listen_on_start: bool = False
     theme: str = "dark"
     log_level: str = "INFO"
+    # --- learning agent -------------------------------------------------
+    pilot_raaga: str = "Keeravani"
+    knowledge_db: str = ""                 # blank = <config>/knowledge.db
+    learning_corpus_dir: str = ""          # your own audio to learn from
+    learning_allow_web: bool = False       # record leads only; never fetches
+    learning_autostart: bool = False
+    learning_max_sources_per_lesson: int = 4
+    learning_max_audio_seconds: float = 120.0
+    learning_max_steps_per_session: int = 200
+    learning_step_pause: float = 0.5
+    learning_min_confidence: float = 0.35
+    learning_max_storage_mb: int = 512
     recent_projects: list = field(default_factory=list)
     extra: Dict[str, Any] = field(default_factory=dict)
 

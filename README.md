@@ -6,7 +6,13 @@ prompt-in / random-song-out generator: the creator directs the work, and the
 system carries it out instrument by instrument, section by section, time range
 by time range.
 
-Implements *Master Specification v0.2 - Desktop Python Edition*.
+Implements *Master Specification v0.2 - Desktop Python Edition* and the
+*Raaga Self-Learning Music Agent* specification v1.0.
+
+Behind the composer sits a student: a persistent agent with an embedded
+curriculum, its own ears, permanent memory and a teacher. It listens, practises,
+is marked, remembers what it learned after a restart, and the music the
+application writes changes because of it.
 
 ---
 
@@ -48,6 +54,48 @@ creative direction -> raaga -> TUNE -> lyrics fitted to the tune -> voice
 * **Non-destructive throughout** - versions for tune, lyrics, takes,
   arrangements and mixes; region and section locks that are enforced, not
   advisory; undo/redo; autosave; crash recovery from a backup copy.
+
+## The student behind the instrument
+
+Open the **Learning** tab. Press **One lesson** to watch it study, or **Start
+learning** to let it work in the background while you compose.
+
+* **A curriculum it actually executes.** Thirteen foundation lessons - tone
+  from noise, higher from lower, finding Sa, naming a swara, ascending from
+  descending, intervals, pulse, holding and reproducing a pattern, inventing
+  one, varying one - then twenty-two lessons per raaga from identity and
+  arohanam through characteristic phrases, grammar and drift, up to alapana,
+  kalpana swara and composing to a mood. Then cross-raaga comparison.
+* **Real ears.** Every listening lesson synthesises a phrase, analyses the
+  audio it just made - pitch contour, tonic, swaras, phrase boundaries, tempo -
+  and compares. A lesson passes only if the hearing and the knowledge both
+  work.
+* **Permanent memory.** One SQLite file holds every source, phrase, fact,
+  score and correction, with provenance and confidence on all of it. Close the
+  app and it carries on from where it stopped.
+* **A teacher.** Twelve separate scores - swara correctness, raaga
+  correctness, phrase authenticity, drift, rhythm, coherence, originality,
+  mood, brief, structure, interest, expressiveness - plus what went wrong and
+  one thing to do about it. Press **Mark the current tune** to see it judge its
+  own work.
+* **Grammar, not songs.** Learned phrases are fingerprinted; a tune that
+  repeats too long a run of one is thrown away and rewritten.
+* **Your corrections count.** Say *"This does not sound like Keeravani"* and it
+  lowers its confidence in the phrases it leaned on, and stops using them.
+
+### Teaching it from your own recordings
+
+**Choose my learning folder...** points it at audio you are entitled to use.
+Name the files or folders after the raaga - `Keeravani-alapana.wav` - so it
+knows what it is hearing. It will analyse them, extract phrases, and record
+where every fact came from.
+
+With no folder chosen it still learns: it renders exercises from its own
+structural library and listens to itself, the way a student plays a scale to
+hear it. Nothing is fetched from the internet. The optional web provider is off
+by default and, when enabled, only writes down *leads* for you to follow - it
+does not download anything, and it never touches a paywall or an access
+control.
 
 ## Install and run
 
@@ -112,6 +160,10 @@ and it goes through the identical interpretation pipeline.
 "I want this to feel lonely, late at night, but still warm."
 "Give me the song without instruments."
 "Lock the pallavi."   "Undo."   "Mix the song."
+
+"Learn Keeravani."                    "Study more alapana examples."
+"Why did you choose this phrase?"     "What are you learning?"
+"This does not sound like Keeravani."
 ```
 
 If you name an instrument the catalog does not have, it says so and offers the
@@ -142,19 +194,19 @@ packaging/          PyInstaller spec, Windows build and shortcut scripts
 
 ## Tests
 
-455 tests in three suites, all run with pytest.
+617 tests in three suites, all run with pytest.
 
 ```
-tests\run_all.bat                 everything (about four minutes)
+tests\run_all.bat                 everything (about five minutes)
 tests\run_fast.bat                unit + regression only (about ten seconds)
 ```
 
 or directly:
 
 ```
-.venv\Scripts\python.exe -m pytest tests\unit -q          326 tests
-.venv\Scripts\python.exe -m pytest tests\integration -q   104 tests
-.venv\Scripts\python.exe -m pytest tests\regression -q     25 tests
+.venv\Scripts\python.exe -m pytest tests\unit -q          436 tests
+.venv\Scripts\python.exe -m pytest tests\integration -q   143 tests
+.venv\Scripts\python.exe -m pytest tests\regression -q     38 tests
 .venv\Scripts\python.exe -m pytest tests -q -m "not slow"
 ```
 
@@ -181,6 +233,15 @@ with real synthesis and real files on disk:
   failing provider, absent audio device.
 * `test_ui_window.py` - the real Qt window and every panel, driven offscreen,
   writing screenshots for inspection.
+* `test_agent_acceptance.py` - the learning specification's own tests A to F:
+  persistence across a restart, ranked raaga suggestions with reasons and
+  confidence, stating what it learned about Keeravani, a prelude that is real
+  music rather than one sustained note, a full learning cycle with provenance,
+  and a correction that lowers confidence and changes what it plays next.
+* `test_agent_in_the_app.py` - the agent behind the existing interface: Apply
+  Brief answered from memory, Generate Tune composing from learned phrases,
+  learning controlled from the UI, and the whole original workflow still
+  running.
 
 **Regression** - each test names a defect that was actually found here and
 fixed, so a failure explains itself: a control character that silently killed a

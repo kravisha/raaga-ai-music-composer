@@ -121,6 +121,75 @@ review.
 **The spelling is "raaga" throughout** - package, modules, data files, API and
 prose. It matches how the word is pronounced and how the project is named.
 
+## The learning agent
+
+Added 2026-08-31 from the self-learning agent specification. The composer is
+unchanged as an instrument; the agent is the student behind it.
+
+**Memory is one SQLite file** at `%APPDATA%\RaagaComposer\knowledge.db`,
+written with WAL. It holds sources, learned phrases, raaga facts, curriculum
+progress, compositions, feedback, queued tasks and an event log. It is the
+source of truth; the in-memory views are rebuilt from it at every use rather
+than cached, which is fast enough at this size and cannot drift.
+
+**Nothing is overwritten.** Facts carry confidence and provenance. Two sources
+that disagree are both kept and flagged, and the higher-confidence one is used
+until a person says otherwise. An `observed_*` entry is evidence from one
+recording rather than a claim about the raaga, so those never count as
+disputes.
+
+**The curriculum is executable data.** Every unit names a practice handler and
+its parameters. Stage A is thirteen universal listening skills; Stage B is one
+twenty-two-unit template instantiated per raaga, so a second raaga costs no new
+curriculum; Stage C needs two raagas already taken to Stage B depth. A lesson
+that beats the agent three times is rested and revisited later rather than
+abandoned, with a hard cap on total attempts so it cannot loop.
+
+**The agent learns by listening to itself first.** The research agent's
+providers are, in order of preference: audio the creator puts in their own
+learning folder (`user-supplied`); the application's own renders
+(`own-output`); and reference exercises the agent renders from the shipped
+structural library and then listens to with its own analysis pipeline
+(`internally-generated`). That last one is the reason the whole loop works on
+day one with no network and no rights questions at all: it is a student playing
+a scale to hear it, not a copy of anyone's performance.
+
+**The web provider records leads and fetches nothing.** It is off by default.
+When enabled it writes down where authoritative material is said to exist,
+marked `external-unverified`, and asks the creator to supply anything they are
+entitled to use. Public availability is not permission, and no paywall, DRM or
+access control is touched.
+
+**Hearing is real, not simulated.** Pitch tracking is autocorrelation with
+parabolic interpolation; the tonic is the pitch class that best explains the
+rest of the material against the raaga's own intervals; notes are grouped from
+the contour and phrases split at the breaths. Exercises synthesise a phrase,
+analyse the audio, and compare - so a lesson can only pass if the ears and the
+knowledge both work. Where a musician would be given the Sa by a tanpura, the
+exercise supplies it: naming one note by ear is impossible without one.
+
+**The critic never collapses its scores.** Twelve dimensions are reported
+separately, with the mistakes it found and one piece of advice. A caller that
+wants a single number asks for one, and the weighting it gets is visible in
+`evaluator.py` rather than hidden.
+
+**Originality is enforced, not hoped for.** Learned phrases are indexed by
+octave-insensitive n-grams; a generated line sharing too long a run with one is
+rejected and rewritten. Practice quotes at most three notes of an idiom, and
+transposes it into the octave the line is already in.
+
+**What the agent knows is what it plays.** `learned_raaga()` rebuilds the raaga
+from stored facts, with phrases it has actually heard ahead of the ones the
+library asserts, and the composer generates from that view. Studying changes
+the music; a correction from the creator lowers confidence in specific phrases
+and they stop being used.
+
+**Known weakness, deliberately not hidden.** The agent's own critique of its
+tunes still scores `phrase_authenticity` and `interest` low: it stays inside
+the raaga and cadences correctly, but it quotes the raaga's idioms less often
+than a musician would. That is the next piece of work, and the evaluator says
+so on every tune rather than the number being quietly reweighted.
+
 ## Not built, deliberately
 
 * Video, dialogue, scene generation and lip sync - specification section 24
