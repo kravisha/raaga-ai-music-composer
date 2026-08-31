@@ -73,6 +73,11 @@ class Settings:
     learning_step_pause: float = 0.5
     learning_min_confidence: float = 0.35
     learning_max_storage_mb: int = 512
+    # Real recordings carry a drone and a teacher talking; rendered exercises
+    # carry neither, so preparation is applied to supplied audio only.
+    learning_preprocess_recordings: bool = True
+    learning_remove_drone: bool = True
+    learning_gate_speech: bool = True
     recent_projects: list = field(default_factory=list)
     extra: Dict[str, Any] = field(default_factory=dict)
 

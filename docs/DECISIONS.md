@@ -190,6 +190,77 @@ the raaga and cadences correctly, but it quotes the raaga's idioms less often
 than a musician would. That is the next piece of work, and the evaluator says
 so on every tune rather than the number being quietly reweighted.
 
+## Preparing real recordings
+
+Added 2026-08-31.  The analysis pipeline was written against rendered
+exercises: one voice, alone, pitched throughout.  A recording of an actual
+lesson is a person talking, over a drone that never stops, occasionally
+singing, and handing that to the tracker unchanged produced phrases nobody had
+sung - which then went into permanent memory with provenance and a confidence
+and were handed to the composer as the raaga's own idioms.  Measured against a
+melody we knew note for note, 10 of the 12 phrases learned from a lesson-shaped
+recording were inventions.  `agent/preprocess.py` sits before the ears.
+
+**The drone is a gift, not a nuisance.**  A tanpura exists to declare Sa.  Where
+one is found its fundamental is handed to `analyse()` as a *fixed* tonic rather
+than being inferred from the melody, which is both more accurate and more
+honest about where the number came from.  This is the same argument the
+exercises already made for supplying the Sa when naming a single note.
+
+**A drone is found by what does not move.**  The median over time of each STFT
+bin is high where something sounds in every frame and low where a note passes
+through, so the ratio of median to mean is a direct measure of how stationary a
+bin is.  Candidates are then scored by summing that stationary spectrum over
+the ratios a tanpura actually sounds - the Pa below, Sa, its octave and
+harmonics - so the pitch that best explains the whole steady picture wins
+rather than merely the loudest steady bin.
+
+**A held note is not a drone.**  A sustained note in an alapana is stationary
+too, and notching it out would remove the thing worth learning from.  Two
+things separate them, and both are required: a drone sounds for essentially the
+whole recording, and it brings a chord of partials where a held note brings
+only itself.  Measured, held notes sit near 0.5 stationarity with one or two
+partials; a real drone is above 0.89 with four.
+
+**The tonic is refined below the bin.**  A 4096-point bin is about 5 Hz, which
+near a low Sa is most of a semitone, and every swara downstream is measured
+from that number.  Parabolic interpolation on the peak, combined across the
+partials - a partial at four times the fundamental carries four times the
+absolute error for the same relative error - takes a 45-cent error down to
+about one cent.
+
+**Singing is held pitch; speech is not.**  The gate needs no language and no
+model.  A sung note settles and stays; where it is ornamented it oscillates
+*around* a centre.  Speech glides from the start of a syllable to the end and
+moves on.  A running median over rather more than one oscillation reduces a
+kampita to the note it decorates but leaves a glide gliding, and the share of
+voiced time then spent inside a plateau separates the two with a wide margin.
+Gamaka swinging 140 cents still reads as singing; that was the failure this
+must not have.
+
+**Windows are two seconds, and a run must last three.**  Speech is not
+uniformly unmusical: at a turning point in its contour it really does level off
+for a moment, and a short window sees only that moment.  Two seconds contains
+the glide either side.  A sung stretch shorter than three seconds is dropped
+anyway, because it is not a phrase worth learning and an isolated flat moment
+in a minute of talking is far more likely to be the speaker than a snatch of
+song.
+
+**Nothing is spliced.**  Rejected stretches are silenced in place.  Cutting
+them out would move every timestamp after the cut, and the silence left behind
+is a phrase boundary `segment_phrases` already knows how to read.
+
+**Only supplied audio is prepared.**  Reference exercises and the application's
+own renders are already one clean voice with nothing else in the room; running
+the gate over them could only take good phrases away.  The decision is made on
+the source's rights status, so it follows the material rather than the caller.
+
+**Where it is unsure it stands down.**  If the gate rejects an entire
+recording, that is far likelier to be a gate that does not suit the recording
+than a lesson with no singing in it, so the audio is left alone and the warning
+says so.  A phrase never learned costs one phrase; a wrong phrase in permanent
+memory costs the confidence of everything that reads it.
+
 ## Not built, deliberately
 
 * Video, dialogue, scene generation and lip sync - specification section 24

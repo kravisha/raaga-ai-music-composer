@@ -86,9 +86,32 @@ learning** to let it work in the background while you compose.
 ### Teaching it from your own recordings
 
 **Choose my learning folder...** points it at audio you are entitled to use.
-Name the files or folders after the raaga - `Keeravani-alapana.wav` - so it
-knows what it is hearing. It will analyse them, extract phrases, and record
-where every fact came from.
+Name the files or folders after the raaga - `Keeravani-alapana.wav`, or a
+folder called `Keeravani` - so it knows what it is hearing; a file whose name
+and folder mention no raaga is not picked up by any of them. Aliases count, so
+`Yaman` is read as Kalyani. Audio only: `.wav`, `.flac`, `.ogg`, `.aiff`,
+`.mp3` - a video file is ignored, so extract its audio first. Only the first
+two minutes of each file are analysed, so several short clips teach it more
+than one long class.
+
+A real recording is not a rendered exercise, and it is not treated as one. A
+lesson is somebody talking, over a tanpura or shruti box that never stops,
+occasionally singing - so before the ears hear it:
+
+* **The drone is found and taken out**, and its fundamental becomes Sa. A
+  tanpura exists to declare the tonic, so it is believed rather than guessed
+  at. A long held note is *not* mistaken for a drone: a drone sounds for the
+  whole recording and brings a chord of partials, where a held note brings only
+  itself.
+* **The talking is silenced.** Singing holds a pitch - where it is ornamented
+  it oscillates around one - and speech glides and never settles. That is the
+  whole test: no language model, and nothing that needs to know Telugu or
+  Tamil. Gamaka swinging well over a semitone still reads as singing.
+
+Silenced stretches are muted in place, never cut out, so every timestamp still
+means what it meant. If the gate cannot make sense of a recording it says so
+and leaves the audio alone rather than handing back silence. It will analyse
+what remains, extract phrases, and record where every fact came from.
 
 With no folder chosen it still learns: it renders exercises from its own
 structural library and listens to itself, the way a student plays a scale to
@@ -194,7 +217,7 @@ packaging/          PyInstaller spec, Windows build and shortcut scripts
 
 ## Tests
 
-617 tests in three suites, all run with pytest.
+650 tests in three suites, all run with pytest.
 
 ```
 tests\run_all.bat                 everything (about five minutes)
@@ -204,9 +227,9 @@ tests\run_fast.bat                unit + regression only (about ten seconds)
 or directly:
 
 ```
-.venv\Scripts\python.exe -m pytest tests\unit -q          436 tests
-.venv\Scripts\python.exe -m pytest tests\integration -q   143 tests
-.venv\Scripts\python.exe -m pytest tests\regression -q     38 tests
+.venv\Scripts\python.exe -m pytest tests\unit -q          458 tests
+.venv\Scripts\python.exe -m pytest tests\integration -q   149 tests
+.venv\Scripts\python.exe -m pytest tests\regression -q     43 tests
 .venv\Scripts\python.exe -m pytest tests -q -m "not slow"
 ```
 
