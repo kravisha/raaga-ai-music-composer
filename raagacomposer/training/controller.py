@@ -39,7 +39,7 @@ class TrainingController:
     def __init__(self, settings: Optional[Settings] = None,
                  raagas: Optional[RaagaLibrary] = None,
                  store: Optional[TrainingStore] = None,
-                 agent_repo=None, curriculum=None,
+                 agent_repo=None, curriculum=None, kb=None,
                  on_change: Optional[Callable[[], None]] = None) -> None:
         self.settings = settings or Settings.load()
         self.raagas = raagas or default_library()
@@ -47,18 +47,21 @@ class TrainingController:
         self.store = store or TrainingStore(Path(path) if path else None)
         self.agent_repo = agent_repo
         self.curriculum = curriculum
+        #: The durable Knowledge Base training feeds.  Optional.
+        self.kb = kb
 
         self.search_service = LearningSourceSearchService(
             self.store, self.raagas, self.settings)
         self.objective_service = LearningObjectiveService(
             self.store, self.raagas, agent_repo, curriculum)
         self.pipeline = LearningPipeline(self.store, self.raagas,
-                                         self.settings, agent_repo, curriculum)
+                                         self.settings, agent_repo,
+                                         curriculum, kb=kb)
         self.queue = TrainingQueueService(self.store, self.pipeline, on_change)
         self.reports = LearningReportService(self.store)
         self.history = TrainingHistoryService(self.store)
         self.knowledge = KnowledgeBaseService(self.store, self.raagas,
-                                              agent_repo)
+                                              agent_repo, kb=kb)
 
         self.last_results: List[LearningSource] = []
         self.last_query: Optional[SearchQuery] = None

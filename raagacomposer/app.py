@@ -19,6 +19,8 @@ import numpy as np
 
 from .agent.music_agent import MusicAgent
 from .training.controller import TrainingController
+from .kb.context import KnowledgeContextBuilder
+from .kb.service import KnowledgeBaseService
 from .agent.originality import check as check_originality
 from .audio import export as export_engine
 from .audio.playback import PlaybackEngine
@@ -84,12 +86,29 @@ class AppController:
         # and everything it has learned so far.
         self.agent = MusicAgent(self.settings, self.raagas,
                                 llm=self.providers.llm)
+        # The Knowledge Base: the permanent learned memory.  Opened, never
+        # recreated - if this fails the application still runs, but it says so
+        # rather than carrying on with an empty one that looks like loss.
+        self.kb: Optional[KnowledgeBaseService] = None
+        self.knowledge_context: Optional[KnowledgeContextBuilder] = None
+        try:
+            path = getattr(self.settings, "knowledge_base_db", "") or None
+            self.kb = KnowledgeBaseService.initialize_if_needed(
+                Path(path) if path else None)
+            self.knowledge_context = KnowledgeContextBuilder(self.kb)
+            self._migrate_knowledge_base()
+        except Exception as exc:  # noqa: BLE001
+            log.error("the Knowledge Base could not be opened: %s. Nothing "
+                      "has been deleted; learned knowledge is untouched.", exc)
+            self.kb = None
+
         # The Training tab: search for material, approve it, learn from it.
-        # It shares the agent's memory so what it learns reaches the composer.
+        # It shares the agent's memory so what it learns reaches the composer,
+        # and the Knowledge Base so it accumulates across runs.
         try:
             self.training = TrainingController(
                 self.settings, self.raagas, agent_repo=self.agent.repo,
-                curriculum=self.agent.curriculum)
+                curriculum=self.agent.curriculum, kb=self.kb)
         except Exception as exc:  # noqa: BLE001 - never block startup on it
             log.warning("the training system is unavailable: %s", exc)
             self.training = None
@@ -269,6 +288,11 @@ class AppController:
         self.playback.close()
         self.jobs.shutdown()
         try:
+            if getattr(self, "kb", None) is not None:
+                self.kb.close()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("closing the Knowledge Base failed: %s", exc)
+        try:
             if getattr(self, "training", None) is not None:
                 self.training.close()
         except Exception as exc:  # noqa: BLE001
@@ -277,6 +301,52 @@ class AppController:
             self.agent.close()
         except Exception as exc:  # noqa: BLE001
             log.warning("closing the agent failed: %s", exc)
+
+    # ==================================================================
+    # the Knowledge Base
+    # ==================================================================
+    def _migrate_knowledge_base(self) -> None:
+        """Bring existing knowledge in, once - knowledge spec section 47.
+
+        Idempotent, and it never runs destructively: everything goes through
+        the same duplicate control as any other write, so a second pass adds
+        nothing rather than doubling anything.
+        """
+        if self.kb is None:
+            return
+        if self.kb.store.get_meta("migrated_existing_stores"):
+            return
+        from .kb.migrate import migrate_all
+
+        training_db = getattr(self.settings, "training_db", "") or None
+        report = migrate_all(
+            self.kb, raagas=self.raagas,
+            training_db=Path(training_db) if training_db else None,
+            agent_repo=self.agent.repo)
+        log.info("Knowledge Base migration: %s", report.summary())
+
+    def knowledge_for(self, task: str, raaga: str = "", **kwargs):
+        """What the Knowledge Base holds for a piece of work - section 19.
+
+        This is how composition reads the Knowledge Base: through the service
+        and the context builder, taking the smallest sufficient set rather than
+        everything about the raga.
+        """
+        if self.knowledge_context is None:
+            return None
+        return self.knowledge_context.build(task, raga=raaga, **kwargs)
+
+    def knowledge_health(self):
+        """Section 40, for the UI and for a person asking."""
+        if self.kb is None:
+            return None
+        from .kb.librarian import Librarian
+
+        return Librarian(self.kb).health()
+
+    def explain_knowledge(self, knowledge_id: str):
+        """Section 41 - where a piece of knowledge came from."""
+        return self.kb.provenance(knowledge_id) if self.kb else {}
 
     # ==================================================================
     # creative brief and raaga

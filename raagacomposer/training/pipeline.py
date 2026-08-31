@@ -43,7 +43,8 @@ class LearningPipeline:
     """Phases A to G for one source, with a report at the end whatever happens."""
 
     def __init__(self, store: TrainingStore, raagas: RaagaLibrary,
-                 settings=None, agent_repo=None, curriculum=None) -> None:
+                 settings=None, agent_repo=None, curriculum=None,
+                 kb=None) -> None:
         self.store = store
         self.raagas = raagas
         self.settings = settings
@@ -51,7 +52,8 @@ class LearningPipeline:
         self.media = MediaIngestionService(raagas, settings)
         self.semantics = SemanticLearningService(raagas)
         self.validation = KnowledgeValidationService(store)
-        self.knowledge = KnowledgeBaseService(store, raagas, agent_repo)
+        self.knowledge = KnowledgeBaseService(store, raagas, agent_repo,
+                                             kb=kb)
         self.objectives = LearningObjectiveService(store, raagas, agent_repo,
                                                    curriculum)
 

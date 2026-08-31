@@ -203,9 +203,78 @@ def settings(tmp_path: Path) -> Settings:
 
 
 @pytest.fixture
+def kb_path(tmp_path: Path) -> Path:
+    """A throwaway Knowledge Base file.
+
+    Section 2 of the knowledge-base specification allows an isolated temporary
+    database for a test, and forbids one anywhere else: every test here is
+    explicitly asking for its own.
+    """
+    return tmp_path / "knowledge_base.db"
+
+
+@pytest.fixture
+def kb(kb_path: Path):
+    """An empty Knowledge Base with the core taxonomy seeded."""
+    from raagacomposer.kb.service import KnowledgeBaseService
+
+    service = KnowledgeBaseService.initialize_if_needed(kb_path)
+    try:
+        yield service
+    finally:
+        if not service.store.closed:
+            service.close()
+
+
+@pytest.fixture
+def kb_source(kb):
+    """A source to hang evidence from."""
+    from raagacomposer.kb.models import Source
+
+    return kb.add_source(Source(
+        source_type="video", title="A Kambhoji lesson",
+        author_or_channel="a teacher",
+        reference="https://youtu.be/AAAAAAAAAAA"))
+
+
+@pytest.fixture
+def kb_evidence(kb_source):
+    """A supporting evidence record from the default source."""
+    from raagacomposer.kb.models import Evidence, ExtractionMethod
+
+    def _make(source=None, *, supports=True, strength=0.8,
+              method=ExtractionMethod.AUDIO, run_id=""):
+        return Evidence(
+            source_id=(source or kb_source).source_id,
+            source_segment="0:10-0:40", timestamp_start=10.0,
+            timestamp_end=40.0, strength=strength,
+            extraction_method=method, supports=supports, run_id=run_id)
+    return _make
+
+
+@pytest.fixture
+def kb_claim():
+    """A claim about Kambhoji, ready to commit."""
+    from raagacomposer.kb import normalize
+    from raagacomposer.kb.models import KnowledgeItem, KnowledgeType, Scope
+
+    def _make(predicate="arohanam", value="S R2 G3 M1 P D2 S+",
+              statement="", *, raga="Kambhoji",
+              knowledge_type=KnowledgeType.FACT, tags=()):
+        return KnowledgeItem(
+            canonical_name=raga, knowledge_type=knowledge_type, subject=raga,
+            predicate=predicate, object_value=value,
+            statement=statement or f"{raga} {predicate} is {value}.",
+            structured_value=normalize.structured_for(predicate, value),
+            scope=[Scope.CARNATIC, Scope.RAGA], raga=raga, tags=list(tags))
+    return _make
+
+
+@pytest.fixture
 def training_settings(settings: Settings, tmp_path: Path) -> Settings:
     settings.training_db = str(tmp_path / "training.db")
     settings.training_allow_web = False
+    settings.knowledge_base_db = str(tmp_path / "knowledge_base.db")
     return settings
 
 

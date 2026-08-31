@@ -341,6 +341,96 @@ attempt count intact rather than sitting in "Analyzing" for ever.
 source that taught us nothing still has to say so and why; rule 4 has no
 exception for failure.
 
+## The Knowledge Base
+
+Added 2026-08-31 from the knowledge-base architecture specification.  Its
+section 47 asks for the existing project to be inspected first, and that
+inspection changed the design, so it is recorded here before anything else.
+
+**What was already here.**  Three stores.  `agent/knowledge.db` (sources,
+phrases, raaga facts, curriculum progress, compositions, feedback, events);
+`training.db` (searches, candidates, runs, objectives, reports, a flat
+knowledge table, conflicts); and `raaga/data/raagas.json`, the shipped
+structural library.  The specification forbids a parallel Knowledge Base, so
+none of them was duplicated.
+
+**One node table, not four.**  Section 4 defines a Knowledge Item with a
+statement, section 6 a Claim with subject, predicate and object, and section
+33 lists `knowledge_items`, `entities`, `claims`, `procedures` and `examples`
+as separate tables.  Implemented literally that is four identity spaces
+holding overlapping content, and a relationship - whose endpoints are
+`knowledge_id` - could not point at three of them.  So there is one node table
+and one id space: a claim is an item with its subject and predicate filled in,
+an entity is an item of an entity type, and procedures and examples have a 1:1
+detail row for the extra fields they need.  The specification's table names
+survive as read-only **views**, so the logical model it asks for can be
+queried by those names while exactly one row holds each piece of knowledge.
+
+**Where each existing store went.**  `training.db`'s `knowledge` and
+`conflicts` are migrated into the Knowledge Base.  Everything else in that
+file stays, because section 26 draws exactly that line: a Learning Report is
+what happened during one run, the Knowledge Base is what accumulates across
+all of them.  The agent's raaga facts are projected in as claims while its own
+store keeps them too - the phrase index is on the composer's hot path and is
+already proven, and curriculum progress is run state rather than knowledge.
+The shipped library is seeded as claims attributed to a source naming the file
+they came from, so that a teacher later disagreeing with one produces an
+honest conflict between "what we shipped" and "what a source taught" rather
+than a mystery.
+
+**Opening is not creating.**  Section 2 is the rule the store is shaped
+around.  A durable marker records the moment of first initialization and every
+later open continues from it; initialization and migration are separate code
+paths so a migration cannot fall through into a recreation; a store written by
+a newer schema is refused outright rather than misread; and asking for a store
+that is not there, without asking to create one, is an error rather than a
+fresh empty database that looks like total loss.
+
+**A damaged Knowledge Base is kept.**  Section 36.  Corruption stops
+destructive writes, preserves a timestamped copy and reports - it is never
+replaced with an empty one.  That covers both a file that opens but fails its
+integrity check and one too damaged for SQLite to open at all; the second case
+was a defect found by its own test.
+
+**Set-valued predicates.**  A raga has one arohanam, so a second different one
+is a contradiction.  A raga has many characteristic phrases, so the second is
+simply another one.  Identity therefore includes the value for set-valued
+predicates and not for single-valued ones.  Without that distinction every
+phrase after the first was recorded as contradicting its predecessor, seeding
+the library produced a conflict per prayoga, and the store grew on every
+start.
+
+**Refinement compares substance, not sentences.**  Two arohanams differing by
+one swara read as very similar text.  A refinement is a better *wording* of
+the same claim, so it requires the structured values to agree; where they
+differ it is a contradiction however alike the sentences look.  Getting this
+wrong was a silent overwrite, which is the thing section 12 exists to prevent.
+
+**Claims hang off the thing they are about.**  Section 3's core idea.
+Committing a claim about a raga brings that raga into being as an entity if it
+is not already there and links the claim to it, which is what makes graph
+traversal from "Kambhoji" reach its phrases and its constraints.  An entity
+asserts only that a name denotes a thing of a kind: it carries no evidence,
+because nobody taught it, and asking where it came from says so rather than
+returning a blank that would read like lost provenance.
+
+**Confidence keeps its working.**  Section 10 lists eight considerations and
+section 41 asks why a thing is believed.  A single number computed and stored
+alone cannot answer that, so the components are stored beside it and a score
+can be read back as a sentence.  Independence is counted rather than evidence:
+ten records from one video are one source agreeing with itself.
+
+**Semantic search is declared missing rather than faked.**  Section 18 lists
+it among the hybrid routes and section 32 makes embeddings an optional later
+addition.  There is no embedding model here, so `semantic_search` says so and
+falls back to keyword matching, and `semantic_available` is False.  A lexical
+match dressed up under that name would be a lie about how an answer was found.
+
+**Retrieval is ranked for usefulness and never hides a disagreement.**  A
+context carries the constraints whatever the task profile asks for, and where
+sources conflict the caller is told - rather than being handed the more
+confident of two answers as though it were settled.
+
 ## Not built, deliberately
 
 * Video, dialogue, scene generation and lip sync - specification section 24

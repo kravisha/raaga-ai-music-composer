@@ -128,6 +128,40 @@ becomes something the composer can quote. A phrase a teacher merely *stated* in
 a transcript is recorded for you to see but deliberately withheld from the
 music, because nothing has verified it. The report says which is which.
 
+### What it knows, and where it got it
+
+Behind both the Learning and Training tabs is one **Knowledge Base** - a single
+SQLite file that is created once and then grows. It is not recreated when you
+restart, upgrade or reinstall, and a damaged one is never quietly replaced with
+an empty one: it is kept, a copy is preserved, and you are told.
+
+Knowledge in it is a network rather than a list. Ask about Kambhoji and you
+reach not only its definition but its characteristic phrases, its gamakas, the
+things it must *not* do, the examples that demonstrate it, and the sources
+behind each of those - because they all hang off Kambhoji as connected nodes.
+Spelling does not matter: *Kamboji*, *Kambhoji* and *Khamaj* all arrive at the
+same entity.
+
+Four things it will not do:
+
+* **It will not lose a source.** Every learned claim carries which source, which
+  learning run, where in that source, what evidence, and whether it was heard,
+  read or inferred. Ask any item where it came from and it can tell you.
+* **It will not pile up copies.** The same fact from ten teachers is one
+  canonical claim with ten evidence records, and confidence that rises because
+  the sources are independent - not ten rows.
+* **It will not overwrite a disagreement.** When a source contradicts something
+  held, both are kept, the conflict is recorded with a recommendation, and a
+  person decides. Music disagrees for good reasons and "context-dependent" is
+  one of the answers you can give.
+* **It will not turn a guess into a fact.** Confidence is stored with the
+  reasoning that produced it, so a score can be read back as a sentence -
+  *"0.63 from direct demonstration +0.20, independent sources +0.15..."*
+
+You can mark anything incorrect, approve a disputed claim, or adjust its
+confidence, and the previous reading is kept with a note of who changed it and
+why. Nothing important ever changes without leaving a trace.
+
 ### Teaching it from your own recordings
 
 **Choose my learning folder...** points it at audio you are entitled to use.
@@ -252,7 +286,10 @@ raagacomposer/
   speech/           microphone capture, speech adapters, intent and timeline parsing
   agent/            the student: memory, curriculum, ears, practice, critic
   training/         the Training tab: search providers, access policy, ingestion
-                    pipeline, objectives, validation, knowledge base, queue
+                    pipeline, objectives, validation, queue
+  kb/               the Knowledge Base: the durable knowledge network, its
+                    normalization, confidence model, hybrid retrieval, context
+                    builder, librarian and migrations
   providers/        provider abstraction and adapters
   ui/               PySide6 desktop UI: main window, timeline widget, panels
 tests/
@@ -265,7 +302,7 @@ packaging/          PyInstaller spec, Windows build and shortcut scripts
 
 ## Tests
 
-768 tests in three suites, all run with pytest.
+845 tests in three suites, all run with pytest.
 
 ```
 tests\run_all.bat                 everything (about five minutes)
@@ -275,9 +312,9 @@ tests\run_fast.bat                unit + regression only (about ten seconds)
 or directly:
 
 ```
-.venv\Scripts\python.exe -m pytest tests\unit -q          534 tests
-.venv\Scripts\python.exe -m pytest tests\integration -q   184 tests
-.venv\Scripts\python.exe -m pytest tests\regression -q     50 tests
+.venv\Scripts\python.exe -m pytest tests\unit -q          592 tests
+.venv\Scripts\python.exe -m pytest tests\integration -q   197 tests
+.venv\Scripts\python.exe -m pytest tests\regression -q     56 tests
 .venv\Scripts\python.exe -m pytest tests -q -m "not slow"
 ```
 
@@ -317,6 +354,15 @@ with real synthesis and real files on disk:
   demonstration, one test per numbered step, from typing the search phrase
   through to closing the application and finding the history and the learned
   knowledge still there.
+* `test_kb_acceptance.py` - the knowledge-base specification's own ten
+  acceptance tests, numbered as it numbers them: knowledge surviving a
+  restart, a fact naming its source and run, one canonical fact with two
+  evidence records, a contradiction recorded rather than overwritten,
+  retrieval that answers what composing actually needs, a correction and its
+  history surviving a restart, committed knowledge surviving an abrupt
+  termination, a training run integrating into the Knowledge Base, Compose
+  reading through the service with a retrieval trace, and a restart plus
+  schema migration leaving everything intact.
 * `test_training_flow.py` - what the specification spends most of its words
   on: a source that cannot be fetched saying so, supplying the file or the
   transcript turning it into a real lesson, relearning without destroying the

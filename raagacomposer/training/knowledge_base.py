@@ -36,16 +36,33 @@ log = get_logger("training.knowledge_base")
 HEARD = "heard"
 
 
+def _kb_type(category: str) -> str:
+    """A training category, as a Knowledge Base knowledge type."""
+    from ..kb.models import KnowledgeType
+
+    return {
+        "phrase": KnowledgeType.PATTERN,
+        "grammar": KnowledgeType.CONSTRAINT,
+        "practice": KnowledgeType.PROCEDURE,
+        "self-assessment": KnowledgeType.META,
+    }.get(category, KnowledgeType.FACT)
+
+
 class KnowledgeBaseService:
     """Section 9 storage, plus the bridge to what the application plays."""
 
     def __init__(self, store: TrainingStore, raagas: RaagaLibrary,
-                 agent_repo=None) -> None:
+                 agent_repo=None, kb=None) -> None:
         self.store = store
         self.raagas = raagas
         #: The agent's own memory.  Optional: training still works without it,
         #: it simply cannot change what the composer plays.
         self.agent_repo = agent_repo
+        #: The durable Knowledge Base.  The training store keeps the record of
+        #: *this run*; the Knowledge Base accumulates across all of them, which
+        #: is the distinction the knowledge-base specification draws in its
+        #: section 26.  Optional, so training still works without one.
+        self.kb = kb
 
     # ------------------------------------------------------------------
     def store_all(self, entries: Sequence[KnowledgeEntry],
@@ -62,7 +79,89 @@ class KnowledgeBaseService:
             self.store.add_knowledge(entry)
             stored.append(entry.knowledge_id)
         self._bridge_to_agent(entries, source, run_id)
+        self._bridge_to_kb(entries, source, run_id)
         return stored
+
+    # ------------------------------------------------------------------
+    def _bridge_to_kb(self, entries: Sequence[KnowledgeEntry],
+                      source: LearningSource, run_id: str) -> int:
+        """Integrate this run's findings into the durable Knowledge Base.
+
+        The Learning Report says what happened once; the Knowledge Base is
+        where it becomes part of what the application knows.  Everything goes
+        through ``commit_knowledge``, so a second source teaching the same
+        thing attaches evidence rather than making another row, and one
+        teaching something different produces a recorded conflict rather than
+        an overwrite.
+        """
+        if self.kb is None:
+            return 0
+        try:
+            from ..kb.models import (Evidence, ExtractionMethod, KnowledgeItem,
+                                     KnowledgeType, Scope, Source as KBSource)
+            from ..kb import normalize as kb_normalize
+        except Exception:  # noqa: BLE001
+            return 0
+
+        try:
+            kb_source = self.kb.add_source(KBSource(
+                source_type=source.source_type or "training",
+                title=source.title,
+                author_or_channel=source.author,
+                reference=source.url,
+                training_source_id=source.source_id,
+                language=source.language,
+                license_or_access_notes=str(
+                    source.metadata.get("rights", "")) or "",
+                metadata={"provider": source.provider}))
+        except Exception as exc:  # noqa: BLE001
+            log.warning("could not register the source with the Knowledge "
+                        "Base: %s", exc)
+            return 0
+
+        written = 0
+        for entry in entries:
+            try:
+                predicate = kb_normalize.normalise_predicate(
+                    entry.concept or entry.category or "note")
+                heard = HEARD in entry.tags or "measured" in entry.tags
+                item = KnowledgeItem(
+                    canonical_name=entry.subject or entry.raga,
+                    knowledge_type=_kb_type(entry.category),
+                    subject=entry.subject or entry.raga,
+                    predicate=predicate,
+                    object_value=entry.normalized_statement,
+                    statement=entry.normalized_statement,
+                    structured_value=kb_normalize.structured_for(
+                        predicate, entry.normalized_statement),
+                    scope=[Scope.CARNATIC, Scope.TRAINING],
+                    raga=entry.raga, tala=entry.tala,
+                    difficulty=entry.difficulty, tags=list(entry.tags),
+                    learned_by="training", language=source.language)
+                evidence = Evidence(
+                    source_id=kb_source.source_id,
+                    source_segment=entry.source_timestamp,
+                    transcript_excerpt=entry.evidence,
+                    strength=entry.confidence,
+                    extraction_method=(ExtractionMethod.AUDIO if heard
+                                       else ExtractionMethod.TRANSCRIPT
+                                       if "stated" in entry.tags
+                                       else ExtractionMethod.INFERRED),
+                    run_id=run_id)
+                result = self.kb.commit_knowledge(
+                    item, [evidence],
+                    source_quality=0.8 if heard else 0.65, run_id=run_id)
+                if result.stored:
+                    written += 1
+            except Exception as exc:  # noqa: BLE001 - one item is not the run
+                log.debug("could not integrate an item into the Knowledge "
+                          "Base: %s", exc)
+        if written:
+            self.store.audit(
+                "knowledge.integrated",
+                f"{written} item(s) integrated into the Knowledge Base",
+                run_id=run_id, source_id=source.source_id)
+        return written
 
     # ------------------------------------------------------------------
     def _bridge_to_agent(self, entries: Sequence[KnowledgeEntry],
