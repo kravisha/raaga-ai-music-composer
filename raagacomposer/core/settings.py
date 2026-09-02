@@ -91,6 +91,18 @@ class Settings:
     learning_step_pause: float = 0.5
     learning_min_confidence: float = 0.35
     learning_max_storage_mb: int = 512
+    # Real recordings carry a drone and a teacher talking; rendered exercises
+    # carry neither, so preparation is applied to supplied audio only.
+    # --- training tab ---------------------------------------------------
+    training_db: str = ""                  # blank = <config>/training.db
+    # The permanent learned memory.  Blank = <config>/knowledge_base.db.
+    # It is opened, never recreated: see docs and kb/store.py.
+    knowledge_base_db: str = ""
+    training_allow_web: bool = False       # leads only; never fetches
+    training_max_results: int = 10
+    learning_preprocess_recordings: bool = True
+    learning_remove_drone: bool = True
+    learning_gate_speech: bool = True
     recent_projects: list = field(default_factory=list)
     extra: Dict[str, Any] = field(default_factory=dict)
 

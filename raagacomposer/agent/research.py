@@ -28,7 +28,7 @@ from ..core.settings import Settings
 from ..music import instruments as catalog
 from ..music.synth import render_notes
 from ..raaga.library import (SWARA_SEMITONES, Raaga, RaagaLibrary, parse_swara)
-from . import analysis
+from . import analysis, preprocess
 from .knowledge import Fact, KnowledgeRepository, Phrase, Source
 
 log = get_logger("agent.research")
@@ -67,13 +67,17 @@ class IngestionResult:
     confidence: float = 0.0
     error: str = ""
     result: Optional[analysis.AnalysisResult] = None
+    prepared: Optional[preprocess.PreparedAudio] = None
 
     def summary(self) -> str:
         if self.error:
             return f"failed: {self.error}"
-        return (f"{self.phrases_learned} phrase(s) learned, "
+        text = (f"{self.phrases_learned} phrase(s) learned, "
                 f"{self.phrases_rejected} rejected, "
                 f"{self.facts_learned} fact(s), confidence {self.confidence:.2f}")
+        if self.prepared is not None:
+            text += f" [{self.prepared.summary()}]"
+        return text
 
 
 # --------------------------------------------------------------------------
@@ -304,6 +308,18 @@ class ResearchAgent:
         return found[:limit]
 
     # -- ingestion ---------------------------------------------------------
+    def _should_preprocess(self, candidate: SourceCandidate) -> bool:
+        """Only audio a person supplied needs preparing.
+
+        Everything else the agent listens to it rendered itself, so it is
+        already one clean voice with no drone and nobody talking over it.
+        Running the gate on that material could only take good phrases away.
+        """
+        if not getattr(self.settings, "learning_preprocess_recordings", True):
+            return False
+        return (candidate.content_type == "audio"
+                and candidate.rights_status == "user-supplied")
+
     def ingest(self, candidate: SourceCandidate,
                max_seconds: Optional[float] = None) -> IngestionResult:
         result = IngestionResult(candidate=candidate)
@@ -340,12 +356,45 @@ class ResearchAgent:
         if limit > 0 and len(audio) > int(limit * sr):
             audio = audio[:int(limit * sr)]
 
+        # A supplied recording is a real one: a teacher talking over a drone,
+        # occasionally singing.  Prepare it before the ears see it.  Rendered
+        # exercises and the application's own output need none of this and are
+        # left exactly as they were.
+        prepared = None
+        tonic_hint = candidate.tonic_midi
+        fixed_tonic = None
+        if self._should_preprocess(candidate):
+            try:
+                prepared = preprocess.prepare(
+                    audio, sr,
+                    remove_drone=bool(getattr(self.settings,
+                                              "learning_remove_drone", True)),
+                    gate_speech=bool(getattr(self.settings,
+                                             "learning_gate_speech", True)))
+            except Exception as exc:  # noqa: BLE001 - never lose a source to this
+                log.warning("preparation failed for %s, using the audio as it "
+                            "arrived: %s", candidate.locator, exc)
+            else:
+                audio = prepared.audio
+                result.prepared = prepared
+                # The tanpura is the one thing in the room that knows Sa.
+                if candidate.tonic_midi is None and prepared.tonic_midi is not None:
+                    fixed_tonic = prepared.tonic_midi
+                log.info("prepared %s: %s", candidate.title, prepared.summary())
+
         try:
-            analysed = analysis.analyse(audio, sr, raaga, candidate.tonic_midi)
+            analysed = analysis.analyse(audio, sr, raaga, tonic_hint,
+                                        fixed_tonic_midi=fixed_tonic)
         except Exception as exc:  # noqa: BLE001
             self.repo.update_source(stored.id, status="failed", error=str(exc))
             result.error = f"analysis failed: {exc}"
             return result
+
+        if prepared is not None:
+            self.repo.update_source(
+                stored.id,
+                extraction_version=f"{analysis.ANALYSIS_VERSION}+"
+                                   f"{prepared.version}")
 
         result.result = analysed
         result.analysed = True

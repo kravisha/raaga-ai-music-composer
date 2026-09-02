@@ -94,6 +94,114 @@ def brief() -> CreativeBrief:
 
 
 # --------------------------------------------------------------------------
+# synthetic recordings
+# --------------------------------------------------------------------------
+# A real lesson is a teacher talking over a drone and occasionally singing.
+# None of the three can be tested against a rendered exercise, because a
+# rendered exercise has none of them, so they are built here instead.  The
+# distinction the preprocessing turns on is pitch that is *held* (singing)
+# against pitch that is always sliding (speech), so that is what these differ in.
+ANALYSIS_SR = 22050
+
+
+def drone_signal(seconds: float, sa_hz: float = 261.63,
+                 sr: int = ANALYSIS_SR):
+    """A tanpura or shruti box: the Pa below, Sa, and Sa's own harmonics."""
+    import numpy as np
+
+    n = int(seconds * sr)
+    t = np.arange(n) / sr
+    out = np.zeros(n, dtype=np.float32)
+    for freq, amp in ((sa_hz * 2 / 3, 0.45), (sa_hz, 0.60),
+                      (sa_hz * 2, 0.30), (sa_hz * 3, 0.15)):
+        out += amp * np.sin(2 * np.pi * freq * t).astype(np.float32)
+    return out / (np.abs(out).max() + 1e-9)
+
+
+def sung_signal(seconds: float, base_hz: float = 220.0,
+                sr: int = ANALYSIS_SR, degrees=(0, 2, 3, 5, 7, 8, 7, 5)):
+    """Singing: steps between scale degrees and *holds* each one."""
+    import numpy as np
+
+    n = int(seconds * sr)
+    t = np.arange(n) / sr
+    f = np.zeros(n)
+    step = max(1, n // len(degrees))
+    for i, degree in enumerate(degrees):
+        f[i * step:(i + 1) * step] = base_hz * 2 ** (degree / 12)
+    f[len(degrees) * step:] = base_hz * 2 ** (degrees[-1] / 12)
+    f *= 1 + 0.012 * np.sin(2 * np.pi * 5.5 * t)        # vibrato and gamaka
+    phase = 2 * np.pi * np.cumsum(f) / sr
+    out = (0.60 * np.sin(phase) + 0.25 * np.sin(2 * phase)
+           + 0.10 * np.sin(3 * phase))
+    return out.astype(np.float32)
+
+
+def gamaka_signal(seconds: float, base_hz: float = 220.0,
+                  sr: int = ANALYSIS_SR, swing_cents: float = 90.0):
+    """Singing with heavy kampita: the pitch swings most of a semitone either
+    way.  The raw contour is nowhere near flat, but it oscillates *around* each
+    note rather than travelling, which is what makes it singing."""
+    import numpy as np
+
+    n = int(seconds * sr)
+    t = np.arange(n) / sr
+    f = np.zeros(n)
+    degrees = (0, 2, 3, 5, 7, 8, 7, 5)
+    step = max(1, n // len(degrees))
+    for i, degree in enumerate(degrees):
+        f[i * step:(i + 1) * step] = base_hz * 2 ** (degree / 12)
+    f[len(degrees) * step:] = base_hz * 2 ** (degrees[-1] / 12)
+    f *= 2 ** ((swing_cents / 1200) * np.sin(2 * np.pi * 5.5 * t))
+    phase = 2 * np.pi * np.cumsum(f) / sr
+    out = (0.60 * np.sin(phase) + 0.25 * np.sin(2 * phase)
+           + 0.10 * np.sin(3 * phase))
+    return out.astype(np.float32)
+
+
+def speech_signal(seconds: float, base_hz: float = 115.0,
+                  sr: int = ANALYSIS_SR):
+    """Speech: pitch glides continuously and never settles, and consonants
+    break the voicing up."""
+    import numpy as np
+
+    n = int(seconds * sr)
+    t = np.arange(n) / sr
+    f = base_hz * (1 + 0.45 * np.sin(2 * np.pi * 1.7 * t)
+                   + 0.25 * np.sin(2 * np.pi * 3.9 * t + 1.0))
+    phase = 2 * np.pi * np.cumsum(f) / sr
+    out = (0.60 * np.sin(phase) + 0.30 * np.sin(2 * phase)
+           + 0.20 * np.sin(3 * phase)).astype(np.float32)
+    envelope = np.ones(n, dtype=np.float32)
+    for i in range(0, n, int(0.28 * sr)):
+        envelope[i:i + int(0.09 * sr)] = 0.0
+    return out * envelope
+
+
+def lesson_signal(talk_seconds: float = 4.0, sung_seconds: float = 6.0,
+                  sa_hz: float = 261.63, sr: int = ANALYSIS_SR):
+    """Talking, then singing, then talking - all over a drone.
+
+    Returns (audio, sung_start, sung_end) so a test can say where the singing
+    actually was.
+    """
+    import numpy as np
+
+    parts = [speech_signal(talk_seconds, sr=sr),
+             sung_signal(sung_seconds, sr=sr),
+             speech_signal(talk_seconds, sr=sr)]
+    voice = np.concatenate(parts).astype(np.float32)
+    mixed = 0.75 * voice + 0.55 * drone_signal(len(voice) / sr, sa_hz, sr)
+    return mixed.astype(np.float32), talk_seconds, talk_seconds + sung_seconds
+
+
+@pytest.fixture
+def lesson_recording():
+    """The shape of the problem: a lesson, not a rendered exercise."""
+    return lesson_signal
+
+
+# --------------------------------------------------------------------------
 # environment fixtures
 # --------------------------------------------------------------------------
 @pytest.fixture
@@ -108,6 +216,117 @@ def settings(tmp_path: Path) -> Settings:
     s.learning_allow_web = False
     s.learning_autostart = False
     return s
+
+
+@pytest.fixture
+def kb_path(tmp_path: Path) -> Path:
+    """A throwaway Knowledge Base file.
+
+    Section 2 of the knowledge-base specification allows an isolated temporary
+    database for a test, and forbids one anywhere else: every test here is
+    explicitly asking for its own.
+    """
+    return tmp_path / "knowledge_base.db"
+
+
+@pytest.fixture
+def kb(kb_path: Path):
+    """An empty Knowledge Base with the core taxonomy seeded."""
+    from raagacomposer.kb.service import KnowledgeBaseService
+
+    service = KnowledgeBaseService.initialize_if_needed(kb_path)
+    try:
+        yield service
+    finally:
+        if not service.store.closed:
+            service.close()
+
+
+@pytest.fixture
+def kb_source(kb):
+    """A source to hang evidence from."""
+    from raagacomposer.kb.models import Source
+
+    return kb.add_source(Source(
+        source_type="video", title="A Kambhoji lesson",
+        author_or_channel="a teacher",
+        reference="https://youtu.be/AAAAAAAAAAA"))
+
+
+@pytest.fixture
+def kb_evidence(kb_source):
+    """A supporting evidence record from the default source."""
+    from raagacomposer.kb.models import Evidence, ExtractionMethod
+
+    def _make(source=None, *, supports=True, strength=0.8,
+              method=ExtractionMethod.AUDIO, run_id=""):
+        return Evidence(
+            source_id=(source or kb_source).source_id,
+            source_segment="0:10-0:40", timestamp_start=10.0,
+            timestamp_end=40.0, strength=strength,
+            extraction_method=method, supports=supports, run_id=run_id)
+    return _make
+
+
+@pytest.fixture
+def kb_claim():
+    """A claim about Kambhoji, ready to commit."""
+    from raagacomposer.kb import normalize
+    from raagacomposer.kb.models import KnowledgeItem, KnowledgeType, Scope
+
+    def _make(predicate="arohanam", value="S R2 G3 M1 P D2 S+",
+              statement="", *, raga="Kambhoji",
+              knowledge_type=KnowledgeType.FACT, tags=()):
+        return KnowledgeItem(
+            canonical_name=raga, knowledge_type=knowledge_type, subject=raga,
+            predicate=predicate, object_value=value,
+            statement=statement or f"{raga} {predicate} is {value}.",
+            structured_value=normalize.structured_for(predicate, value),
+            scope=[Scope.CARNATIC, Scope.RAGA], raga=raga, tags=list(tags))
+    return _make
+
+
+@pytest.fixture
+def training_settings(settings: Settings, tmp_path: Path) -> Settings:
+    settings.training_db = str(tmp_path / "training.db")
+    settings.training_allow_web = False
+    settings.knowledge_base_db = str(tmp_path / "knowledge_base.db")
+    return settings
+
+
+@pytest.fixture
+def agent_repo(tmp_path: Path):
+    """The agent's own memory, so the training bridge has somewhere to land."""
+    from raagacomposer.agent.knowledge import KnowledgeRepository
+
+    repo = KnowledgeRepository(tmp_path / "knowledge.db")
+    try:
+        yield repo
+    finally:
+        repo.close()
+
+
+@pytest.fixture
+def training(training_settings: Settings, agent_repo):
+    """A Training controller with its own store, wired to the agent."""
+    from raagacomposer.training.controller import TrainingController
+
+    controller = TrainingController(training_settings, agent_repo=agent_repo)
+    try:
+        yield controller
+    finally:
+        controller.close()
+
+
+@pytest.fixture
+def training_store(tmp_path: Path):
+    from raagacomposer.training.store import TrainingStore
+
+    store = TrainingStore(tmp_path / "training-only.db")
+    try:
+        yield store
+    finally:
+        store.close()
 
 
 @pytest.fixture

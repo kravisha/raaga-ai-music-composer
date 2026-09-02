@@ -83,12 +83,114 @@ learning** to let it work in the background while you compose.
 * **Your corrections count.** Say *"This does not sound like Keeravani"* and it
   lowers its confidence in the phrases it leaned on, and stops using them.
 
+### The Training tab
+
+A second way to teach it, and the one that scales: **search for material,
+choose what it may learn from, and read what it made of each source.**
+
+1. Type what you are after - *Kamboji raga beginner lesson*, *Carnatic gamaka
+   techniques*, *Keeravani arohanam avarohanam tutorial*. Raaga names are
+   matched across spellings, so *Kamboji*, *Kambhoji*, *Yaman* and *Bhoop* all
+   find the right one.
+2. Press **Search**. About ten candidates come back, each showing what it is,
+   how relevant it looks, and - the column that matters - whether its content
+   can actually be reached.
+3. **Tick the ones it may learn from.** Nothing is ticked for you. Searching is
+   not approving, and the system never learns from a result you did not choose.
+4. **Add to learning queue**, then **Start learning**. One source at a time,
+   with the stage it has reached shown as it goes.
+5. Read the **Learning Report**: what the source contained, what it understood,
+   what it *learned* (kept separate), what it already knew that this confirmed,
+   anything that contradicted what it held, what this changes about the music,
+   and what to study next.
+
+Every learned item keeps its provenance - which source, which run, which
+objective, which timestamp, what evidence, what confidence - and the
+**Knowledge base** tab will show you all of it for any item you select. You can
+mark an item incorrect or approve a disputed one; nothing important ever
+changes without leaving a trace.
+
+**What it will and will not do.** It does not download from the internet. A
+source on the network is listed honestly as `Metadata only` and its report says
+`METADATA ONLY - CONTENT NOT ANALYZED` rather than pretending it sat through
+the lesson. Nothing here logs in, follows a paywall, or works around a
+download protection. When a source is out of reach it offers you the two ways
+forward that are actually yours to take: **supply the file** or **provide the
+transcript**. Do either and the same source becomes a real lesson.
+
+There is also a **third** kind of source, and it is the one that works on a
+machine with no network and nothing of your own: exercises the system builds
+from its own raaga library, plays, and then listens back to. A student playing
+a scale to hear it.
+
+**Heard is not the same as read.** A phrase it tracked and identified by ear
+becomes something the composer can quote. A phrase a teacher merely *stated* in
+a transcript is recorded for you to see but deliberately withheld from the
+music, because nothing has verified it. The report says which is which.
+
+### What it knows, and where it got it
+
+Behind both the Learning and Training tabs is one **Knowledge Base** - a single
+SQLite file that is created once and then grows. It is not recreated when you
+restart, upgrade or reinstall, and a damaged one is never quietly replaced with
+an empty one: it is kept, a copy is preserved, and you are told.
+
+Knowledge in it is a network rather than a list. Ask about Kambhoji and you
+reach not only its definition but its characteristic phrases, its gamakas, the
+things it must *not* do, the examples that demonstrate it, and the sources
+behind each of those - because they all hang off Kambhoji as connected nodes.
+Spelling does not matter: *Kamboji*, *Kambhoji* and *Khamaj* all arrive at the
+same entity.
+
+Four things it will not do:
+
+* **It will not lose a source.** Every learned claim carries which source, which
+  learning run, where in that source, what evidence, and whether it was heard,
+  read or inferred. Ask any item where it came from and it can tell you.
+* **It will not pile up copies.** The same fact from ten teachers is one
+  canonical claim with ten evidence records, and confidence that rises because
+  the sources are independent - not ten rows.
+* **It will not overwrite a disagreement.** When a source contradicts something
+  held, both are kept, the conflict is recorded with a recommendation, and a
+  person decides. Music disagrees for good reasons and "context-dependent" is
+  one of the answers you can give.
+* **It will not turn a guess into a fact.** Confidence is stored with the
+  reasoning that produced it, so a score can be read back as a sentence -
+  *"0.63 from direct demonstration +0.20, independent sources +0.15..."*
+
+You can mark anything incorrect, approve a disputed claim, or adjust its
+confidence, and the previous reading is kept with a note of who changed it and
+why. Nothing important ever changes without leaving a trace.
+
 ### Teaching it from your own recordings
 
 **Choose my learning folder...** points it at audio you are entitled to use.
-Name the files or folders after the raaga - `Keeravani-alapana.wav` - so it
-knows what it is hearing. It will analyse them, extract phrases, and record
-where every fact came from.
+Name the files or folders after the raaga - `Keeravani-alapana.wav`, or a
+folder called `Keeravani` - so it knows what it is hearing; a file whose name
+and folder mention no raaga is not picked up by any of them. Aliases count, so
+`Yaman` is read as Kalyani. Audio only: `.wav`, `.flac`, `.ogg`, `.aiff`,
+`.mp3` - a video file is ignored, so extract its audio first. Only the first
+two minutes of each file are analysed, so several short clips teach it more
+than one long class.
+
+A real recording is not a rendered exercise, and it is not treated as one. A
+lesson is somebody talking, over a tanpura or shruti box that never stops,
+occasionally singing - so before the ears hear it:
+
+* **The drone is found and taken out**, and its fundamental becomes Sa. A
+  tanpura exists to declare the tonic, so it is believed rather than guessed
+  at. A long held note is *not* mistaken for a drone: a drone sounds for the
+  whole recording and brings a chord of partials, where a held note brings only
+  itself.
+* **The talking is silenced.** Singing holds a pitch - where it is ornamented
+  it oscillates around one - and speech glides and never settles. That is the
+  whole test: no language model, and nothing that needs to know Telugu or
+  Tamil. Gamaka swinging well over a semitone still reads as singing.
+
+Silenced stretches are muted in place, never cut out, so every timestamp still
+means what it meant. If the gate cannot make sense of a recording it says so
+and leaves the audio alone rather than handing back silence. It will analyse
+what remains, extract phrases, and record where every fact came from.
 
 With no folder chosen it still learns: it renders exercises from its own
 structural library and listens to itself, the way a student plays a scale to
@@ -257,6 +359,12 @@ raagacomposer/
   voice/            singer profiles, singing synthesis, vocal mastering
   audio/            DSP, playback engine, export (WAV/MP3/MIDI/MusicXML/stems)
   speech/           microphone capture, speech adapters, intent and timeline parsing
+  agent/            the student: memory, curriculum, ears, practice, critic
+  training/         the Training tab: search providers, access policy, ingestion
+                    pipeline, objectives, validation, queue
+  kb/               the Knowledge Base: the durable knowledge network, its
+                    normalization, confidence model, hybrid retrieval, context
+                    builder, librarian and migrations
   providers/        provider abstraction and adapters
   ui/               PySide6 desktop UI: main window, timeline widget, panels
 tests/
@@ -269,7 +377,7 @@ packaging/          PyInstaller spec, Windows build and shortcut scripts
 
 ## Tests
 
-685 tests in three suites, all run with pytest.
+913 tests in three suites, all run with pytest.
 
 ```
 tests\run_all.bat                 everything (about five minutes)
@@ -279,9 +387,9 @@ tests\run_fast.bat                unit + regression only (about ten seconds)
 or directly:
 
 ```
-.venv\Scripts\python.exe -m pytest tests\unit -q          501 tests
-.venv\Scripts\python.exe -m pytest tests\integration -q   143 tests
-.venv\Scripts\python.exe -m pytest tests\regression -q     41 tests
+.venv\Scripts\python.exe -m pytest tests\unit -q          657 tests
+.venv\Scripts\python.exe -m pytest tests\integration -q   197 tests
+.venv\Scripts\python.exe -m pytest tests\regression -q     59 tests
 .venv\Scripts\python.exe -m pytest tests -q -m "not slow"
 ```
 
@@ -317,6 +425,26 @@ with real synthesis and real files on disk:
   Brief answered from memory, Generate Tune composing from learned phrases,
   learning controlled from the UI, and the whole original workflow still
   running.
+* `test_training_acceptance.py` - the Training specification's section 19
+  demonstration, one test per numbered step, from typing the search phrase
+  through to closing the application and finding the history and the learned
+  knowledge still there.
+* `test_kb_acceptance.py` - the knowledge-base specification's own ten
+  acceptance tests, numbered as it numbers them: knowledge surviving a
+  restart, a fact naming its source and run, one canonical fact with two
+  evidence records, a contradiction recorded rather than overwritten,
+  retrieval that answers what composing actually needs, a correction and its
+  history surviving a restart, committed knowledge surviving an abrupt
+  termination, a training run integrating into the Knowledge Base, Compose
+  reading through the service with a retrieval trace, and a restart plus
+  schema migration leaving everything intact.
+* `test_training_flow.py` - what the specification spends most of its words
+  on: a source that cannot be fetched saying so, supplying the file or the
+  transcript turning it into a real lesson, relearning without destroying the
+  earlier report, a failed source that still produces a report, and a run
+  interrupted by a crash being returned to the queue.
+* `test_preprocess_in_research.py` - a lesson recording dropped in the
+  learning folder, prepared and then heard.
 
 **Regression** - each test names a defect that was actually found here and
 fixed, so a failure explains itself: a control character that silently killed a
