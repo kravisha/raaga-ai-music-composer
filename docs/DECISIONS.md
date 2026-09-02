@@ -190,6 +190,105 @@ the raaga and cadences correctly, but it quotes the raaga's idioms less often
 than a musician would. That is the next piece of work, and the evaluator says
 so on every tune rather than the number being quietly reweighted.
 
+## Language-model providers and routing
+
+Added 2026-09-02. The composer had one optional cloud adapter and an
+all-or-nothing switch. It now has several backends and one place that chooses
+between them. What the application asks for did not change.
+
+**Five tasks, not one.** `providers/tasks.py` records what each of the five
+`LLMProvider` methods actually is: how hard it is, whether its quality is
+heard, whether it is on the critical path of a spoken instruction. Writing a
+line to an exact syllable count and stress pattern is not the same job as
+deciding that "add veena here" is an `arrange.add`, and a router that cannot
+tell them apart either overpays for the second or underserves the first. The
+taxonomy is data next to the interface it describes rather than knowledge
+spread through the adapters.
+
+**One prompt per task, whoever answers it.** `providers/prompts.py` holds the
+wording and the parsing for all backends. A local 3B model and Claude are then
+answering the same question, so moving a task between them does not silently
+change what was asked, and a poor answer is the model's doing rather than the
+prompt's. Parsing is deliberately forgiving - fenced blocks, a preamble
+sentence, `{"lines": [...]}` instead of a bare list - because small local
+models are much less obedient about returning bare JSON than a frontier model
+is, and every backend needs the same tolerance.
+
+**One model per adapter instance.** `ClaudeLLM` is one model, and the registry
+builds two of them - a strong one and a cheap fast one. An adapter is not in a
+position to know whether it is the right choice for a job; that is the
+router's decision and it needs two candidates to make it.
+
+**Routing on complexity, then cost, then what is actually up.** A hard task
+sorts by strength and goes to the best backend running. An easy one sorts by
+price and goes to the cheapest, which is a local model when there is one,
+because local is free. A latency-critical task - intent classification, which
+is reached mid-sentence after the rule tables have already failed - prefers a
+local backend outright: an answer now beats a better answer after a network
+round trip. A middling task takes the cheapest backend that clears a strength
+floor, so the small local model is its fallback rather than its first choice.
+`strength` and `cost_per_mtok` on the provider interface are coarse on
+purpose: their job is to order four candidates, not to predict anything.
+
+**Failure is a routing event, not an error.** A backend that raises - offline,
+rate limited, refused, a model that went away - hands the task to the next in
+the chain. So does one that returns nothing parseable. Beneath every chain is
+the floor that was always there: no answer means the caller uses the built-in
+rule and lexicon engines, which is why the application still works with
+nothing installed and no key. That path is the default, not the degraded case.
+
+**A key is noticed while running.** The registry hands the router *factories*,
+not instances, so a backend can be rebuilt later. Before each request the
+router re-reads whether a key exists - an environment or file lookup,
+deliberately not a network call, so it stays out of the way of a spoken
+instruction - and rebuilds its backends when that answer changes. Adding
+`ANTHROPIC_API_KEY` or a line to `credentials.json` switches Claude on with the
+application already running. No restart, no code change. That was the
+requirement; this is the mechanism.
+
+**Thinking only where it pays, and with room to do it.** Adaptive thinking is
+sent on the two quality-critical tasks and nowhere else, because elsewhere it
+buys latency and nothing else. Where it is on, `max_tokens` is raised well
+above the task's own ceiling: the reasoning and the answer share that budget,
+and a long think against a tight ceiling truncates the reply we actually
+wanted. `output_config.effort` and adaptive thinking are sent only to models
+that accept them - `MODELS[...].effort` is a correctness flag, not a
+preference, since sending either to an older model is a 400.
+
+**Claude Opus 5 is the default for the heavy tier**, Haiku 4.5 for the light
+one, both overridable in settings without touching code. The previous default
+was Sonnet 5; it remains a valid choice and is in the table.
+
+**A capability floor on the two tasks whose quality is heard.** This one is
+measured rather than reasoned. Running `llama3.2:3b` through Ollama on this
+machine, CPU only: intent classification, instrument choice and a spoken
+answer all came back in 6-46 seconds and were sensible. Ten lyric lines took
+**704 seconds and produced nothing usable**; the run before it answered in
+Tamil script, which `fitting.syllabify` cannot count and the synthesiser
+cannot sing, so every line scored zero syllables. The built-in lexicon engine
+fits the same ten exactly, in well under a second. A backend below the floor
+is therefore excluded from `write_lyrics` and `suggest_raagas` rather than
+ranked last: trying it is not a slow answer, it is a three-minute wait for a
+worse one. The floor is on capability, not on being local - `llm_local_strength`
+is the dial, and a genuinely larger local model clears it.
+
+**Two things a real model exposed that stubs had not.** Ollama's JSON mode
+constrains output to a JSON *object*, so a prompt asking for a bare array got
+`{"raaga": ...}` where a list was expected, and `{"1": "...", "2": "..."}`
+where numbered lines were. Both are reasonable readings of the request, so the
+prompts now name the exact shape they want and the parsers accept the
+numbered-key and single-object forms as well. Separately, a drafted line that
+cannot be syllabified is now replaced by position in `lyrics/generator.py` -
+that guards against *any* backend ignoring the transliteration instruction,
+Claude included, and it is covered by `test_lyrics_script_regressions.py`.
+
+**Nothing downloads a model.** Ollama and llama.cpp adapters exist and are
+tested; neither fetches weights. An adapter with no model reports itself
+unavailable and names the one command that would fix it, exactly as the speech
+backends do. Ollama being up with the wrong model pulled is reported as
+unavailable rather than answered with a substitute, for the same reason the
+arranger never quietly swaps an instrument the creator named.
+
 ## Not built, deliberately
 
 * Video, dialogue, scene generation and lip sync - specification section 24

@@ -22,8 +22,12 @@ dependencies = [
 # without them the identical command pipeline runs from typed input.
 speech = ["vosk>=0.3.45"]
 speech-whisper = ["faster-whisper>=1.0"]
-# Cloud language model for richer lyric writing and fuzzy intent.
+# Claude, for the work whose quality is heard. Optional: without it the
+# built-in rule and lexicon engines run instead.
 llm = ["anthropic>=0.40"]
+# A small local model loaded in process from a GGUF file. The other local
+# route, Ollama, is a separate application and needs no Python package.
+llm-local = ["llama-cpp-python>=0.2.70"]
 build = ["pyinstaller>=6.4"]
 dev = ["pytest>=8.0"]
 
