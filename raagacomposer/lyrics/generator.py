@@ -19,7 +19,8 @@ from typing import Dict, List, Optional, Sequence
 
 from ..core.logging_setup import get_logger
 from ..core.models import CreativeBrief, LyricsVersion, MelodyVersion
-from .fitting import PhraseSlot, build_slots, fit_lines, syllabify
+from .fitting import (PhraseSlot, build_slots, count_syllables, fit_lines,
+                      syllabify)
 
 log = get_logger("lyrics")
 
@@ -230,6 +231,23 @@ def generate(melody: MelodyVersion, brief: CreativeBrief, version: int = 1,
         except Exception as exc:  # noqa: BLE001 - fall back, never block
             log.warning("LLM lyrics failed (%s); using the local engine", exc)
             lines = []
+    # A line the singer cannot pronounce is not a line.  A model may ignore
+    # the request for Roman transliteration and answer in a native script,
+    # which the syllable engine cannot count and the synthesiser cannot sing.
+    # Those are replaced one for one - by position, so the remaining lines
+    # stay with the slots they were written for - and the lexicon engine
+    # supplies the substitute.
+    fallback: Optional[List[str]] = None
+    kept: List[str] = []
+    for i, text in enumerate(lines):
+        if count_syllables(text) > 0:
+            kept.append(text)
+            continue
+        log.warning("unsingable lyric line discarded: %r", text[:40])
+        if fallback is None:
+            fallback = generate_lines(slots, brief, seed)
+        kept.append(fallback[i] if i < len(fallback) else "")
+    lines = kept
     if len(lines) < len(slots):
         local = generate_lines(slots, brief, seed)
         lines = lines + local[len(lines):]

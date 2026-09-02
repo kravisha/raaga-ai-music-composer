@@ -2,8 +2,12 @@
 vosk>=0.3.45
 faster-whisper>=1.0
 
-# Cloud language model for richer lyrics and fuzzy intent
+# Claude, for the work whose quality is heard (lyrics, raaga reasoning)
 anthropic>=0.40
 
 # Windows packaging
 pyinstaller>=6.4
+
+# Local language model, loaded in process from a GGUF file. The other local
+# route, Ollama, is a separate application and needs no Python package.
+llama-cpp-python>=0.2.70
