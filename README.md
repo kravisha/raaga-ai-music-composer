@@ -377,7 +377,7 @@ packaging/          PyInstaller spec, Windows build and shortcut scripts
 
 ## Tests
 
-TOTALPLACEHOLDER tests in three suites, all run with pytest.
+913 tests in three suites, all run with pytest.
 
 ```
 tests\run_all.bat                 everything (about five minutes)
@@ -387,9 +387,9 @@ tests\run_fast.bat                unit + regression only (about ten seconds)
 or directly:
 
 ```
-.venv\Scripts\python.exe -m pytest tests\unit -q          UNITPLACEHOLDER tests
-.venv\Scripts\python.exe -m pytest tests\integration -q   INTPLACEHOLDER tests
-.venv\Scripts\python.exe -m pytest tests\regression -q     REGPLACEHOLDER tests
+.venv\Scripts\python.exe -m pytest tests\unit -q          657 tests
+.venv\Scripts\python.exe -m pytest tests\integration -q   197 tests
+.venv\Scripts\python.exe -m pytest tests\regression -q     59 tests
 .venv\Scripts\python.exe -m pytest tests -q -m "not slow"
 ```
 

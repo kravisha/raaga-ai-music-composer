@@ -93,7 +93,7 @@ def test_the_window_builds_with_every_panel(window):
                   window.tune, window.lyrics, window.voice, window.output,
                   window.arrangement, window.conversation, window.agent_panel):
         assert panel is not None
-    assert window.tabs.count() == 5
+    assert window.tabs.count() == 6
     assert [window.tabs.tabText(i) for i in range(5)] == \
         ["Tune", "Lyrics", "Voice", "Output", "Learning"]
 

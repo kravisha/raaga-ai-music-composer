@@ -39,6 +39,18 @@ def _stamp(value: float) -> str:
     return time.strftime("%H:%M:%S", time.localtime(value)) if value else "-"
 
 
+def _narrow(combo: QComboBox, characters: int = 14) -> QComboBox:
+    """Stop one long entry from setting the whole window's minimum width.
+
+    A combo box asks for room for its longest item, so "Exercises it can play
+    itself" alone demanded 366px.  Bounding it lets the popup stay readable
+    while the closed control stays the size of the row it sits in.
+    """
+    combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+    combo.setMinimumContentsLength(characters)
+    return combo
+
+
 def _table(columns) -> QTableWidget:
     table = QTableWidget(0, len(columns))
     table.setHorizontalHeaderLabels(list(columns))
@@ -77,6 +89,14 @@ class TrainingPanel(QWidget):
         self.status.setObjectName("hint")
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
+
+        # Every other tab says how small it is willing to be, so the window can
+        # be smaller than the panel's natural size and the tables scroll inside
+        # it. Without this the tab dictated the whole window's minimum - which
+        # is the defect REG-070 exists to catch. The figures match the panel
+        # this one most resembles, the arrangement panel.
+        self.setMinimumWidth(560)
+        self.setMinimumHeight(320)
 
         # The queue works on its own thread; the view is refreshed on a timer
         # rather than from that thread, exactly as the rest of the app does.
@@ -145,18 +165,28 @@ class TrainingPanel(QWidget):
         top.addWidget(search_btn)
         top.addWidget(clear_btn)
 
+        # Nine controls and a long-labelled button on one row demanded 1502px
+        # of the window, which is more than an ordinary screen has. They sit on
+        # two rows instead: what to look for, then how to narrow it.
         filters = QHBoxLayout()
         for widget in (QLabel("Results"), self.max_results,
-                       self.source_filter, self.content_type, self.difficulty,
-                       self.duration, self.language, self.include,
-                       self.exclude):
+                       _narrow(self.source_filter, 16),
+                       _narrow(self.content_type),
+                       _narrow(self.difficulty),
+                       _narrow(self.duration)):
             filters.addWidget(widget)
         filters.addStretch(1)
-        filters.addWidget(suggest_btn)
+
+        words = QHBoxLayout()
+        for widget in (self.language, self.include, self.exclude):
+            words.addWidget(widget)
+        words.addStretch(1)
+        words.addWidget(suggest_btn)
 
         layout = QVBoxLayout(box)
         layout.addLayout(top)
         layout.addLayout(filters)
+        layout.addLayout(words)
         return box
 
     def _results_box(self) -> QGroupBox:
@@ -588,7 +618,11 @@ class TrainingPanel(QWidget):
 
     # ==================================================================
     def refresh(self) -> None:
-        if self.training is None:
+        # The timer keeps firing while the window is being torn down, and the
+        # store closes first. Reading it then raises out of a Qt slot, where
+        # nothing can catch it - so the view simply stops updating instead.
+        if self.training is None or self.training.store.closed:
+            self._timer.stop()
             return
         self._queue_rows = self.training.queue_snapshot()
         table = self.queue_table
