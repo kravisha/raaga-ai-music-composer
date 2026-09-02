@@ -6,6 +6,7 @@ profiles or projects.
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 import tempfile
@@ -24,6 +25,21 @@ _TEST_HOME = Path(tempfile.gettempdir()) / "raagacomposer-test-home"
 _TEST_HOME.mkdir(parents=True, exist_ok=True)
 os.environ["RAAGA_COMPOSER_HOME"] = str(_TEST_HOME)
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+# The suite must give the same answer on a machine with Ollama running and a
+# key in the environment as on one with neither, so both are switched off
+# here - in the one file every suite loads - and no test can reach a real
+# model or spend real money.  The settings file is rewritten at the start of
+# every session for the same reason: this directory outlives a run, and a
+# stale projects_dir left in it once made a regression test depend on which
+# of last week's temporary folders still existed.
+os.environ.pop("ANTHROPIC_API_KEY", None)
+(_TEST_HOME / "settings.json").write_text(json.dumps({
+    "llm_provider": "off",
+    "llm_routing": "off",
+    "projects_dir": str(_TEST_HOME / "projects"),
+    "recent_projects": [],
+}, indent=2), encoding="utf-8")
 
 from raagacomposer.core.models import CreativeBrief          # noqa: E402
 from raagacomposer.core.settings import Settings             # noqa: E402

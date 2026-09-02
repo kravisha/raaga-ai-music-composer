@@ -40,9 +40,21 @@ class Provider:
 
 
 class LLMProvider(Provider):
-    """Text intelligence: lyrics, raaga reasoning, fuzzy intent."""
+    """Text intelligence: lyrics, raaga reasoning, fuzzy intent.
+
+    The three attributes below are what the router sorts on.  They are
+    deliberately coarse: their job is to order a handful of backends, not to
+    predict anything.  ``strength`` is a rough capability score out of 100 and
+    ``cost_per_mtok`` is a blended USD price per million tokens, assuming three
+    input tokens per output token - the shape of every request this
+    application makes.  A local model costs nothing to run, so it scores 0 and
+    sorts first whenever price is the tie-breaker.
+    """
 
     kind = "llm"
+    is_local = False             # runs on this machine: no network, no bill
+    strength = 50                # rough capability out of 100, for ordering
+    cost_per_mtok = 0.0          # blended USD per million tokens; 0 = free
 
     def write_lyrics(self, slots: Sequence[Any], brief: Any) -> List[str]:
         raise NotImplementedError
@@ -108,4 +120,12 @@ class ProviderSet:
                         f"  {info.detail}")
         if self.stt_name:
             rows.append(f"stt    {self.stt_name}")
+        # When several language models are configured, which one answers what
+        # is the first thing anyone asks - so it belongs in the same place the
+        # providers themselves are reported.
+        routing = getattr(self.llm, "explain_routing", None)
+        if callable(routing) and self.llm is not None and self.llm.available:
+            rows.append("")
+            rows.append("routing (task, complexity, backends in order tried):")
+            rows.extend("  " + line for line in routing().splitlines())
         return "\n".join(rows)

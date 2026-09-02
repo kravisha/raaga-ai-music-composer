@@ -25,6 +25,20 @@ hiddenimports = [
     "numpy",
 ]
 
+# Claude is optional, and the adapter imports it inside a try block so the
+# application runs without it.  But if it is installed when the bundle is
+# built it has to be carried into the bundle, or adding a key to the packaged
+# application would silently do nothing - and switching Claude on by adding a
+# key, with no code change, is the point of the provider layer.  llama-cpp is
+# deliberately not listed: it is large, it ships its own binaries, and the
+# creator who wants it installs it themselves.
+try:
+    import anthropic                                            # noqa: F401
+except ImportError:
+    pass
+else:
+    hiddenimports.append("anthropic")
+
 a = Analysis(
     [str(ROOT / "raagacomposer" / "__main__.py")],
     pathex=[str(ROOT)],

@@ -48,7 +48,25 @@ ENV_KEYS = {
 @dataclass
 class Settings:
     projects_dir: str = ""
-    llm_provider: str = "auto"          # auto | local | anthropic
+    # auto | off | claude | ollama | llamacpp.  "local" and "anthropic" are
+    # accepted as the older names for "off" and "claude".
+    llm_provider: str = "auto"
+    # How the router chooses between the backends that are up:
+    # auto | local_first | claude_first | local_only | claude_only | off.
+    llm_routing: str = "auto"
+    llm_claude_model: str = "claude-opus-5"        # quality-critical work
+    llm_claude_light_model: str = "claude-haiku-4-5"   # cheap, high-volume work
+    llm_claude_effort: str = "medium"              # low | medium | high | xhigh | max
+    llm_claude_thinking: bool = True               # adaptive, on hard tasks only
+    llm_local_endpoint: str = "http://127.0.0.1:11434"
+    llm_local_model: str = "llama3.2:3b"
+    llm_local_gguf: str = ""            # blank = first *.gguf in <config>/models/llm
+    llm_local_strength: int = 40        # rough capability of the local model, 0-100
+    # A small model on a CPU is slow: writing a full lyric takes far longer
+    # than any remote call. Too low a ceiling here does not fail the request,
+    # it silently routes the work away from the local model.
+    llm_local_timeout: float = 180.0
+    llm_refresh_seconds: float = 30.0   # how often to notice a key being added
     stt_provider: str = "auto"          # auto | none | vosk | whisper
     music_provider: str = "local"
     voice_provider: str = "local"
