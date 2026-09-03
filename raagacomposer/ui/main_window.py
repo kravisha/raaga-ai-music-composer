@@ -1,26 +1,30 @@
-"""Main desktop window (spec section 14).
+"""Main desktop window (spec section 14; workspaces per spec section 4).
 
-A native Qt window: project header, creative brief and raaga down the left; tune,
-lyrics, voice and output as tabs in the centre above the arrangement timeline;
-the conversation with the microphone down the right; transport and job progress
-along the top and bottom.
+Two top-level workspaces share this one window: MAIN, the composition
+experience - project header, creative brief and raaga down the left; tune,
+lyrics, voice and output as tabs in the centre above the arrangement
+timeline - and LEARN, the agent's own screen (see ``learn_workspace.py``).
+A toolbar toggle and a View menu switch between them; the conversation dock,
+transport and status bar are shared by both.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QAction, QKeySequence
-from PySide6.QtWidgets import (QApplication, QDockWidget, QFileDialog, QHBoxLayout,
-                               QLabel, QMainWindow, QMessageBox, QProgressBar,
-                               QPushButton, QScrollArea, QSlider, QSplitter,
-                               QStatusBar, QTabWidget, QToolBar, QVBoxLayout,
-                               QWidget)
+from PySide6.QtGui import QAction, QActionGroup, QKeySequence
+from PySide6.QtWidgets import (QApplication, QButtonGroup, QDockWidget,
+                               QFileDialog, QHBoxLayout, QLabel, QMainWindow,
+                               QMessageBox, QProgressBar, QPushButton,
+                               QScrollArea, QSlider, QSplitter, QStackedWidget,
+                               QStatusBar, QTabWidget, QToolBar, QToolButton,
+                               QVBoxLayout, QWidget)
 
 from ..app import AppController
 from ..core.logging_setup import get_logger
 from ..music.theory import format_time
 from . import theme
+from .learn_workspace import LearnWorkspace, provider_summary_line
 from .panels.agent_panel import AgentPanel
 from .panels.training_panel import TrainingPanel
 from .panels.arrangement_panel import ArrangementPanel
@@ -32,6 +36,7 @@ from .panels.project_panel import ProjectPanel
 from .panels.raaga_panel import RaagaPanel
 from .panels.tune_panel import TunePanel
 from .panels.voice_panel import VoicePanel
+from .settings_dialog import SettingsDialog
 
 log = get_logger("ui")
 
@@ -57,7 +62,20 @@ class MainWindow(QMainWindow):
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
         self._timer.start(60)
+
+        # Provider status (spec 41) is read on its own, slower cadence - the
+        # status bar label and it never need to be fresher than 30s, and some
+        # backends' ``.status()`` probes real infrastructure (Ollama's HTTP
+        # check) that need not run on every 60ms tick.
+        self._provider_timer = QTimer(self)
+        self._provider_timer.timeout.connect(self._refresh_provider_status)
+        self._provider_timer.start(30000)
+        self._refresh_provider_status()
+
         self.refresh()
+        # Two top-level workspaces (spec section 4): restore whichever one
+        # was open last, MAIN by default.
+        self.set_workspace(self.app.settings.extra.get("workspace", "MAIN"))
 
     # ==================================================================
     # construction
@@ -92,9 +110,14 @@ class MainWindow(QMainWindow):
         self.lyrics = LyricsPanel(self.app)
         self.voice = VoicePanel(self.app)
         self.output = OutputPanel(self.app)
+        # The learning agent and training panels are built here (MAIN and
+        # LEARN share one AppController and one set of widget instances) but
+        # are no longer added to this tab bar - spec section 4 makes LEARN a
+        # separate top-level workspace, not a tab beside Tune and Lyrics.
         self.agent_panel = AgentPanel(self.app)
+        self.training_panel = TrainingPanel(self.app)
         for panel in (self.tune, self.lyrics, self.voice, self.output,
-                      self.agent_panel):
+                      self.agent_panel, self.training_panel):
             panel.changed.connect(self.refresh)
 
         self.tabs = QTabWidget()
@@ -102,9 +125,6 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self.lyrics, "Lyrics")
         self.tabs.addTab(self.voice, "Voice")
         self.tabs.addTab(self.output, "Output")
-        self.tabs.addTab(self.agent_panel, "Learning")
-        self.training_panel = TrainingPanel(self.app)
-        self.tabs.addTab(self.training_panel, "Training")
 
         self.arrangement = ArrangementPanel(self.app)
         self.arrangement.changed.connect(self.refresh)
@@ -128,12 +148,42 @@ class MainWindow(QMainWindow):
         splitter.addWidget(left_scroll)
         splitter.addWidget(centre)
         splitter.setSizes([360, 1000])
-        self.setCentralWidget(splitter)
+        self.main_page = splitter
+
+        # LEARN: a separate full workspace (spec 4.2), built by re-homing the
+        # widgets already inside agent_panel and training_panel.
+        self.learn_workspace = LearnWorkspace(
+            self.app, self.agent_panel, self.training_panel,
+            open_settings=self._open_settings)
+
+        self.workspaces = QStackedWidget()
+        self.workspaces.addWidget(self.main_page)   # index 0: MAIN
+        self.workspaces.addWidget(self.learn_workspace)  # index 1: LEARN
+        self.setCentralWidget(self.workspaces)
 
     def _build_toolbar(self) -> None:
         bar = QToolBar("Transport")
         bar.setMovable(False)
         self.addToolBar(bar)
+
+        # Workspace switch (spec section 4): two mutually exclusive toggle
+        # buttons at the left end of the transport toolbar, ahead of every
+        # transport control.
+        self.main_ws_btn = QToolButton()
+        self.main_ws_btn.setText("MAIN")
+        self.main_ws_btn.setCheckable(True)
+        self.learn_ws_btn = QToolButton()
+        self.learn_ws_btn.setText("LEARN")
+        self.learn_ws_btn.setCheckable(True)
+        self._workspace_group = QButtonGroup(self)
+        self._workspace_group.setExclusive(True)
+        self._workspace_group.addButton(self.main_ws_btn)
+        self._workspace_group.addButton(self.learn_ws_btn)
+        self.main_ws_btn.clicked.connect(lambda: self.set_workspace("MAIN"))
+        self.learn_ws_btn.clicked.connect(lambda: self.set_workspace("LEARN"))
+        bar.addWidget(self.main_ws_btn)
+        bar.addWidget(self.learn_ws_btn)
+        bar.addSeparator()
 
         self.play_btn = QPushButton("Play")
         self.play_btn.setObjectName("primary")
@@ -204,6 +254,24 @@ class MainWindow(QMainWindow):
         edit_menu.addSeparator()
         self._action(edit_menu, "Clear time selection", None,
                      lambda: (self.app.set_selection(None, None), self.refresh()))
+        edit_menu.addSeparator()
+        self._action(edit_menu, "Settings...", "Ctrl+,", self._open_settings)
+
+        view_menu = menu.addMenu("&View")
+        self.main_ws_action = QAction("Main workspace", self)
+        self.main_ws_action.setCheckable(True)
+        self.main_ws_action.setShortcut(QKeySequence("Ctrl+1"))
+        self.main_ws_action.triggered.connect(lambda: self.set_workspace("MAIN"))
+        self.learn_ws_action = QAction("Learn workspace", self)
+        self.learn_ws_action.setCheckable(True)
+        self.learn_ws_action.setShortcut(QKeySequence("Ctrl+2"))
+        self.learn_ws_action.triggered.connect(lambda: self.set_workspace("LEARN"))
+        self._workspace_actions = QActionGroup(self)
+        self._workspace_actions.setExclusive(True)
+        self._workspace_actions.addAction(self.main_ws_action)
+        self._workspace_actions.addAction(self.learn_ws_action)
+        view_menu.addAction(self.main_ws_action)
+        view_menu.addAction(self.learn_ws_action)
 
         make_menu = menu.addMenu("&Compose")
         self._action(make_menu, "Generate tune", "Ctrl+T",
@@ -222,6 +290,9 @@ class MainWindow(QMainWindow):
                      lambda: self.app.render("full"))
 
         learn_menu = menu.addMenu("&Learning")
+        self._action(learn_menu, "Open the Learn workspace", None,
+                     lambda: self.set_workspace("LEARN"))
+        learn_menu.addSeparator()
         self._action(learn_menu, "Start / pause learning", "Ctrl+Shift+L",
                      self.agent_panel._toggle_learning)
         self._action(learn_menu, "Study one lesson now", None,
@@ -257,12 +328,49 @@ class MainWindow(QMainWindow):
 
     def _build_status(self) -> None:
         self.setStatusBar(QStatusBar())
+
+        # Provider status (spec 41): never shows a secret, only state words.
+        self.provider_status_label = QLabel("-")
+        self.provider_status_label.setObjectName("hint")
+        self.provider_settings_btn = QPushButton("Settings")
+        self.provider_settings_btn.setFlat(True)
+        self.provider_settings_btn.clicked.connect(self._open_settings)
+        self.statusBar().addPermanentWidget(self.provider_status_label)
+        self.statusBar().addPermanentWidget(self.provider_settings_btn)
+
         self.job_progress = QProgressBar()
         self.job_progress.setFixedWidth(190)
         self.job_progress.setRange(0, 100)
         self.job_progress.setTextVisible(True)
         self.statusBar().addPermanentWidget(self.job_progress)
         self.statusBar().showMessage("Ready")
+
+    # ==================================================================
+    # workspaces (spec section 4) and settings (spec 41, 42)
+    # ==================================================================
+    def set_workspace(self, name: str) -> None:
+        """Switch between the MAIN and LEARN top-level workspaces."""
+        name = "LEARN" if name == "LEARN" else "MAIN"
+        self.workspaces.setCurrentIndex(1 if name == "LEARN" else 0)
+        self.main_ws_btn.setChecked(name == "MAIN")
+        self.learn_ws_btn.setChecked(name == "LEARN")
+        self.main_ws_action.setChecked(name == "MAIN")
+        self.learn_ws_action.setChecked(name == "LEARN")
+        self.app.settings.extra["workspace"] = name
+        self.app.settings.save()
+        if name == "LEARN":
+            self.learn_workspace.refresh()
+
+    def _open_settings(self) -> None:
+        dialog = SettingsDialog(self.app, self)
+        dialog.exec()
+        self._refresh_provider_status()
+
+    def _refresh_provider_status(self) -> None:
+        text = provider_summary_line(self.app.provider_statuses())
+        self.provider_status_label.setText(text)
+        if hasattr(self, "learn_workspace"):
+            self.learn_workspace.set_provider_line(text)
 
     # ==================================================================
     # project actions
@@ -368,6 +476,7 @@ class MainWindow(QMainWindow):
         self.voice.refresh()
         self.output.refresh()
         self.agent_panel.refresh()
+        self.learn_workspace.refresh()
         self.arrangement.refresh()
         self.undo_action.setText(f"Undo {self.app.undo.undo_label()}".strip())
         self.redo_action.setText(f"Redo {self.app.undo.redo_label()}".strip())
@@ -383,8 +492,8 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(text, 20000)
 
     def _show_knowledge(self) -> None:
-        self.tabs.setCurrentWidget(self.agent_panel)
-        self.agent_panel.tabs.setCurrentIndex(0)
+        self.set_workspace("LEARN")
+        self.learn_workspace.show_area("Knowledge")
         self.agent_panel.refresh()
 
     def _show_help(self) -> None:
@@ -410,6 +519,7 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         self._timer.stop()
+        self._provider_timer.stop()
         self.app.close()
         event.accept()
 

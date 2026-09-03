@@ -53,6 +53,7 @@ def window(qt_app, tmp_path_factory):
         yield win
     finally:
         win._timer.stop()
+        win._provider_timer.stop()
         controller.close()
 
 
@@ -91,11 +92,13 @@ def test_the_window_builds_with_every_panel(window):
     assert window.windowTitle().startswith("Raaga AI Music Composer")
     for panel in (window.project_panel, window.brief_panel, window.raaga_panel,
                   window.tune, window.lyrics, window.voice, window.output,
-                  window.arrangement, window.conversation, window.agent_panel):
+                  window.arrangement, window.conversation, window.agent_panel,
+                  window.training_panel, window.learn_workspace):
         assert panel is not None
-    assert window.tabs.count() == 6
-    assert [window.tabs.tabText(i) for i in range(5)] == \
-        ["Tune", "Lyrics", "Voice", "Output", "Learning"]
+    # v0.3 section 4 / TEST I: Learning left the composer's own tab bar.
+    assert window.tabs.count() == 4
+    assert [window.tabs.tabText(i) for i in range(4)] == \
+        ["Tune", "Lyrics", "Voice", "Output"]
 
 
 def test_the_window_fits_an_ordinary_screen(window):
@@ -136,6 +139,76 @@ def test_the_brief_and_raaga_panels_drive_the_project(window, qt_app):
     assert app.project.raaga.selected
     window.refresh()
     _shot(window, "02-brief-and-raagas")
+
+
+def test_apply_brief_shows_progress_and_populates_suggestions(window, qt_app):
+    """v0.3 TEST A / section 6.1: clicking Apply must visibly rank raagas
+    from the brief - not merely save it - and never do nothing."""
+    app = window.app
+    window.brief_panel.situation.setText("a long journey home, alone")
+    window.brief_panel.mood.setCurrentText("hopeful")
+    window.brief_panel.feel.setPlainText("tired, but still hopeful")
+    window.brief_panel.apply()
+    _settle(qt_app, app)
+    window.refresh()
+
+    assert window.raaga_panel.suggestions.count() >= 1
+    assert app.last_suggestions
+    assert "suggested" in window.brief_panel.status_label.text().lower()
+
+
+# --------------------------------------------------------------------------
+# TEST I (v0.3 section 63): LEARN is a separate top-level workspace, not a
+# tab squeezed in beside Tune and Lyrics.
+# --------------------------------------------------------------------------
+def test_learn_is_a_top_level_workspace_not_a_composition_tab(window, qt_app):
+    app = window.app
+    assert window.workspaces.count() == 2
+
+    main_tab_texts = [window.tabs.tabText(i) for i in range(window.tabs.count())]
+    assert "Learning" not in main_tab_texts
+    assert "Training" not in main_tab_texts
+
+    # switch to LEARN via the toolbar button
+    window.learn_ws_btn.click()
+    _pump(qt_app, 0.1)
+    assert window.workspaces.currentWidget() is window.learn_workspace
+    area_names = [window.learn_workspace.nav.item(i).text()
+                  for i in range(window.learn_workspace.nav.count())]
+    assert area_names == ["Dashboard", "Curriculum", "Training Sources",
+                          "Practice / Quiz", "Knowledge", "History / Evaluation"]
+    _shot(window, "08-learn-workspace")
+
+    # back to MAIN via the toolbar
+    window.main_ws_btn.click()
+    _pump(qt_app, 0.1)
+    assert window.workspaces.currentWidget() is window.main_page
+
+    # switch to LEARN via the View menu action too
+    window.learn_ws_action.trigger()
+    _pump(qt_app, 0.1)
+    assert window.workspaces.currentWidget() is window.learn_workspace
+    assert window.learn_ws_btn.isChecked()
+
+    window.main_ws_action.trigger()
+    _pump(qt_app, 0.1)
+    assert window.workspaces.currentWidget() is window.main_page
+    assert window.main_ws_btn.isChecked()
+
+    # switching back and forth did not disturb MAIN's own state
+    assert window.raaga_panel.suggestions.count() >= 1
+    assert app.last_suggestions
+
+
+def test_the_settings_action_exists_and_builds_the_dialog(window, monkeypatch):
+    edit_menu = next(a.menu() for a in window.menuBar().actions()
+                     if a.text() == "&Edit")
+    assert "Settings..." in [a.text() for a in edit_menu.actions()]
+
+    from raagacomposer.ui.settings_dialog import SettingsDialog
+    monkeypatch.setattr(SettingsDialog, "exec", lambda self: 0)
+    window._open_settings()
+    assert "Claude" in window.provider_status_label.text()
 
 
 def test_the_tune_panel_generates_and_lists_sections(window, qt_app):

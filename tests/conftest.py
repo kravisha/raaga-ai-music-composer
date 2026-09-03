@@ -24,6 +24,12 @@ if str(ROOT) not in sys.path:
 _TEST_HOME = Path(tempfile.gettempdir()) / "raagacomposer-test-home"
 _TEST_HOME.mkdir(parents=True, exist_ok=True)
 os.environ["RAAGA_COMPOSER_HOME"] = str(_TEST_HOME)
+# Forces the credentials.json fallback for every SecretStore built with no
+# explicit backend, so the suite can never read or write the machine's real
+# Windows Credential Manager.  A test that exercises the keyring branch on
+# purpose injects a fake backend object into SecretStore instead - see
+# tests/unit/test_secrets.py.
+os.environ["RAAGA_SECRET_BACKEND"] = "file"
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 # The suite must give the same answer on a machine with Ollama running and a

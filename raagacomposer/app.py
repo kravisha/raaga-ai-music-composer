@@ -10,6 +10,8 @@ project.  Completion callbacks run on the UI thread via
 """
 from __future__ import annotations
 
+import copy
+import queue
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -24,7 +26,8 @@ from .kb.service import KnowledgeBaseService
 from .agent.originality import check as check_originality
 from .audio import export as export_engine
 from .audio.playback import PlaybackEngine
-from .core.jobs import JobContext, JobManager
+from .core.actions import ActionState, ActionStatus
+from .core.jobs import JobCancelled, JobContext, JobManager
 from .core.logging_setup import export_diagnostics, get_logger, setup_logging
 from .core.models import (ApprovalState, ArrangementVersion, CreativeBrief,
                           ErrorRecord, JobRecord, LyricsVersion, MelodyVersion,
@@ -44,8 +47,11 @@ from .music.melody import MelodyOptions
 from .music.structure import plan_sections
 from .music.validator import validate
 from .providers import registry as provider_registry
+from .providers.status import ProviderStatus
+from .providers.status import provider_statuses as _provider_statuses
 from .raaga.library import Raaga, library as raaga_library
-from .raaga.selection import RaagaSuggestion, infer_tempo, suggest as suggest_raagas
+from .raaga.selection import (RaagaSuggestion, expand_feel_words, infer_tempo,
+                              suggest as suggest_raagas)
 from .speech.capture import CaptureState, VoiceInputManager
 from .speech.context import ConversationContext
 from .speech.intent import Command, interpret, unavailable_instrument
@@ -56,6 +62,24 @@ from .voice.profiles import VoiceProfileManager
 log = get_logger("app")
 
 RENDER_KINDS = ("tune", "vocal_preview", "vocal_master", "instrumental", "full")
+
+
+def _normalize_suggestion(s) -> None:
+    """Give any raaga suggestion object a ``reason`` and a ``confidence`` in
+    [0, 1], whatever it started with (v0.3 section 6 steps 7-8).
+
+    The agent's own suggestions (agent/music_agent.py) already carry both.
+    The rule-engine's (raaga/selection.py) only carry a rationale string and a
+    raw match ``score`` with no fixed ceiling, so when confidence is missing
+    it is derived from the score: a soft, capped mapping rather than a
+    hard-coded number, documented here because there is nowhere else a reader
+    would know to look for it.
+    """
+    if not getattr(s, "reason", ""):
+        s.reason = getattr(s, "rationale", "") or ""
+    if getattr(s, "confidence", None) is None:
+        score = float(getattr(s, "score", 0.0))
+        s.confidence = round(min(0.95, 0.3 + 0.15 * score), 2)
 
 
 @dataclass
@@ -123,12 +147,22 @@ class AppController:
         self._playhead = 0.0
         self.last_evaluation = None
 
+        # The action status contract (v0.3 section 6.1).  ``actions`` holds
+        # the latest status per action name; ``_action_queue`` carries
+        # statuses raised on a background job's worker thread across to the
+        # UI thread, the same way JobManager carries job results (see
+        # ``core/jobs.py`` and ``pump`` below).
+        self.actions: Dict[str, ActionStatus] = {}
+        self._action_queue: "queue.Queue[ActionStatus]" = queue.Queue()
+        self.last_suggestions: List = []
+
         # UI callbacks
         self.on_project_changed: Optional[Callable[[], None]] = None
         self.on_status: Optional[Callable[[str], None]] = None
         self.on_conversation: Optional[Callable[[], None]] = None
         self.on_render: Optional[Callable[[str], None]] = None
         self.on_error: Optional[Callable[[str], None]] = None
+        self.on_action: Optional[Callable[[ActionStatus], None]] = None
 
         self.voice_input.on_final = self._on_transcript_final
         self.voice_input.on_partial = self._on_transcript_partial
@@ -157,6 +191,88 @@ class AppController:
         self.status(message)
         if self.on_error:
             self.on_error(message)
+
+    # -- the action status contract (v0.3 section 6.1) ----------------------
+    def _action(self, action: str, state: ActionState, phase: str = "",
+                message: str = "", code: str = "", detail: str = "",
+                deliver_now: bool = True, target: str = "",
+                epoch: int = 0) -> ActionStatus:
+        """Record one step of an action's progress.
+
+        With ``deliver_now`` (the default) the status is handed to
+        ``self.status``/``self.error``/``on_action`` immediately, on whatever
+        thread called this - safe only when the caller is already the UI
+        thread.  A background job's worker function must pass
+        ``deliver_now=False``; the status is then queued and delivered by
+        ``pump`` on the UI thread, the same pattern ``JobManager`` uses for
+        job results (``core/jobs.py``).
+        """
+        status = ActionStatus(action=action, state=state, phase=phase,
+                              message=message, code=code, detail=detail,
+                              target=target, epoch=epoch)
+        if self._action_is_stale(status):
+            log.info("action %s -> %s dropped as stale (target=%s epoch=%d)",
+                     action, state.value, target, epoch)
+            return status
+        if deliver_now:
+            # Otherwise ``_drain_actions`` records it on the UI thread at the
+            # moment it is delivered, so ``self.actions`` never runs ahead
+            # of what the creator has been shown.
+            self.actions[action] = status
+        if state == ActionState.FAILED:
+            log.error("action %s failed [%s]: %s (%s)", action, code,
+                      message, detail)
+        else:
+            log.info("action %s -> %s: %s", action, state.value,
+                     phase or message)
+        if deliver_now:
+            self._deliver_action(status)
+        else:
+            self._action_queue.put(status)
+        return status
+
+    def _deliver_action(self, status: ActionStatus) -> None:
+        """Apply a status's visible side effects. UI thread only."""
+        # A status carrying a diagnostic code - failed or only a recovered
+        # warning - belongs in the project's error log too (section 54):
+        # "no silent failure" covers a recovered failure as much as a fatal
+        # one.  ``error`` already updates the status bar, so a plain status
+        # update only happens on the branch that is not already an error.
+        if status.state == ActionState.FAILED or status.code:
+            self.error(status.action, status.message or status.phase,
+                      fallback=status.detail)
+        elif status.phase or status.message:
+            self.status(status.text)
+        if self.on_action:
+            try:
+                self.on_action(status)
+            except Exception:  # noqa: BLE001
+                log.error("on_action callback failed", exc_info=True)
+
+    def _action_is_stale(self, status: ActionStatus) -> bool:
+        """A status from a superseded or cancelled job run is stale."""
+        if not status.target or not status.epoch:
+            return False
+        return self.jobs.current_epoch(status.target) != status.epoch
+
+    def _drain_actions(self) -> None:
+        """Deliver any action statuses queued from a background job.
+
+        Staleness is checked again here, not only when the status was
+        queued: the job that queued it may have been superseded between
+        then and this pump.
+        """
+        while True:
+            try:
+                status = self._action_queue.get_nowait()
+            except queue.Empty:
+                break
+            if self._action_is_stale(status):
+                log.info("queued action %s -> %s dropped as stale", status.action,
+                         status.state.value)
+                continue
+            self.actions[status.action] = status
+            self._deliver_action(status)
 
     def _changed(self, action: str = "", description: str = "",
                  undoable: bool = True) -> None:
@@ -195,6 +311,12 @@ class AppController:
     def pump(self) -> None:
         """Called by the UI timer: deliver job results on the UI thread."""
         events = self.jobs.drain()
+        # Job results before action statuses: a queued "completed" status was
+        # built on the worker thread alongside the result ``drain`` just
+        # handed to its ``on_done`` callback, so the project state the status
+        # describes (e.g. ``last_suggestions``) is already in place by the
+        # time ``on_action`` sees it.
+        self._drain_actions()
         self._sync_context()
         if events and self.on_project_changed:
             self.on_project_changed()
@@ -356,33 +478,313 @@ class AppController:
         for key, value in fields.items():
             if hasattr(brief, key):
                 setattr(brief, key, value)
+        # The song title (v0.3 section 5) lives on the brief so it is part of
+        # one creative statement, but the rest of the application - the
+        # window title, the project panel, the saved project - reads
+        # ``project.title``.  Only a non-empty title overwrites it, so an
+        # untitled brief never blanks out a title set from the project panel.
+        if brief.title.strip():
+            self.project.title = brief.title.strip()
         self.project.current_stage = Stage.RAAGA if brief.summary() else Stage.BRIEF
         self._changed("brief.update", "Updated the creative brief")
 
-    def raaga_suggestions(self, limit: int = 4) -> List:
-        """Ask the agent, which answers from what it has learned."""
-        try:
-            suggestions = self.agent.suggest_raagas(self.project.brief, limit)
-        except Exception as exc:  # noqa: BLE001 - never leave the panel empty
-            self.error("brief", f"The agent could not answer: {exc}")
-            suggestions = suggest_raagas(self.project.brief, self.raagas,
-                                         limit=limit)
-        llm = self.providers.llm
-        if llm is not None and llm.available:
+    @staticmethod
+    def _brief_is_describable(brief: CreativeBrief) -> bool:
+        """Section 6 step 2: at least one of the three creative-intent
+        fields must say something before anything can be suggested from it."""
+        return bool(brief.situation.strip() or brief.mood.strip()
+                   or brief.feel.strip())
+
+    def _apply_kb_signal(self, brief: CreativeBrief, suggestions: List) -> None:
+        """Query the learned Knowledge Base (section 6 step 4).
+
+        ``agent.suggest_raagas`` (agent/music_agent.py) already answers from
+        the agent's own learned-fact repository (``agent.repo``).  That is
+        not the same store as ``self.kb`` - the newer, unified Knowledge Base
+        that Training/Learn writes to (see ``raagacomposer/kb``) - and the
+        agent does not consult it.  Rather than rewire the agent's ranking,
+        this is the smallest hook that lets the KB speak too: for each
+        shortlisted raaga it asks what the KB has learned about its mood
+        (``rasa``), and nudges score/confidence up when a learned claim
+        corroborates the brief.  A raaga the KB knows nothing about is left
+        exactly as the agent or the rule engine scored it - this never
+        invents a KB opinion that is not there.
+        """
+        if self.knowledge_context is None or not suggestions:
+            return
+        words = set(expand_feel_words(brief.mood, brief.feel, brief.situation,
+                                      brief.notes))
+        if not words:
+            return
+        touched = False
+        for s in suggestions:
             try:
-                names = [s.name for s in suggestions] or self.raagas.names()[:12]
-                extra = llm.suggest_raagas(self.project.brief, names)
-                order = {str(e.get("raaga", "")).lower(): str(e.get("reason", ""))
-                         for e in extra}
-                for item in suggestions:
-                    reason = order.get(item.name.lower())
-                    if reason and hasattr(item, "reason"):
-                        item.reason = reason
-                suggestions.sort(key=lambda s: (s.name.lower() not in order,
-                                                -s.score))
-            except Exception as exc:  # noqa: BLE001
-                log.warning("LLM raaga advice failed: %s", exc)
+                context = self.knowledge_context.build(
+                    "teach", raga=s.name, record_usage=False)
+            except Exception as exc:  # noqa: BLE001 - the KB is optional here
+                log.warning("Knowledge Base lookup failed for %s: %s",
+                           s.name, exc)
+                continue
+            matched = [item for item in context.items
+                      if item.predicate == "rasa"
+                      and any(w in item.object_value.lower() for w in words)]
+            if not matched:
+                continue
+            best = max(matched, key=lambda i: i.confidence)
+            s.score = float(getattr(s, "score", 0.0)) + 0.4
+            s.confidence = round(min(0.97, float(getattr(s, "confidence", 0.5))
+                                     + 0.1), 2)
+            note = (f"the Knowledge Base has learned {s.name} carries "
+                   f"{best.object_value}")
+            evidence = getattr(s, "evidence", None)
+            if isinstance(evidence, list):
+                evidence.append(note)
+            s.reason = f"{getattr(s, 'reason', '')} ({note})".strip()
+            touched = True
+        if touched:
+            suggestions.sort(key=lambda s: (-float(getattr(s, "score", 0.0)),
+                                            s.name))
+
+    def _run_apply_brief_pipeline(
+            self, brief: CreativeBrief, limit: int, deliver_now: bool,
+            ctx: Optional[JobContext] = None,
+            epoch: int = 0) -> Tuple[ActionStatus, List]:
+        """The whole of Apply Brief (section 6 steps 3-8), phases included.
+
+        Runs identically whether called inline (``apply_brief_sync``, or a
+        test) or from a background job's worker function (``apply_brief``);
+        ``deliver_now`` controls whether each phase is delivered straight
+        away or queued for ``pump`` to hand to the UI thread - see
+        ``AppController._action``.  Never mutates ``self.project``: it
+        returns the final status and the ranked suggestions, and it is the
+        caller's job to write them into project state on the UI thread.
+        """
+        if ctx is not None:
+            epoch = ctx.epoch
+        try:
+            self._action("apply_brief", ActionState.WORKING,
+                        phase="Analyzing creative brief...",
+                        deliver_now=deliver_now,
+                        target="brief", epoch=epoch)
+            if ctx:
+                ctx.check()
+
+            agent_failed = False
+            try:
+                suggestions = self.agent.suggest_raagas(brief, limit)
+            except Exception as exc:  # noqa: BLE001 - fall back, never empty
+                agent_failed = True
+                log.error("the agent could not suggest raagas: %s", exc,
+                         exc_info=True)
+                self._action(
+                    "apply_brief", ActionState.WORKING,
+                    phase=f"The agent could not answer ({exc}); using the "
+                          f"shipped raaga library instead.",
+                    code="BRIEF-003", detail=repr(exc),
+                    deliver_now=deliver_now,
+                        target="brief", epoch=epoch)
+                suggestions = suggest_raagas(brief, self.raagas, limit=limit)
+            for s in suggestions:
+                _normalize_suggestion(s)
+
+            if ctx:
+                ctx.check()
+            self._action("apply_brief", ActionState.WORKING,
+                        phase="Searching learned raga knowledge...",
+                        deliver_now=deliver_now,
+                        target="brief", epoch=epoch)
+            self._apply_kb_signal(brief, suggestions)
+
+            if ctx:
+                ctx.check()
+            self._action("apply_brief", ActionState.WORKING,
+                        phase="Ranking suggestions...",
+                        deliver_now=deliver_now,
+                        target="brief", epoch=epoch)
+            suggestions.sort(key=lambda s: (-float(getattr(s, "score", 0.0)),
+                                            s.name))
+            suggestions = suggestions[:limit]
+
+            # An LLM re-rank is an enhancement, never a requirement: its
+            # failure is logged and reported as a warning phase, not
+            # swallowed (spec section 53's "never let stale output overwrite
+            # newer intent" cousin here is "never let an optional step erase
+            # a working result").
+            llm = self.providers.llm
+            if llm is not None and llm.available:
+                try:
+                    names = [s.name for s in suggestions] or \
+                        self.raagas.names()[:12]
+                    extra = llm.suggest_raagas(brief, names)
+                    order = {str(e.get("raaga", "")).lower():
+                             str(e.get("reason", "")) for e in extra}
+                    for item in suggestions:
+                        reason = order.get(item.name.lower())
+                        if reason:
+                            item.reason = reason
+                    suggestions.sort(key=lambda s: (
+                        s.name.lower() not in order,
+                        -float(getattr(s, "score", 0.0))))
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("LLM raaga advice failed: %s", exc,
+                               exc_info=True)
+                    self._action(
+                        "apply_brief", ActionState.WORKING,
+                        phase="AI re-ranking was unavailable; using the "
+                              "ranked list from the raaga library and what "
+                              "has been learned so far.",
+                        code="BRIEF-004", detail=repr(exc),
+                        deliver_now=deliver_now,
+                        target="brief", epoch=epoch)
+
+            if not suggestions:
+                status = self._action(
+                    "apply_brief", ActionState.FAILED,
+                    message="No raaga could be suggested from this brief.",
+                    code="BRIEF-002", deliver_now=deliver_now,
+                        target="brief", epoch=epoch)
+                return status, suggestions
+
+            top = suggestions[0]
+            plural = "s" if len(suggestions) != 1 else ""
+            message = f"{len(suggestions)} raaga{plural} suggested; " \
+                     f"{top.name} first."
+            if agent_failed:
+                message += " (the agent was unavailable; used the shipped " \
+                          "raaga library)"
+            status = self._action("apply_brief", ActionState.COMPLETED,
+                                  message=message, deliver_now=deliver_now,
+                        target="brief", epoch=epoch)
+            return status, suggestions
+        except JobCancelled:
+            raise
+        except Exception as exc:  # noqa: BLE001 - section 6 step 11
+            log.error("apply_brief failed: %s", exc, exc_info=True)
+            status = self._action(
+                "apply_brief", ActionState.FAILED,
+                message=f"Applying the brief failed: {exc}",
+                code="BRIEF-002", detail=repr(exc), deliver_now=deliver_now,
+                        target="brief", epoch=epoch)
+            return status, []
+
+    def apply_brief(self, **fields) -> ActionStatus:
+        """Apply Brief (section 6): validate, then rank in the background.
+
+        Returns immediately with the STARTING status; the phases and the
+        final COMPLETED/FAILED status arrive through ``on_action`` once
+        ``pump`` drains them, so a slow LLM call never blocks the GUI
+        (section 53).  A second call supersedes the first: both share the
+        ``"brief"`` job target.
+        """
+        self.update_brief(**fields)
+        brief = self.project.brief
+        if not self._brief_is_describable(brief):
+            return self._action(
+                "apply_brief", ActionState.FAILED,
+                message="Describe the situation, the mood or the feel "
+                        "before applying the brief.",
+                code="BRIEF-001")
+        # A snapshot, not a reference: ``self.project.brief`` is mutable and
+        # a second Apply Brief before this job runs would otherwise rewrite
+        # this job's input out from under it (on top of the epoch-based
+        # staleness check in JobManager, which only protects the *result*).
+        brief_snapshot = copy.deepcopy(brief)
+
+        def work(ctx: JobContext):
+            # The worker labels everything it reports with the epoch on its
+            # own context rather than reading a shared counter, so a run
+            # superseded while it is still on the pool cannot borrow the
+            # newer run's epoch.
+            return self._run_apply_brief_pipeline(
+                brief_snapshot, limit=4, deliver_now=False, ctx=ctx)
+
+        job = self.jobs.submit(
+            "brief.apply", "brief", work,
+            on_done=self._apply_brief_done,
+            on_error=self._apply_brief_job_error,
+            on_cancelled=lambda: self._apply_brief_cancelled(job.epoch),
+            description="Apply the creative brief")
+        # Submitting bumped the epoch for "brief"; every status this run
+        # raises - STARTING included - carries it, so a status from an
+        # earlier run that is still in the queue is recognised as stale and
+        # dropped instead of overwriting this run's words.
+        return self._action("apply_brief", ActionState.STARTING,
+                            phase="Applying the brief...",
+                            target="brief", epoch=job.epoch)
+
+    def _apply_brief_cancelled(self, epoch: int) -> None:
+        """The creator cancelled the work (section 6.1's Cancelled state).
+
+        A superseded run also arrives here, because JobManager reports
+        "stale" through the same callback.  The two are told apart by what
+        the creator has already been shown: a newer run has recorded its
+        STARTING with a higher epoch, a plain cancel has not.  Cancelling
+        bumps the epoch as well, so the CANCELLED status is deliberately
+        not tagged with one - it is the last word on this run, not a report
+        from inside it.
+        """
+        current = self.actions.get("apply_brief")
+        if current is not None and current.epoch > epoch:
+            return
+        self._action("apply_brief", ActionState.CANCELLED,
+                     message="Applying the brief was cancelled.")
+
+    def apply_brief_sync(self, **fields) -> ActionStatus:
+        """Apply Brief, run inline and returned - for tests and the
+        conversational path (spec sections 6, 20), where a synchronous
+        answer is simpler than waiting on a callback."""
+        self.update_brief(**fields)
+        brief = self.project.brief
+        if not self._brief_is_describable(brief):
+            return self._action(
+                "apply_brief", ActionState.FAILED,
+                message="Describe the situation, the mood or the feel "
+                        "before applying the brief.",
+                code="BRIEF-001")
+        self._action("apply_brief", ActionState.STARTING,
+                    phase="Applying the brief...")
+        status, suggestions = self._run_apply_brief_pipeline(
+            brief, limit=4, deliver_now=True)
+        if status.state == ActionState.COMPLETED:
+            self._store_brief_suggestions(suggestions)
+        return status
+
+    def _store_brief_suggestions(self, suggestions: List) -> None:
+        """Write a completed Apply Brief's results into project state.  UI
+        thread only - see the threading rule in this module's docstring."""
+        self.last_suggestions = suggestions
         self.project.raaga.alternatives = [s.name for s in suggestions]
+
+    def _apply_brief_done(self, result: Tuple[ActionStatus, List]) -> None:
+        status, suggestions = result
+        if status.state == ActionState.COMPLETED:
+            self._store_brief_suggestions(suggestions)
+            self.dirty = True
+            self.project.touch()
+            if self.on_project_changed:
+                self.on_project_changed()
+
+    def _apply_brief_job_error(self, exc: BaseException) -> None:
+        # The pipeline catches its own exceptions and always returns a
+        # status, so this is a safety net for a truly unexpected crash
+        # inside the job machinery rather than the normal failure path.
+        log.error("apply_brief job crashed unexpectedly: %s", exc,
+                  exc_info=True)
+        self._action(
+            "apply_brief", ActionState.FAILED,
+            message=f"Applying the brief failed unexpectedly: {exc}",
+            code="BRIEF-002", detail=repr(exc))
+
+    def raaga_suggestions(self, limit: int = 4) -> List:
+        """"Suggest from the brief" (section 7): reruns the Apply Brief
+        ranking inline against the current brief, without touching it or
+        requiring the situation/mood/feel validation - the brief is already
+        applied by the time this button is reachable."""
+        brief = self.project.brief
+        status, suggestions = self._run_apply_brief_pipeline(
+            brief, limit=limit, deliver_now=True)
+        if status.state == ActionState.COMPLETED:
+            self._store_brief_suggestions(suggestions)
         return suggestions
 
     def select_raaga(self, name: str, rationale: str = "") -> Raaga:
@@ -1298,11 +1700,26 @@ class AppController:
         self.status(f"Project archived to {out}")
         return out
 
+    def provider_statuses(self) -> List[ProviderStatus]:
+        """Configured / Not configured / Unavailable / Ready ... (spec 41)."""
+        return _provider_statuses(self.providers, self.settings,
+                                  stt_adapter=self.voice_input.adapter)
+
+    def _provider_status_table_text(self) -> str:
+        rows = self.provider_statuses()
+        header = f"{'Provider':<20}{'Kind':<10}{'State':<16}{'Model':<24}Detail"
+        lines = [header, "-" * len(header)]
+        for r in rows:
+            lines.append(f"{r.name:<20}{r.kind:<10}{r.state:<16}{r.model:<24}{r.detail}")
+        return "\n".join(lines)
+
     def export_diagnostics(self, path: Path) -> Path:
         return export_diagnostics(Path(path), self.project_dir,
                                   {"project": self.project.title,
                                    "stage": self.project.current_stage.value,
-                                   "providers": self.providers.summary()})
+                                   "providers": self.providers.summary()},
+                                  extra_files={"providers.txt":
+                                              self._provider_status_table_text()})
 
     # ==================================================================
     # undo / redo
