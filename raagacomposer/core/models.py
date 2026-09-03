@@ -44,6 +44,7 @@ class ApprovalState(str, Enum):
 # --------------------------------------------------------------------------
 @dataclass
 class CreativeBrief:
+    title: str = ""
     situation: str = ""
     mood: str = "romantic"
     feel: str = ""

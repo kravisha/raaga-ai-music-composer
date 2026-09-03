@@ -36,6 +36,10 @@ class JobContext:
     target: str
     _cancel: threading.Event
     _progress_cb: Callable[[str, float, str], None]
+    # The epoch this run was submitted under, so a worker can label what it
+    # reports (status text, partial results) and the UI thread can tell a
+    # superseded run's words from the current one's.
+    epoch: int = 0
 
     @property
     def cancelled(self) -> bool:
@@ -188,7 +192,8 @@ class JobManager:
         job.status = "running"
         job.started_at = time.time()
         self._emit("started", job.id, None)
-        ctx = JobContext(job.id, job.target, job.cancel_event, self._progress)
+        ctx = JobContext(job.id, job.target, job.cancel_event, self._progress,
+                         epoch=job.epoch)
         try:
             result = fn(ctx)
         except JobCancelled:

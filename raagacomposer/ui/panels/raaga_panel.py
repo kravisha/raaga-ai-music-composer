@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QGroupBox, QHBoxLayout,
                                QLabel, QListWidget, QListWidgetItem, QMessageBox,
                                QPushButton, QTextEdit, QVBoxLayout)
 
+from ...core.actions import ActionState
 from ...raaga.selection import compare
 
 
@@ -59,11 +60,33 @@ class RaagaPanel(QGroupBox):
         layout.addWidget(self.selected_label)
         self.refresh()
 
+        # Chain onto whatever is already listening (spec section 6.1): Apply
+        # Brief now ranks suggestions itself, so this panel refreshes as soon
+        # as that action completes instead of waiting for a second click on
+        # "Suggest from the brief".
+        previous_on_action = self.app.on_action
+
+        def _on_action(status) -> None:
+            if previous_on_action:
+                previous_on_action(status)
+            if status.action == "apply_brief" and status.state == ActionState.COMPLETED:
+                self._render_suggestions(self.app.last_suggestions)
+
+        self.app.on_action = _on_action
+
     # -- actions -----------------------------------------------------------
     def suggest(self) -> None:
+        self._render_suggestions(self.app.raaga_suggestions())
+
+    def _render_suggestions(self, suggestions) -> None:
         self.suggestions.clear()
-        for s in self.app.raaga_suggestions():
-            item = QListWidgetItem(f"{s.name}  -  {s.rationale}")
+        for s in suggestions:
+            reason = getattr(s, "reason", "") or getattr(s, "rationale", "")
+            confidence = getattr(s, "confidence", None)
+            label = f"{s.name}  -  {reason}"
+            if confidence is not None:
+                label += f"  (confidence {float(confidence):.2f})"
+            item = QListWidgetItem(label)
             item.setData(Qt.UserRole, s.name)
             self.suggestions.addItem(item)
         if self.suggestions.count():

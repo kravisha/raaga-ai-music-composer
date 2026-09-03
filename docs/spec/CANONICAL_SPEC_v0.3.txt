@@ -1,0 +1,2603 @@
+RAAGA AI MUSIC COMPOSER
+CANONICAL IMPLEMENTATION SPECIFICATION
+Version 0.3 - Consolidated Desktop + Learning Architecture
+Date: 2026-09-03
+For Claude / Software Development Agent
+
+======================================================================
+0. STATUS, AUTHORITY, AND PURPOSE
+======================================================================
+
+This document is the consolidated implementation specification for the existing
+Raaga AI Music Composer.
+
+It combines and updates the previously discussed:
+- Raga-aware interactive desktop composer requirements
+- Self-learning Music Agent architecture
+- Training/source-ingestion requirements
+- Persistent Knowledge Base architecture
+- Provider abstraction requirements
+- UI changes discussed on 2026-09-03
+- Current Apply Brief failure that must be fixed
+
+For implementation, treat this document as the current canonical direction.
+Do not throw away working code merely because a new architecture is described.
+Inspect the existing repository first, map the requirements onto what already
+exists, and extend/migrate rather than creating unnecessary parallel systems.
+
+The immediate product is AUDIO.
+Video/movie generation is future scope and must not delay the audio product.
+
+The product is a Windows desktop application written primarily in Python.
+It is not a browser application and not a generic prompt-to-song generator.
+
+======================================================================
+1. GOVERNING DEVELOPMENT PRINCIPLE
+======================================================================
+
+The development order is mandatory:
+
+    COMPLETE -> WORKING -> RELIABLE -> CORRECT -> EXCELLENT
+
+Definitions:
+
+COMPLETE
+Every required subsystem exists in at least a minimal form and is connected
+end-to-end.
+
+WORKING
+Each required feature performs its intended basic function.
+
+RELIABLE
+The system works repeatedly without random failure, state loss, corruption,
+silent failure, or inconsistent restart behavior.
+
+CORRECT
+Musical logic, raga behavior, command interpretation, timing, knowledge,
+evaluation, and recommendations are technically and musically correct.
+
+EXCELLENT
+The system becomes musically compelling, expressive, original, fast, polished,
+human-like, and production quality.
+
+Do not reverse this order.
+Do not over-polish one subsystem while required parts remain absent.
+
+======================================================================
+2. CORE PRODUCT VISION
+======================================================================
+
+Build an INTERACTIVE AI MUSIC-DIRECTOR WORKSTATION.
+
+Do NOT build:
+
+    PROMPT -> RANDOM FINISHED SONG
+
+Build:
+
+    CREATIVE DIRECTION
+        -> RAGA
+        -> TUNE
+        -> APPROVAL / LOCK
+        -> LYRICS FIT TO THE TUNE
+        -> VOICE
+        -> STUDIO VOCAL-ONLY MASTER
+        -> INSTRUMENTATION / ARRANGEMENT
+        -> MIX
+        -> MASTER
+        -> EXPORT
+
+The creator remains in control.
+
+The AI may:
+- suggest
+- reason
+- compose
+- generate alternatives
+- infer instrumentation
+- learn
+- practice
+- critique
+- explain
+- recommend
+
+The creator may:
+- accept
+- reject
+- override
+- lock
+- correct
+- interrupt
+- redirect
+- ask why
+- request alternatives
+
+======================================================================
+3. PLATFORM REQUIREMENTS
+======================================================================
+
+3.1 DESKTOP APPLICATION
+
+The application must be a real Windows desktop application.
+
+Do not deliver the primary product as:
+- a website
+- a browser app
+- a localhost web dashboard
+- an Electron/web shell unless explicitly approved later
+
+Preferred first-pass UI:
+- PySide6 / Qt for Python
+
+3.2 PYTHON
+
+Python should remain the primary application/control-plane language for:
+- desktop UI logic
+- orchestration
+- project/session management
+- provider routing
+- learning orchestration
+- knowledge retrieval
+- voice-command processing
+- timeline command interpretation
+- raga engine
+- melody workflow
+- lyrics workflow
+- arrangement control
+- persistence
+- logging
+- testing
+- export orchestration
+
+Third-party native libraries may internally use C/C++/Rust/etc.
+
+3.3 PACKAGING
+
+Eventually support:
+- normal desktop/start-menu launch
+- no manual terminal startup for ordinary use
+- project open/save/recovery
+- packaged executable/installer
+
+======================================================================
+4. TOP-LEVEL UI ARCHITECTURE - NEW REQUIREMENT
+======================================================================
+
+The application must have TWO PRIMARY WORKSPACE TABS:
+
+    MAIN
+    LEARN
+
+This is a major UI requirement.
+
+Learning must NOT remain squeezed into the normal composition workspace as just
+another small tab beside Tune, Lyrics, Voice, Output, etc.
+
+4.1 MAIN WORKSPACE
+
+MAIN contains the current music-composition experience, including:
+- Creative Brief
+- Raga selection
+- Tune
+- Lyrics
+- Voice
+- Arrangement / timeline
+- Output / export
+- Conversational control
+- Project status
+
+Preserve existing working controls where practical.
+
+Existing composer tabs/panels such as Tune, Lyrics, Voice, Output may remain
+inside MAIN.
+
+4.2 LEARN WORKSPACE
+
+LEARN is a separate full learning screen/workspace.
+
+It should contain logically separated areas such as:
+
+A. Learning Dashboard
+- Music Agent status
+- Current curriculum stage
+- Current raga
+- Current lesson
+- Current learning objective
+- Mastery score
+- Overall progress
+- Current activity
+- Last learned item
+- Errors / warnings
+- Knowledge repository size
+- Number of sources analyzed
+- Number of learned phrases
+- Start / Pause / Resume / Stop learning
+
+B. Curriculum
+- Universal foundation stage
+- Current raga curriculum
+- Completed units
+- Prerequisites
+- Scores
+- Failed/retried units
+- Next recommended unit
+
+C. Training Sources
+- Search phrase
+- Search results
+- User approval
+- Learning queue
+- Source status
+- Learning objectives
+- Learning report
+
+D. Practice / Quiz
+- Practice exercises
+- Test results
+- Mastery thresholds
+- Retry/remediation
+- Advancement status
+
+E. Knowledge
+- Search learned knowledge
+- Inspect raga knowledge
+- Inspect provenance
+- View conflicts
+- View confidence
+- View knowledge gaps
+- View user corrections
+
+F. History / Evaluation
+- Training history
+- Learning reports
+- Evaluation results
+- User feedback
+- Composition learning history
+
+4.3 MENU BAR
+
+Existing menu items such as File, Compose, Voice Control, Help, etc. may remain.
+Do not break normal desktop conventions.
+
+======================================================================
+5. MAIN WORKSPACE - CREATIVE BRIEF
+======================================================================
+
+The creative brief should support at minimum:
+
+- Song title
+- Situation / context
+- Mood
+- Feel
+- Language
+- Song type
+- Target length
+- Tempo
+- Preferred instruments
+- Instruments / elements to avoid
+- Notes
+
+The creator may describe a formal prompt or simply describe a feeling.
+
+Example:
+
+    Situation: love failure
+    Mood: sad
+    Feel: lonely late at night but still warm
+
+The system should translate this into musical intent rather than merely keyword
+matching.
+
+======================================================================
+6. APPLY BRIEF - CURRENT BUG AND REQUIRED BEHAVIOR
+======================================================================
+
+CURRENT BUG:
+The existing Apply Brief button may currently do nothing when clicked.
+It does not produce a raga recommendation and may show no error.
+
+This must be fixed early.
+
+Apply Brief must:
+
+1. Read the full Creative Brief.
+2. Validate required inputs.
+3. Build a structured intent representation.
+4. Query the learned Knowledge Base.
+5. Suggest one or more suitable ragas.
+6. Rank suggestions.
+7. Give concise reasons.
+8. Give confidence.
+9. Allow user override/manual selection.
+10. Update visible UI state.
+11. Never silently fail.
+
+It must not be implemented as only:
+    "sad" -> hard-coded raga
+
+It should use learned musical/contextual knowledge.
+
+6.1 REQUIRED ACTION STATUS CONTRACT
+
+Every important UI action must visibly enter states such as:
+
+    Idle
+    Starting
+    Working
+    Completed
+    Failed
+    Cancelled
+
+For Apply Brief specifically, show:
+- "Analyzing creative brief..."
+- "Searching learned raga knowledge..."
+- "Ranking suggestions..."
+- result OR explicit failure
+
+On failure show:
+- user-readable error
+- diagnostic code/reference
+- technical details in logs
+- retry where appropriate
+
+NO SILENT FAILURE.
+
+======================================================================
+7. RAGA SELECTION
+======================================================================
+
+Support:
+
+A. Creator-specified raga
+B. AI-suggested raga based on brief
+
+The creator must be able to:
+- accept
+- reject
+- request alternatives
+- compare alternatives
+- change manually
+- lock selected raga
+
+Version 1 may begin with a limited set of ragas.
+The raga library must be expandable without rewriting the application.
+
+Keeravani may be used as the first pilot raga for learning and testing.
+
+======================================================================
+8. TUNE-FIRST WORKFLOW
+======================================================================
+
+The first major musical artifact is the TUNE.
+
+Do not write final lyrics first.
+
+Generate melody based on:
+- selected raga
+- creative brief
+- mood
+- feel
+- song structure
+- intended voice
+- tempo/rhythm
+- requested section
+
+The creator must be able to:
+- play
+- pause
+- replay
+- accept
+- reject
+- regenerate
+- create a variation
+- modify one section
+- change tempo
+- change phrasing
+- change emotional intensity
+- preserve accepted sections
+
+The approved tune must be lockable.
+
+Generate Tune must NOT return a trivial single sustained note when meaningful
+melodic generation is requested.
+
+Minimum acceptable raga-aware tune behavior:
+- multiple notes
+- meaningful contour
+- beginning, development, ending
+- raga-valid note/phrase behavior
+- characteristic phrases, not only scale traversal
+- requested section respected
+- requested length respected
+- requested tempo respected
+- requested mood/feel considered
+- playable output produced
+
+Progression by learning level may be:
+
+Beginner:
+- 2-4 note motifs
+- tiny phrase variations
+
+Intermediate:
+- 1-2 bar phrases
+- connected motifs
+- simple cadences
+
+Advanced:
+- longer raga-valid development
+- section-aware melodic architecture
+- expressive variations
+
+Excellent:
+- original, memorable, emotionally coherent, technically faithful music
+
+======================================================================
+9. LYRICS
+======================================================================
+
+Central rule:
+
+    TUNE FIRST -> LYRICS FIT THE TUNE
+
+Lyrics should account for:
+- syllable count
+- note duration
+- phrase duration
+- stress
+- breath points
+- rhythmic placement
+- language
+- meaning
+- emotional context
+- raga phrasing where relevant
+
+The creator must be able to edit or regenerate a line/verse/section without
+destroying the locked tune.
+
+======================================================================
+10. VOICE / SINGER
+======================================================================
+
+Provide a Voice Profile Manager.
+
+Support:
+- selecting a singer/voice
+- creator-supplied authorized voice profiles
+- storing a personal voice profile from supplied recordings
+- changing singer without changing the tune
+- changing expression without changing the composition
+
+Vocal direction may include:
+- soft/intimate
+- strong
+- emotional
+- romantic
+- sad
+- energetic
+- devotional
+- smooth
+- dramatic
+- dynamics
+- emphasis
+- sustained notes
+- vibrato where appropriate
+- breath/pause control
+
+The app must support:
+
+    "Give me the song without instruments."
+
+This must produce a polished studio-quality vocal-only result, not merely a raw
+demo.
+
+Permitted vocal production may include:
+- gain staging
+- EQ
+- compression
+- de-essing
+- reverb
+- delay where appropriate
+- stereo treatment where appropriate
+- noise reduction/control
+- loudness normalization
+- limiting
+- mastering
+
+======================================================================
+11. ARRANGEMENT / INSTRUMENTATION
+======================================================================
+
+Only after the tune/vocal foundation exists should the creator and AI build the
+arrangement.
+
+The experience should resemble directing real musicians.
+
+Examples:
+- "Add veena here."
+- "Use saxophone for this interlude."
+- "Bring strings after this line."
+- "Take the drums out here."
+- "Use only piano for the first 15 seconds."
+- "Add mridangam after the chorus."
+- "Replace violin with veena."
+- "Make this part lighter."
+- "Give me another instrument that fits this feel."
+
+Support:
+- explicit instrument request
+- feel-based instrument suggestion
+- instrument replacement
+- exact entry/exit timing
+- region-only regeneration
+- non-destructive changes
+
+Any added instrument must work WITH the existing tune.
+
+Consider:
+- tonal center
+- raga constraints
+- melody contour
+- phrase boundaries
+- rhythm
+- tempo
+- existing instruments
+- vocal register
+- density
+- frequency overlap
+- section role
+
+======================================================================
+12. TRACK / TIMELINE MODEL
+======================================================================
+
+Arrangement must be track-based and time-aware.
+
+Each track should support:
+- instrument identity
+- start/end time
+- regions/clips
+- mute
+- solo
+- gain
+- pan where relevant
+- version
+- AI generation metadata
+- creator approval/lock state
+
+Support separate editable song regions:
+- Prelude
+- Pallavi / Chorus
+- Verse
+- Anupallavi
+- Charanam
+- Interlude 1
+- Interlude 2
+- additional interludes
+- instrumental bridge
+- Outro
+
+Each region should be independently:
+- playable
+- selectable
+- editable
+- regeneratable
+- lockable
+- versioned
+
+Edits are non-destructive by default.
+
+======================================================================
+13. CONTINUOUS CONVERSATIONAL VOICE CONTROL
+======================================================================
+
+Continuous conversational voice control is a core feature.
+
+Support:
+- streaming speech-to-text
+- partial transcripts
+- final transcripts
+- conversation context
+- command detection
+- music-direction intent detection
+- timeline/time-range extraction
+- instrument-name extraction
+- mood/feel extraction
+- confirmation only when necessary
+
+13.1 INTERRUPTION / BARGE-IN
+
+The creator must be able to interrupt while:
+- music is playing
+- AI is explaining
+- a preview is playing
+- music is generating
+- an arrangement is being auditioned
+
+Newest explicit creator intent wins.
+
+When redirected:
+1. Capture command.
+2. Determine affected job/region.
+3. Cancel/pause/supersede obsolete work where safe.
+4. Preserve unaffected accepted work.
+5. Apply new instruction.
+6. Resume as appropriate.
+
+13.2 CONTEXTUAL REFERENCES
+
+Resolve phrases such as:
+- here
+- there
+- this part
+- that instrument
+- after that
+- before the chorus
+- from the second minute
+- at the end
+- do the same thing here
+- keep everything else
+
+Resolve against:
+- current playback position
+- selected timeline range
+- last-mentioned track/instrument
+- current song section
+- recent conversation state
+
+13.3 NATURAL LANGUAGE PLAYBACK
+
+Support commands such as:
+- Play the first minute.
+- Play from the second minute to the third minute.
+- Play the end.
+- Play the last 30 seconds.
+- Play from the chorus.
+- Play this section again.
+- Start five seconds before this point.
+- Stop.
+- Pause.
+- Continue.
+- Go back 10 seconds.
+
+======================================================================
+14. SELF-LEARNING MUSIC AGENT
+======================================================================
+
+Transform the current static/semi-static composer into a persistent learning
+music agent.
+
+The system should behave like a musically talented student that:
+- begins with foundational hearing skills
+- follows an executable curriculum
+- learns from approved sources
+- analyzes audio/music
+- extracts reusable knowledge
+- stores durable knowledge
+- practices
+- gets evaluated
+- retries weak areas
+- learns one raga deeply before the next
+- uses learned knowledge in composition
+- learns from user critique
+- continues from where it stopped after restart
+
+The long-term objective is not merely "generate notes."
+The objective is an exceptionally capable musical agent.
+
+======================================================================
+15. CORE LEARNING COMPONENTS
+======================================================================
+
+Required logical components:
+
+1. Music Agent / Orchestrator
+2. Curriculum Engine
+3. Research / Source Search Service
+4. Source Access / Ingestion Service
+5. Audio / Music Analysis Pipeline
+6. Knowledge Extraction
+7. Knowledge Validation
+8. Persistent Knowledge Base
+9. Retrieval / Context Builder
+10. Practice Engine
+11. Evaluator / Teacher / Critic
+12. Originality Checker
+13. Training Queue
+14. Learning Report Service
+15. Training History
+16. Learning UI Adapter
+17. Persistence / Checkpoint Manager
+
+Do not build this as one giant prompt or one giant class.
+
+======================================================================
+16. MUSIC AGENT / ORCHESTRATOR
+======================================================================
+
+The Music Agent is the central intelligence behind the app.
+
+Responsibilities:
+- communicate with UI
+- understand user instructions
+- inspect creative brief
+- consult Knowledge Base
+- consult Curriculum Engine
+- invoke research/ingestion
+- invoke audio/music analysis
+- invoke composition
+- invoke evaluation
+- update learning state
+- persist meaningful learning/progress
+- explain decisions
+
+The user should eventually be able to say:
+- "Learn Keeravani."
+- "Study more alapana examples."
+- "Why did you choose this phrase?"
+- "Suggest a raga for this situation."
+- "Generate a better prelude."
+- "This does not sound like Keeravani. Try again."
+- "Make it sadder but still warm."
+- "Use violin instead of flute."
+
+======================================================================
+17. CURRICULUM ENGINE
+======================================================================
+
+The curriculum is executable system data, not merely documentation.
+
+It determines:
+- current learning goal
+- prerequisites
+- exercises
+- required examples
+- competency tests
+- pass thresholds
+- retry rules
+- advancement rules
+- revisiting earlier material
+
+Curriculum progress must persist.
+
+17.1 STAGE A - UNIVERSAL MUSICAL FOUNDATIONS
+
+Teach:
+1. Sound differentiation
+2. Pitch discrimination
+3. Stable tonic / Sa detection
+4. Swara recognition
+5. Sa Ri Ga Ma Pa Dha Ni Sa recognition
+6. Swara variants where applicable
+7. Ascending / descending movement
+8. Interval recognition
+9. Rhythm / pulse awareness
+10. Short pattern recognition
+11. Short pattern reproduction
+12. Short pattern generation
+13. Pattern transformation / variation
+
+The system should hear a short sequence, represent it, compare it with another,
+and create valid variations.
+
+17.2 STAGE B - ONE RAGA AT A TIME
+
+The preferred learning strategy is deep learning of one raga before moving to
+the next major raga.
+
+For each raga:
+1. Raga identity
+2. Arohanam
+3. Avarohanam
+4. Swara inventory
+5. Important/resting swaras
+6. Characteristic phrases / prayogas
+7. Phrase boundaries
+8. Phrase direction/contour
+9. Gamaka behavior
+10. Raga melodic grammar
+11. Common mistakes / neighboring-raga drift
+12. Very short raga-valid patterns
+13. Short original phrases
+14. Longer phrase chains
+15. Geetham-level material
+16. Swarajathi where appropriate
+17. Varnam-level material
+18. Kriti / Keerthanam understanding
+19. Alapana development
+20. Kalpana swara concepts
+21. Longer-form original development
+22. Expressive composition for mood/situation
+
+Only advance after sufficient mastery.
+
+17.3 STAGE C - CROSS-RAGA COMPARISON
+
+After multiple ragas:
+- distinguish similar ragas
+- detect phrase ownership
+- recognize ambiguous phrases
+- understand shared notes but different grammar
+- avoid accidental drift
+
+17.4 CURRICULUM UNIT DATA
+
+Suggested fields:
+- curriculum_unit_id
+- level
+- skill_type
+- raga_name nullable
+- prerequisite_units
+- learning_goal
+- source_requirements
+- exercises
+- evaluation_method
+- minimum_examples_required
+- minimum_pass_score
+- retry_policy
+- completion_status
+- mastery_score
+- last_attempted_at
+- completed_at
+- notes
+- curriculum_version
+
+======================================================================
+18. TRAINING SOURCE SEARCH
+======================================================================
+
+Inside LEARN, provide two practical ways to supply learning material:
+
+A. PROVIDE LINKS / FILES
+- User gives one or more URLs
+- User may supply local audio/video
+- User may supply transcript/text
+
+B. SEARCH PHRASE
+- User enters a free-form learning/search phrase
+- System searches supported public sources
+- Return approximately 10 candidate results by default
+- User selects which sources are approved
+
+Examples:
+- Carnatic music beginner lessons
+- Kamboji raga alapana lessons
+- Learn Adi tala
+- Carnatic gamaka techniques
+- Keeravani arohanam avarohanam tutorial
+- How to compose a Carnatic sangathi
+- Mridangam tala lessons
+- Carnatic swara exercises
+
+Search results should show:
+- checkbox
+- title
+- source
+- URL
+- author/channel
+- duration
+- description
+- relevance
+- content type
+- accessibility status
+- already learned status
+- preview/open
+
+Possible accessibility states:
+- Accessible
+- Transcript available
+- Metadata only
+- User file required
+- Not accessible
+- Unsupported
+- Already learned
+
+The system must NOT automatically learn from every result.
+The user chooses which sources enter the learning queue unless a future explicit
+setting enables automatic approval.
+
+======================================================================
+19. LEARNING QUEUE
+======================================================================
+
+Selected sources enter a persistent learning queue.
+
+Process ONE SOURCE AT A TIME initially.
+
+Queue display:
+- queue position
+- source title
+- objective
+- status
+- progress
+- started time
+- completed time
+- result
+
+Statuses may include:
+- Queued
+- Checking Access
+- Fetching Metadata
+- Acquiring Transcript
+- Preparing Content
+- Analyzing
+- Extracting Knowledge
+- Validating
+- Awaiting Review
+- Saving Knowledge
+- Completed
+- Skipped
+- Failed
+- Source Inaccessible
+
+Controls:
+- Start Learning
+- Pause
+- Resume
+- Cancel Current
+- Remove from Queue
+- Retry
+- View Report
+
+Parallelism may be added later but is not required now.
+
+======================================================================
+20. SOURCE ACCESS POLICY
+======================================================================
+
+Process only content that can be legally and technically accessed.
+
+Support:
+- public metadata
+- public transcripts/captions
+- permitted public APIs/access
+- user-provided local audio/video
+- user-provided transcripts
+- additional lawful educational sources later
+
+Do NOT:
+- bypass authentication
+- defeat access controls
+- circumvent DRM
+- evade platform restrictions
+- bypass paywalls
+- impersonate users
+- bypass technical download protections
+
+If only metadata is available, clearly mark:
+
+    METADATA ONLY - CONTENT NOT ANALYZED
+
+Do not pretend the lesson was learned.
+
+======================================================================
+21. LEARNING OBJECTIVES
+======================================================================
+
+Every source must have explicit learning objectives.
+
+Generate suggested objectives from:
+- search phrase
+- source title
+- description
+- current curriculum
+- current Knowledge Base
+- user-defined objectives
+
+User may edit/add/remove objectives before learning.
+
+Examples:
+- Identify the raga.
+- Learn arohanam/avarohanam.
+- Identify characteristic prayogas.
+- Understand important gamakas.
+- Learn defining phrases.
+- Identify tala.
+- Understand composition structure.
+- Learn voice exercises.
+- Learn improvisation technique.
+- Learn sangathi technique.
+- Learn ornamentation rules.
+- Learn common mistakes.
+- Learn resolution behavior.
+- Learn performance conventions.
+- Learn teaching sequence.
+
+Objective fields:
+- objective_id
+- description
+- category
+- priority
+- status
+- confidence
+- evidence
+- outcome
+
+Statuses:
+- Not Started
+- Partially Learned
+- Learned
+- Not Present in Source
+- Uncertain
+- Needs Review
+
+======================================================================
+22. CONTENT INGESTION / MUSIC ANALYSIS PIPELINE
+======================================================================
+
+For each user-approved source:
+
+PHASE A - ACCESS CHECK
+- verify source
+- determine source type
+- determine accessible representations
+- transcript availability
+- duplicate/already-learned detection
+- provenance record
+
+PHASE B - ACQUISITION
+Use best permitted representation:
+- transcript
+- captions
+- audio
+- video
+- local file
+- article/text
+
+PHASE C - PREPROCESSING
+- normalize
+- segment
+- detect language
+- identify speech vs music
+- detect repeated material
+- preserve timestamps
+- preserve source references
+
+PHASE D - AUDIO / MUSIC ANALYSIS
+
+Initial minimum:
+- audio decoding
+- mono conversion where needed
+- sample-rate normalization
+- silence detection
+- tonic/Sa estimation
+- pitch contour extraction
+- approximate swara mapping
+- short-phrase segmentation
+- timing information
+- source metadata
+
+Where appropriate, extract:
+- pitch
+- swaras
+- phrase contours
+- raga candidates
+- arohanam
+- avarohanam
+- characteristic phrases
+- prayogas
+- gamakas
+- tala
+- tempo
+- beat structure
+- composition sections
+- repetition
+- cadence
+- sangathis
+- improvisation patterns
+- voice exercises
+- teaching explanations
+- instrument references
+
+Later improvements:
+- gamaka contour representation
+- phrase similarity
+- ornament classification
+- tala/beat alignment
+- motif detection
+- contour clustering
+- singer/instrument separation where useful
+- confidence scoring for noisy recordings
+
+Do not require perfect transcription before learning anything.
+
+PHASE E - SEMANTIC LEARNING
+Determine:
+- what is being taught
+- what is new
+- what confirms existing knowledge
+- what contradicts existing knowledge
+- what is uncertain
+- what practical skill is demonstrated
+- what examples matter
+- what should be retained
+
+PHASE F - VALIDATION
+- internal consistency
+- compare to KB
+- duplicate detection
+- conflict detection
+- confidence
+- alternative interpretation preservation
+- never turn uncertain inference into fact
+
+PHASE G - STORAGE
+Store validated durable knowledge with provenance.
+
+======================================================================
+23. LEARNING REPORT
+======================================================================
+
+Every completed source must produce a Learning Report.
+
+Required sections:
+
+1. Source Information
+- title
+- URL/source reference
+- author/channel
+- date processed
+- duration
+- search phrase
+
+2. Learning Objectives
+For each objective:
+- result
+- evidence
+- confidence
+- status
+
+3. Source Summary
+
+4. What I Understood
+Conceptual interpretation, not transcript repetition.
+
+5. What I Learned
+Clearly separate NEW knowledge from already-known material.
+
+6. Existing Knowledge Confirmed
+
+7. Conflicts / Disagreements
+Never silently overwrite.
+
+8. Practical Application
+How this can affect:
+- raga selection
+- tune generation
+- melody generation
+- singing
+- gamaka rendering
+- improvisation
+- composition
+- arrangement
+- curriculum
+
+9. Confidence per major item
+
+10. Recommended Next Learning
+- next topic
+- missing prerequisite
+- related raga/tala
+- another source
+- practice exercise
+
+======================================================================
+24. PRACTICE ENGINE
+======================================================================
+
+The agent must PRACTICE, not only consume information.
+
+For every curriculum unit:
+1. Learn examples.
+2. Reproduce short patterns internally.
+3. Generate variations.
+4. Generate original patterns.
+5. Evaluate.
+6. Retry weak attempts.
+7. Store scores.
+8. Advance only when threshold is met.
+
+Practice tasks may include:
+- identify swara
+- distinguish two swaras
+- identify ascending vs descending phrase
+- complete a phrase
+- produce three variations
+- classify valid vs invalid raga phrase
+- generate 3-second motif
+- generate 10-second phrase
+- generate 30-second passage
+- build a prelude
+- build a pallavi
+- improvise an alapana fragment
+
+======================================================================
+25. TRAINING AGENT / QUIZ BEHAVIOR
+======================================================================
+
+Add a Training Agent / Teacher role capable of testing the Musician/Music Agent.
+
+Initial quizzes/exercises should include:
+- swara recognition
+- upper/lower register differentiation
+- Sa-Ri-Ga-Ma-Pa-Dha-Ni-Sa identification
+- ascending/descending recognition
+- simple pattern recognition
+- arohanam/avarohanam generation
+- identify raga from a short clip/phrase
+- distinguish among 3-4 learned ragas
+- phrase validity
+- progression from Geetham to Varnam to Keerthanam/Kriti to Alapana
+- composition/variation tasks
+
+Repeat weak tasks until mastery threshold is met.
+
+When the agent reaches the defined readiness threshold, the system should be able
+to notify/report that it is ready for the next level.
+
+======================================================================
+26. EVALUATOR / TEACHER / CRITIC
+======================================================================
+
+Score outputs on separate dimensions.
+
+Do not collapse everything into one number.
+
+Dimensions:
+- swara correctness
+- raga correctness
+- phrase authenticity
+- raga drift
+- rhythm/timing
+- melodic coherence
+- originality
+- mood match
+- brief match
+- structural quality
+- musical interest
+- expressiveness
+
+Evaluator output:
+- dimension scores
+- detected mistakes
+- confidence
+- recommended correction
+- pass/retry decision
+
+User feedback has high weight.
+
+Examples:
+- "This does not sound like Keeravani."
+- "Too mechanical."
+- "I like the first 10 seconds."
+- "Replace flute with violin."
+- "Make this warmer."
+- "Second phrase is good; keep it."
+
+Attach feedback to the generated artifact and use it as learning evidence.
+
+======================================================================
+27. COMPLETE LEARNING LOOP
+======================================================================
+
+The learning loop is:
+
+    CURRICULUM
+      -> LEARNING OBJECTIVE
+      -> RESEARCH / SOURCE SEARCH
+      -> USER SOURCE APPROVAL
+      -> AUTHORIZED INGESTION
+      -> AUDIO / MUSIC ANALYSIS
+      -> KNOWLEDGE EXTRACTION
+      -> VALIDATION
+      -> DURABLE STORAGE
+      -> PRACTICE
+      -> EVALUATION
+      -> RETRY / ADVANCE
+      -> COMPOSITION
+      -> USER FEEDBACK
+      -> UPDATED KNOWLEDGE / EXPERIENCE
+
+This loop must exist from the first COMPLETE implementation, even if some
+components are initially simple.
+
+======================================================================
+28. PERSISTENT KNOWLEDGE BASE
+======================================================================
+
+The Knowledge Base is the durable learned memory of Raaga AI.
+
+It must be:
+- structured
+- analytical
+- relational
+- contextual
+- evidence-aware
+- cumulative
+- searchable
+- correctable
+- self-improving
+- persistent
+
+NON-NEGOTIABLE:
+
+    THE KNOWLEDGE BASE MUST NOT BE REINITIALIZED ON EVERY RUN.
+
+Normal startup:
+- open existing KB
+- validate integrity
+- load indexes/hot knowledge
+- restore curriculum/queue/agent state
+- continue
+
+Normal shutdown:
+- checkpoint writes
+- persist state
+- close cleanly
+
+Crash recovery:
+- recover committed data
+- recover queue/state where possible
+- never silently create a new empty KB
+
+A new empty KB is allowed only for:
+- first-ever run
+- explicit user reset/new KB
+- controlled migration
+- isolated tests
+
+======================================================================
+29. KNOWLEDGE IS A NETWORK
+======================================================================
+
+Do not implement the KB as disconnected notes or video summaries.
+
+Represent durable Knowledge Items connected by relationships.
+
+Example:
+Kamboji
+- is_a -> Raga
+- uses_swara -> R2
+- characteristic_phrase -> Phrase
+- related_to -> another raga
+- demonstrated_by -> source segment
+- used_in -> composition
+- prerequisite_for -> curriculum unit
+
+Queries should return connected relevant knowledge, not only text chunks.
+
+======================================================================
+30. KNOWLEDGE ITEM / CLAIM MODEL
+======================================================================
+
+Knowledge Item minimum fields:
+- knowledge_id
+- canonical_name
+- knowledge_type
+- subject
+- statement
+- structured_value
+- scope
+- status
+- confidence
+- importance
+- source_count
+- created_at
+- updated_at
+- last_verified_at
+- version
+- tags
+
+Useful additional fields:
+- valid_from
+- valid_until
+- language
+- difficulty
+- curriculum_level
+- owner/creator
+- review_state
+- usage_count
+- last_used_at
+- learned_by
+- notes
+
+Important factual knowledge should be stored as correctable claims.
+
+Claim fields:
+- claim_id
+- subject
+- predicate
+- object_or_value
+- explanation
+- confidence
+- status
+- supporting_evidence
+- contradicting_evidence
+- source_count
+- version
+
+======================================================================
+31. KNOWLEDGE TYPES
+======================================================================
+
+Support at minimum:
+- Entity knowledge
+- Factual/declarative knowledge
+- Procedural knowledge
+- Pattern knowledge
+- Constraint knowledge
+- Example knowledge
+- Negative/failure knowledge
+- Preference/style knowledge
+- Meta-knowledge
+
+Examples:
+- Raga
+- Tala
+- Swara
+- Instrument
+- Technique
+- Arohanam
+- Avarohanam
+- Prayoga
+- Gamaka
+- "how to build alapana"
+- invalid phrase
+- user-preferred arrangement behavior
+- "confidence is low / more evidence needed"
+
+Keep personal style preference separate from objective musical claims.
+
+======================================================================
+32. RELATIONSHIPS
+======================================================================
+
+Support many-to-many relationships such as:
+- is_a
+- part_of
+- related_to
+- derived_from
+- supports
+- contradicts
+- demonstrates
+- example_of
+- prerequisite_for
+- similar_to
+- different_from
+- used_in
+- generated_from
+- taught_by
+- belongs_to_raga
+- belongs_to_tala
+- follows
+- precedes
+- refines
+- supersedes
+- conflicts_with
+- verified_by
+- rejected_by
+- depends_on
+
+Relationships are first-class knowledge, not buried only in prose.
+
+======================================================================
+33. SOURCE PROVENANCE / EVIDENCE
+======================================================================
+
+NO IMPORTANT LEARNED KNOWLEDGE MAY LOSE ITS SOURCE.
+
+Source should include:
+- source_id
+- source_type
+- title
+- author/channel
+- URL/file reference
+- published date
+- acquired date
+- license/access notes
+- language
+- checksum where useful
+- metadata
+
+Evidence should include:
+- evidence_id
+- source_id
+- source segment
+- start/end timestamp
+- transcript reference
+- feature reference
+- claim supported
+- strength
+- extraction method
+
+System should answer:
+- Where did we learn this?
+- Which source?
+- Where in the source?
+- Was it audio-derived, transcript-derived, or inferred?
+- What other sources support it?
+- What sources disagree?
+
+======================================================================
+34. CONFIDENCE / CONTRADICTION / VERSIONING
+======================================================================
+
+Attach confidence to individual claims.
+
+Possible scale:
+- 0.90-1.00 Very high
+- 0.75-0.89 High
+- 0.55-0.74 Moderate
+- 0.30-0.54 Low
+- 0.00-0.29 Unverified/speculative
+
+Confidence may consider:
+- source quality
+- independent support
+- direct demonstration
+- agreement with trusted knowledge
+- ambiguity
+- extraction quality
+- user confirmation
+- contradiction level
+
+Statuses may include:
+- Candidate
+- Learned
+- Validated
+- Accepted
+- Disputed
+- Superseded
+- Rejected
+- Deprecated
+- Needs Review
+
+Never silently overwrite conflicts.
+
+Version changes instead of destroying old knowledge.
+Record what changed, why, and what evidence/correction caused it.
+
+======================================================================
+35. DUPLICATE CONTROL / COMPACTION
+======================================================================
+
+Before adding knowledge:
+- search canonical names
+- aliases
+- structured values
+- semantic similarity
+- source/evidence
+- existing claims
+
+Outcomes:
+- exact duplicate -> attach new evidence
+- near duplicate -> merge/link
+- refinement -> new version / child claim
+- genuinely new -> create item
+
+Do not create hundreds of copies of the same fact.
+
+Compaction may keep:
+- one canonical rule
+- multiple evidence records
+
+Do not erase meaningful disagreement.
+
+======================================================================
+36. MEMORY / PERFORMANCE / SPEED
+======================================================================
+
+Speed is a design objective.
+
+Use conceptual memory layers:
+
+1. Persistent Knowledge
+Durable source of truth.
+
+2. Active / Working Knowledge
+Small task-relevant context.
+
+3. Cache
+Frequently used pre-resolved/derived data for speed.
+
+4. Raw Evidence Store
+Transcripts, source segments, audio features, analysis artifacts.
+
+Do NOT load the entire KB into every model prompt.
+
+Use:
+- exact lookup
+- keyword lookup
+- tags
+- structured filters
+- graph traversal
+- semantic/vector search where useful
+- confidence filters
+- curriculum filters
+
+Create a KnowledgeContextBuilder that retrieves the SMALLEST SUFFICIENT context.
+
+Persist authoritative/non-recoverable knowledge, evidence, user feedback,
+decisions, curriculum progress, and state.
+
+Derived information that can be cheaply/reliably regenerated should not become
+the authoritative source of truth merely because it was computed once.
+Derived indexes/caches/embeddings may be rebuilt.
+Audit-critical reports, provenance, accepted artifacts, and learning history
+must still be retained where needed for traceability.
+
+This balances learning depth with speed and storage efficiency.
+
+======================================================================
+37. RAGA KNOWLEDGE MODEL
+======================================================================
+
+A Raga entity should support:
+- canonical name
+- aliases/transliterations
+- melakarta/janya relation
+- arohanam
+- avarohanam
+- swaras
+- important swaras
+- nyasa/resting notes
+- phrase grammar
+- characteristic prayogas
+- gamakas
+- phrase tendencies
+- ascent/descent behavior
+- cadence behavior
+- aesthetic/mood descriptions with confidence
+- tempo tendencies
+- common mistakes
+- confusable ragas
+- compositions
+- audio examples
+- teaching examples
+- curriculum level
+- source evidence
+
+Unknown fields remain unknown.
+Do not fabricate completeness.
+
+======================================================================
+38. TALA / PROCEDURAL / EXAMPLE / FAILURE KNOWLEDGE
+======================================================================
+
+Tala entity may include:
+- canonical name
+- aliases
+- anga structure
+- beat count
+- subdivisions
+- nadai/gati
+- eduppu
+- patterns
+- counting representation
+- examples
+- sources
+
+Procedural knowledge should include:
+- goal
+- prerequisites
+- inputs
+- ordered steps
+- branches
+- constraints
+- examples
+- failure modes
+- evaluation criteria
+
+Examples are first-class knowledge linked to:
+- concept
+- raga
+- tala
+- technique
+- source
+- timestamp
+- notation
+- extracted features
+- confidence
+- curriculum stage
+
+Failure/Lesson object should include:
+- task
+- attempted method
+- result
+- failure reason
+- correction
+- related knowledge
+- source/run
+- confidence
+- date
+
+Failures should prevent repeated rediscovery of the same mistake.
+
+======================================================================
+39. USER CORRECTION
+======================================================================
+
+User must be able to:
+- mark correct
+- mark incorrect
+- explain correction
+- increase/decrease confidence
+- replace claim
+- add exception
+- add evidence
+- resolve contradiction
+
+User correction creates an audit record.
+Do not erase history.
+
+======================================================================
+40. KNOWLEDGE GAP DETECTION
+======================================================================
+
+The system must know what it does NOT know.
+
+KnowledgeGap may contain:
+- gap_id
+- subject
+- missing information
+- importance
+- reason
+- suggested search
+- curriculum dependency
+- status
+
+Training may use gaps to recommend future study.
+
+======================================================================
+41. PROVIDER MANAGER - UPDATED REQUIREMENT
+======================================================================
+
+Do NOT hard-code the application around one AI model/provider.
+
+The current UI wording that effectively treats:
+- Claude as optional
+- Local model as optional
+
+should evolve into a DYNAMIC PROVIDER SYSTEM.
+
+The application should detect and expose provider availability/status.
+
+Example status concepts:
+- Claude: Configured / Not Configured / Unavailable
+- Local SLM: Available / Not Installed / Loading / Ready
+- Other providers: discovered through the same abstraction
+
+41.1 PROVIDER ABSTRACTION
+
+Create a standard provider interface.
+
+Provider-specific code must not leak throughout the app.
+
+Capabilities may include:
+- reasoning
+- lyrics
+- summarization
+- classification
+- extraction
+- curriculum planning
+- evaluation
+- embeddings
+- speech-to-text
+- music generation
+- singing synthesis
+- audio analysis
+
+41.2 ROUTING
+
+Route tasks based on:
+- required quality
+- latency
+- cost
+- privacy
+- offline requirement
+- hardware capability
+- model capability
+- context size
+- availability
+- current failure state
+
+Use local SLMs for lightweight tasks when suitable.
+
+Use Claude/Anthropic for higher-complexity reasoning where configured and useful.
+
+The learning/knowledge architecture must remain independent of the provider.
+If the model changes, learned knowledge must remain.
+
+41.3 FALLBACK
+
+If a preferred provider fails:
+- report the failure
+- retry if appropriate
+- use a compatible fallback if available
+- do not silently downgrade in a way that changes expected behavior without
+  recording it
+
+41.4 OFFLINE MODE
+
+The desktop app should still launch and remain useful without a cloud API key.
+
+Offline mode may have reduced capabilities, but core local/project/KB behavior
+must remain available.
+
+======================================================================
+42. ANTHROPIC / CLAUDE API KEY
+======================================================================
+
+Add a clear Settings / Provider Configuration area.
+
+Support:
+- entering Anthropic API key
+- validating configuration
+- showing connection/configuration state
+- changing/removing key
+- using the key without source-code edits
+
+Security rules:
+- never hard-code API keys
+- never commit keys to Git
+- never store keys in the Knowledge Base
+- use OS-appropriate secure credential storage where practical
+- redact secrets from logs
+- never include the full key in diagnostic exports
+
+Claude is a provider, not the architecture itself.
+
+======================================================================
+43. LOCAL SLM SUPPORT
+======================================================================
+
+Support one or more lightweight local models behind the same provider abstraction.
+
+Goals:
+- offline basic capability
+- lower latency for simple tasks
+- lower cloud cost
+- privacy for local-only work
+- fallback when cloud provider unavailable
+
+Do not force every task through a local SLM.
+
+Provider Manager decides whether a task is suitable for:
+- local model
+- Claude
+- another future provider
+- deterministic/non-LLM logic
+
+======================================================================
+44. DETERMINISTIC LOGIC VS MODEL LOGIC
+======================================================================
+
+Do not use an LLM when deterministic code is better.
+
+Examples of deterministic responsibilities:
+- file/project persistence
+- database transactions
+- queue management
+- exact timeline arithmetic
+- locked-region protection
+- schema migration
+- duplicate checks where exact fingerprints suffice
+- credential storage
+- state machines
+- retry bookkeeping
+- provider status
+- playback control
+
+Use models for:
+- semantic interpretation
+- musical reasoning
+- summarization
+- creative generation
+- extraction where appropriate
+- evaluation where appropriate
+
+======================================================================
+45. BACKGROUND LEARNING
+======================================================================
+
+Support controlled learning while idle.
+
+Controls:
+- Start
+- Pause
+- Resume
+- Stop
+- current lesson
+- current raga
+- current source
+- progress
+- last learned item
+- warnings/errors
+- history
+
+Bound resource use:
+- max sources per lesson
+- max audio duration
+- max storage
+- max concurrent jobs
+- max daily network usage
+- max compute/API budget
+
+Do not silently consume unlimited resources.
+
+======================================================================
+46. PERSISTENCE / CHECKPOINTING
+======================================================================
+
+Persist continuously, not only at shutdown.
+
+Must survive restart:
+- projects
+- accepted tune/lyrics/voice/arrangement
+- learning queue
+- learning objectives
+- current processing state
+- training reports
+- learned knowledge
+- provenance
+- errors/retry state
+- training history
+- curriculum progress
+- agent state
+
+Use transactional writes.
+
+If a write fails:
+- rollback
+- preserve error state
+- allow retry
+- do not claim successful learning
+
+Crash should lose as little completed work as reasonably possible.
+
+======================================================================
+47. DATABASE DIRECTION
+======================================================================
+
+Initial practical persistence may use:
+- SQLite for structured state/metadata
+- project directories/object files for audio/MIDI/artifacts
+- optional full-text search
+- JSON fields where useful
+- embeddings/vector index only when needed
+
+The logical knowledge model must not be tightly coupled to SQLite.
+
+Allow future migration to:
+- PostgreSQL
+- pgvector
+- graph/vector infrastructure
+
+without rewriting knowledge semantics.
+
+Do not introduce heavy infrastructure before the first complete system works.
+
+======================================================================
+48. RECOMMENDED CORE TABLES / COLLECTIONS
+======================================================================
+
+Logical structures may include:
+
+- kb_metadata
+- knowledge_items
+- entities
+- claims
+- relationships
+- aliases
+- tags
+- knowledge_tags
+- sources
+- evidence
+- conflicts
+- knowledge_versions
+- procedures
+- examples
+- failure_lessons
+- knowledge_gaps
+- learning_runs
+- learning_objectives
+- training_reports
+- user_corrections
+- retrieval_usage
+- migrations
+- curriculum_units
+- curriculum_progress
+- practice_runs
+- evaluation_results
+- provider_status
+- provider_job_history
+- training_queue
+
+Optional:
+- embeddings
+- source_segments
+- audio_features
+- feature_indexes
+
+======================================================================
+49. KNOWLEDGE BASE SERVICE
+======================================================================
+
+Create a central KnowledgeBaseService or equivalent abstraction.
+
+Operations may include:
+- initialize_if_needed()
+- open()
+- close()
+- health_check()
+- add_candidate()
+- validate_candidate()
+- commit_knowledge()
+- get_by_id()
+- find_entity()
+- search()
+- semantic_search()
+- graph_neighbors()
+- add_relationship()
+- add_source()
+- add_evidence()
+- add_conflict()
+- resolve_conflict()
+- create_version()
+- correct_knowledge()
+- mark_rejected()
+- get_context_for_task()
+- detect_gaps()
+- compact()
+- backup()
+
+Other modules should not casually manipulate raw tables directly.
+
+======================================================================
+50. LIBRARIAN / KNOWLEDGE MANAGER
+======================================================================
+
+Implement a logical Librarian/Knowledge Manager capability.
+
+Initially this may be service logic rather than an autonomous agent.
+
+Responsibilities:
+- organize knowledge
+- detect duplicates
+- maintain aliases
+- link related knowledge
+- detect orphans
+- detect contradictions
+- identify weak claims
+- detect gaps
+- compact
+- preserve provenance
+- recommend revalidation
+- monitor storage health
+
+======================================================================
+51. ORIGINALITY
+======================================================================
+
+Learn musical grammar, not copyrighted songs.
+
+Use originality safeguards:
+- phrase similarity checks
+- detect suspiciously long near-identical sequences
+- reject/regenerate over-similar output
+- source fingerprints
+- abstract raga grammar
+- new melodic trajectories
+
+The goal is:
+learn from examples -> compose something new.
+
+======================================================================
+52. PROJECT DATA MODEL / VERSIONING
+======================================================================
+
+Each project should preserve:
+- project_id
+- title
+- created/modified times
+- language
+- duration target
+- current stage
+- creative brief
+- selected raga
+- raga alternatives
+- melody versions
+- approved melody
+- locked melody regions
+- lyrics versions
+- approved lyrics
+- lyric timing
+- voice profile
+- vocal renders
+- vocal-only master
+- arrangement versions
+- tracks/regions
+- instrument timing
+- lock states
+- mix versions
+- final master
+- conversation transcript
+- interpreted commands
+- cancelled/superseded commands
+- undo/redo history
+- provider/job metadata
+- errors/retries
+
+Accepted content must never be silently destroyed.
+
+======================================================================
+53. BACKGROUND JOBS / CANCELLATION
+======================================================================
+
+Long AI/audio jobs must not block the GUI thread.
+
+Each job should track:
+- job_id
+- project_id
+- type
+- target region
+- status
+- progress
+- provider
+- start time
+- cancellation state
+- output artifact
+- error state
+
+If user intent changes:
+- cancel obsolete cancellable jobs
+- allow non-cancellable calls to finish if necessary
+- reject stale output
+- never let stale output overwrite newer user intent
+
+======================================================================
+54. ERROR HANDLING / DIAGNOSTICS
+======================================================================
+
+The application must fail visibly and safely.
+
+Examples:
+
+Source unavailable:
+- mark inaccessible
+- record reason
+
+Transcript unavailable:
+- try permitted alternative
+- otherwise request upload/transcript
+
+Analysis failure:
+- preserve partial work
+- allow retry
+
+Knowledge conflict:
+- store conflict
+- do not overwrite silently
+
+Network failure:
+- bounded retry/backoff
+- preserve queue state
+
+Apply Brief failure:
+- visible error
+- diagnostic log
+- no "nothing happened"
+
+Generate Tune failure:
+- no fake success
+- no silent/single-note artifact treated as valid output
+
+Provider failure:
+- show provider
+- error category
+- retry/fallback action
+- final outcome
+
+UI action diagnostics should make debugging possible without forcing the user to
+read raw logs for every problem.
+
+Provide a diagnostic export that redacts secrets.
+
+======================================================================
+55. SECURITY
+======================================================================
+
+Requirements:
+- validate inputs
+- sanitize source/file metadata
+- no arbitrary SQL generated by model output
+- keep credentials outside KB
+- no secrets in learned content
+- redact keys/tokens in logs
+- audit destructive operations
+- explicit intent required for delete/reset
+- preserve damaged DB copy during corruption recovery
+
+======================================================================
+56. EXPLAINABILITY
+======================================================================
+
+For important music decisions, allow the user to ask:
+- Why did you choose this raga?
+- Why did you generate this phrase?
+- Which knowledge did you use?
+- Where did that knowledge come from?
+- How confident are you?
+- Is there conflicting evidence?
+
+Return:
+- relevant knowledge
+- provenance
+- confidence
+- rules/constraints
+- warnings/conflicts where relevant
+
+======================================================================
+57. OUTPUT / EXPORT
+======================================================================
+
+Eventually support:
+- melody preview
+- structured melody representation
+- lyrics
+- studio vocal-only song
+- instrumental arrangement
+- full mix
+- individual stems where provider supports
+- MIDI where available
+- MusicXML or comparable notation where useful
+- editable project archive
+
+Primary audio:
+- WAV
+- MP3
+
+Project save/reopen is required early.
+Not every export type is required in the first working build.
+
+======================================================================
+58. FIRST COMPLETE IMPLEMENTATION - REQUIRED END-TO-END PATH
+======================================================================
+
+The first COMPLETE version should prove all major architecture pieces exist.
+
+Required path:
+
+1. Existing app launches.
+2. Existing MAIN composition UI remains usable.
+3. MAIN and LEARN are separate top-level workspaces.
+4. Apply Brief is fixed and produces visible status/result/error.
+5. Music Agent exists.
+6. Curriculum Engine exists.
+7. Persistent Knowledge Base opens existing data instead of recreating it.
+8. Provider Manager exists.
+9. Anthropic key can be configured securely.
+10. At least one local SLM path/provider is supported or cleanly pluggable.
+11. Provider status is visible.
+12. One pilot raga exists, preferably Keeravani.
+13. LEARN can accept a search phrase.
+14. Search returns approximately 10 candidate sources.
+15. User can approve selected sources.
+16. Approved sources enter a persistent queue.
+17. One source can be processed.
+18. Learning objectives are created.
+19. Permitted content is analyzed.
+20. At least basic pitch/swara information can be extracted where audio is usable.
+21. A Learning Report is produced.
+22. Validated knowledge is written to the persistent KB with provenance.
+23. App restart preserves knowledge and curriculum/queue state.
+24. Music Agent can retrieve the learned result.
+25. Practice Engine can generate at least one small exercise/pattern.
+26. Evaluator can score it.
+27. Generate Tune can use learned raga knowledge.
+28. Generate Tune returns meaningful multi-note output.
+29. User can see what the agent is learning.
+30. Project can save/reopen.
+
+Do not spend excessive effort making any one item beautiful before all these
+items exist in connected form.
+
+======================================================================
+59. WORKING MILESTONE
+======================================================================
+
+After COMPLETE, make the system WORKING:
+
+- Apply Brief meaningfully ranks ragas
+- Keeravani training runs across multiple curriculum units
+- multiple approved sources can be processed sequentially
+- phrase extraction works at a basic level
+- original motifs are generated
+- user feedback is stored
+- restart/resume works
+- learning pause/resume works
+- provider routing works
+- Claude can be used when configured
+- local model can handle suitable tasks
+- generated output is recognizably musical
+- MAIN remains usable while LEARN exists as a separate screen
+
+======================================================================
+60. RELIABLE MILESTONE
+======================================================================
+
+Then make it RELIABLE:
+
+- no knowledge corruption
+- no duplicate explosion
+- no lost curriculum state
+- resumable ingestion
+- transactional persistence
+- crash recovery
+- autosave
+- provider timeout/retry handling
+- stale-result protection
+- clear errors
+- stable Apply Brief
+- stable Generate Tune
+- automated critical-flow tests
+- migration tests
+- backup/integrity checks
+- microphone/audio-device error handling
+- no silent data loss
+
+======================================================================
+61. CORRECT MILESTONE
+======================================================================
+
+Then improve correctness:
+
+- swara mapping thresholds
+- raga grammar validation
+- characteristic phrase accuracy
+- raga drift detection
+- correct tala/timing behavior
+- lyric-to-tune fit
+- locked-region protection
+- timeline interpretation
+- evaluator calibration
+- confidence calibration
+- conflict resolution
+- retrieval quality
+- user correction handling
+
+======================================================================
+62. EXCELLENT MILESTONE
+======================================================================
+
+Excellence is judged by musical outcome and experience.
+
+Targets:
+- memorable original tunes
+- unmistakable raga identity
+- emotionally sensitive composition
+- expressive melodic movement
+- good preludes/pallavis/anupallavis
+- intelligent improvisation
+- learning from critique
+- continuing improvement
+- breadth across ragas
+- originality
+- fast interaction
+- high-quality voice
+- realistic instruments
+- strong arrangement intelligence
+- lower latency
+- polished UX
+- high-quality mix/master
+
+Ultimate question:
+
+    "Does the music sound like it was created by a highly capable musician?"
+
+======================================================================
+63. KEY ACCEPTANCE TESTS
+======================================================================
+
+TEST A - APPLY BRIEF BUG
+Input:
+- Situation: love failure
+- Mood: sad
+- Feel: lonely late at night but still warm
+
+Expected:
+- visible progress
+- ranked raga suggestions
+- reasons
+- confidence
+- no silent failure
+
+TEST B - PERSISTENCE
+- Teach/store one Keeravani fact or phrase.
+- Close app.
+- Restart.
+- Retrieve same knowledge.
+
+PASS:
+Knowledge remains.
+
+TEST C - TRAINING
+- Open LEARN.
+- Search "Kamboji raga beginner lesson".
+- Receive approximately 10 results.
+- Select 3.
+- Add to queue.
+- Process first source.
+- Produce report.
+- Store knowledge with provenance.
+- Restart app.
+- History and knowledge remain.
+
+TEST D - DUPLICATE
+Learn same fact from two independent sources.
+
+PASS:
+One canonical fact can have multiple evidence records.
+
+TEST E - CONTRADICTION
+Two sources disagree.
+
+PASS:
+Conflict is recorded, not silently overwritten.
+
+TEST F - USER CORRECTION
+User marks a claim wrong.
+
+PASS:
+Correction persists and history remains.
+
+TEST G - TUNE
+Select Keeravani and request a short prelude.
+
+PASS:
+- multi-note output
+- not a single sustained note
+- minimum raga validity
+- playable result
+
+TEST H - PROVIDER
+1. Run without Anthropic key.
+2. Confirm app launches and local/core features work.
+3. Configure Anthropic key.
+4. Validate key/provider status.
+5. Run a complex reasoning task using Claude.
+6. Remove/disable cloud access.
+7. Confirm compatible tasks can route locally.
+
+TEST I - LEARN UI
+PASS only if Learning is a separate top-level workspace and is not cramped as a
+minor composition tab.
+
+TEST J - CRASH
+Commit learned knowledge, terminate app abruptly, restart.
+
+PASS:
+Committed knowledge remains and queue/state recovers safely.
+
+======================================================================
+64. IMMEDIATE IMPLEMENTATION ORDER FOR CLAUDE
+======================================================================
+
+Claude should proceed in this order unless repository inspection reveals a
+genuine dependency:
+
+1. Inspect current repository and running architecture.
+2. Identify existing UI/controller/KB/provider code.
+3. Do not create duplicate systems if equivalents already exist.
+4. Reproduce and fix Apply Brief silent failure.
+5. Add visible action status/error contract.
+6. Restructure top-level UI into MAIN and LEARN.
+7. Keep existing composition functionality under MAIN.
+8. Move/build Learning/Training experience under LEARN.
+9. Verify persistent KB opens existing data and is never recreated accidentally.
+10. Implement/repair provider abstraction and Provider Manager.
+11. Add secure Anthropic key configuration.
+12. Add local SLM adapter/path.
+13. Implement provider capability/status/routing.
+14. Connect Training Search -> user approval -> queue -> one-source processing.
+15. Connect Learning Objectives -> Analysis -> Learning Report -> KB.
+16. Connect Practice -> Evaluator -> mastery/retry.
+17. Connect learned KB knowledge back into Apply Brief and Generate Tune.
+18. Add restart/recovery tests.
+19. Add provider failure/fallback tests.
+20. Add Apply Brief and Generate Tune regression tests.
+
+======================================================================
+65. HARD-BLOCKER POLICY
+======================================================================
+
+Before asking the creator a question:
+
+1. Read this specification.
+2. Inspect existing code/environment.
+3. Determine whether the issue truly blocks implementation.
+4. If reversible, make a reasonable provisional decision.
+5. Continue.
+6. Ask only when a creator decision is genuinely load-bearing.
+
+Do not present a giant questionnaire.
+
+Status reports should use:
+
+COMPLETED
+- What is now functional.
+
+HARD BLOCKERS
+- Only genuine blockers.
+- If none, say "None."
+
+PROVISIONAL DECISIONS TAKEN
+- Reversible decisions made.
+
+TESTS / EVIDENCE
+- What was actually exercised.
+
+NEXT MILESTONE
+- Next observable capability.
+
+======================================================================
+66. NON-GOALS FOR THE FIRST BUILD
+======================================================================
+
+Do not block the first complete system on:
+- perfect singer separation
+- perfect gamaka transcription
+- full automatic tala recognition
+- hundreds of ragas
+- cloud-scale architecture
+- sophisticated distributed-agent infrastructure
+- perfect human-level composition
+- expensive foundational-model training
+- knowledge-graph visualization
+- parallel learning workers
+- video/movie creation
+
+Those may come later.
+
+======================================================================
+67. FINAL DIRECTIVE
+======================================================================
+
+Do not replace the current application with a research prototype.
+
+The current application is the front-end instrument.
+
+MAIN is the music-director workstation.
+
+LEARN is the Music Agent's school, practice room, library, and training console.
+
+The Music Agent is the student/musician behind the application.
+The Curriculum is its education.
+The Research/Search service finds approved study material.
+The Audio Analysis Pipeline gives it ears.
+The Knowledge Base gives it durable memory.
+The Practice Engine gives it exercises.
+The Evaluator acts as teacher/critic.
+The Provider Manager chooses the right intelligence engine for each task.
+Claude is one provider.
+Local SLMs are another provider class.
+The architecture must survive provider changes.
+The Composer turns learning into music.
+User feedback becomes continuing education.
+
+From the first COMPLETE implementation onward, the system must be capable of:
+
+    LEARN SOMETHING
+    -> STORE IT PERMANENTLY
+    -> RESTART
+    -> RETRIEVE IT
+    -> USE IT
+    -> PRACTICE
+    -> BE EVALUATED
+    -> IMPROVE
+
+And throughout development, never reverse:
+
+    COMPLETE -> WORKING -> RELIABLE -> CORRECT -> EXCELLENT
+
+END OF CANONICAL SPECIFICATION

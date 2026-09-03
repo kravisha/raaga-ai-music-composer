@@ -28,6 +28,9 @@ llm = ["anthropic>=0.40"]
 # A small local model loaded in process from a GGUF file. The other local
 # route, Ollama, is a separate application and needs no Python package.
 llm-local = ["llama-cpp-python>=0.2.70"]
+# OS-native secret storage for the Anthropic key. Optional: without it the
+# key still works from credentials.json or the environment variable.
+secure = ["keyring>=25"]
 build = ["pyinstaller>=6.4"]
 dev = ["pytest>=8.0"]
 

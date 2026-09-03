@@ -6,8 +6,13 @@ prompt-in / random-song-out generator: the creator directs the work, and the
 system carries it out instrument by instrument, section by section, time range
 by time range.
 
-Implements *Master Specification v0.2 - Desktop Python Edition* and the
-*Raaga Self-Learning Music Agent* specification v1.0.
+Implements the *Canonical Implementation Specification v0.3*
+(`docs/spec/CANONICAL_SPEC_v0.3.txt`, 2026-09-03), which consolidates the
+earlier *Master Specification v0.2 - Desktop Python Edition*, the *Raaga
+Self-Learning Music Agent* specification, the Training-tab specification and
+the Knowledge Base architecture. Code comments still cite the earlier
+documents' section numbers; `docs/spec/CROSSREF.md` maps each to v0.3, and
+`docs/PLAN_v0.3.md` records what v0.3 changed and its status.
 
 Behind the composer sits a student: a persistent agent with an embedded
 curriculum, its own ears, permanent memory and a teacher. It listens, practises,
@@ -57,8 +62,11 @@ creative direction -> raaga -> TUNE -> lyrics fitted to the tune -> voice
 
 ## The student behind the instrument
 
-Open the **Learning** tab. Press **One lesson** to watch it study, or **Start
-learning** to let it work in the background while you compose.
+Click **LEARN** in the toolbar (or `Ctrl+2`) to switch out of the composer
+into the agent's own workspace - a full screen, not a tab squeezed in beside
+Tune and Lyrics. Its Dashboard area has **Start** and **One lesson** buttons
+to watch it study, or let it work in the background while you compose in
+**MAIN** (`Ctrl+1`).
 
 * **A curriculum it actually executes.** Thirteen foundation lessons - tone
   from noise, higher from lower, finding Sa, naming a swara, ascending from
@@ -83,10 +91,11 @@ learning** to let it work in the background while you compose.
 * **Your corrections count.** Say *"This does not sound like Keeravani"* and it
   lowers its confidence in the phrases it leaned on, and stops using them.
 
-### The Training tab
+### Training Sources, in LEARN
 
 A second way to teach it, and the one that scales: **search for material,
-choose what it may learn from, and read what it made of each source.**
+choose what it may learn from, and read what it made of each source.** This
+lives in LEARN's **Training Sources** area (formerly its own "Training" tab).
 
 1. Type what you are after - *Kamboji raga beginner lesson*, *Carnatic gamaka
    techniques*, *Keeravani arohanam avarohanam tutorial*. Raaga names are
@@ -105,8 +114,8 @@ choose what it may learn from, and read what it made of each source.**
    and what to study next.
 
 Every learned item keeps its provenance - which source, which run, which
-objective, which timestamp, what evidence, what confidence - and the
-**Knowledge base** tab will show you all of it for any item you select. You can
+objective, which timestamp, what evidence, what confidence - and LEARN's
+**Knowledge** area will show you all of it for any item you select. You can
 mark an item incorrect or approve a disputed one; nothing important ever
 changes without leaving a trace.
 
@@ -130,7 +139,7 @@ music, because nothing has verified it. The report says which is which.
 
 ### What it knows, and where it got it
 
-Behind both the Learning and Training tabs is one **Knowledge Base** - a single
+Behind every area of LEARN is one **Knowledge Base** - a single
 SQLite file that is created once and then grows. It is not recreated when you
 restart, upgrade or reinstall, and a damaged one is never quietly replaced with
 an empty one: it is kept, a copy is preserved, and you are told.
@@ -303,6 +312,20 @@ or add `{"anthropic_api_key": "sk-ant-..."}` to
 exists before each request and rebuilds its backends when that changes, so a
 running application picks it up within `llm_refresh_seconds` (30 by default).
 
+### Settings -> Providers
+
+The key can also be entered from inside the application: Settings has a
+Claude group with fields to enter, validate, change and remove it, and a
+Providers table showing every backend's live status (Configured / Not
+configured / Unavailable for Claude, Available / Not installed / Ready for
+local models) alongside the routing policy. With the `keyring` extra
+installed (`pip install raaga-composer[secure]`, or just `pip install
+keyring`), a key entered there goes into the OS credential store - Windows
+Credential Manager on this machine - rather than `credentials.json`; without
+it, the file is used automatically. The environment variable still wins over
+both and is read-only from the dialog, so `setx` keeps working exactly as
+above.
+
 ### Turning a local model on
 
 Either route; neither needs a key and neither touches the network.
@@ -366,7 +389,9 @@ raagacomposer/
                     normalization, confidence model, hybrid retrieval, context
                     builder, librarian and migrations
   providers/        provider abstraction and adapters
-  ui/               PySide6 desktop UI: main window, timeline widget, panels
+  ui/               PySide6 desktop UI: main window with two top-level
+                    workspaces (MAIN, the composer; LEARN, the agent's own
+                    screen - see learn_workspace.py), timeline widget, panels
 tests/
   unit/             one module at a time
   integration/      subsystems together, through the real controller and window
@@ -415,7 +440,12 @@ with real synthesis and real files on disk:
 * `test_restart_recovery.py` - restart, crash mid-save, missing audio file,
   failing provider, absent audio device.
 * `test_ui_window.py` - the real Qt window and every panel, driven offscreen,
-  writing screenshots for inspection.
+  writing screenshots for inspection; includes TEST I, that LEARN is a
+  top-level workspace and not a composer tab.
+* `test_learn_workspace.py` - LEARN's six areas offscreen: the Dashboard
+  against the real agent, Start/Stop reaching the real background learner,
+  one real practice exercise on the job manager, and the Knowledge area's
+  search and provenance widgets.
 * `test_agent_acceptance.py` - the learning specification's own tests A to F:
   persistence across a restart, ranked raaga suggestions with reasons and
   confidence, stating what it learned about Keeravani, a prelude that is real

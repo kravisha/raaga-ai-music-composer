@@ -134,45 +134,23 @@ class Settings:
         tmp.replace(p)
 
     # -- credentials -------------------------------------------------------
+    # Resolution order, and the keyring-then-file storage below the
+    # environment, live in core.secrets.SecretStore; these two classmethods
+    # are kept as the stable entry point every caller already uses.
     @staticmethod
     def credentials_path() -> Path:
-        return config_dir() / "credentials.json"
+        from .secrets import credentials_path as _path
+        return _path()
 
     @classmethod
     def secret(cls, name: str) -> str:
-        env = ENV_KEYS.get(name, name.upper())
-        val = os.environ.get(env, "")
-        if val:
-            return val.strip()
-        p = cls.credentials_path()
-        if p.exists():
-            try:
-                data = json.loads(p.read_text(encoding="utf-8"))
-                return str(data.get(name, "")).strip()
-            except Exception:
-                return ""
-        return ""
+        from .secrets import SecretStore
+        return SecretStore().get(name)
 
     @classmethod
     def set_secret(cls, name: str, value: str) -> None:
-        p = cls.credentials_path()
-        data: Dict[str, Any] = {}
-        if p.exists():
-            try:
-                data = json.loads(p.read_text(encoding="utf-8"))
-            except Exception:
-                data = {}
-        if value:
-            data[name] = value
-        else:
-            data.pop(name, None)
-        tmp = p.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        tmp.replace(p)
-        try:
-            os.chmod(p, 0o600)
-        except Exception:
-            pass
+        from .secrets import SecretStore
+        SecretStore().set(name, value)
 
     # -- recents -----------------------------------------------------------
     def remember_project(self, path: str) -> None:

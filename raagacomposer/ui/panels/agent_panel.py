@@ -23,7 +23,10 @@ class AgentPanel(QWidget):
         self.app = app
 
         # ---- status ------------------------------------------------------
-        status_box = QGroupBox("The student")
+        # Kept as an attribute (not a local) so the LEARN workspace's
+        # Dashboard area can re-home this whole box (spec v0.3 section 4.2A)
+        # instead of rebuilding an equivalent readout from scratch.
+        status_box = self.status_box = QGroupBox("The student")
         self.headline = QLabel("-")
         self.headline.setWordWrap(True)
         self.activity = QLabel("-")
@@ -47,7 +50,9 @@ class AgentPanel(QWidget):
         status_layout.addWidget(self.counts)
 
         # ---- controls ----------------------------------------------------
-        controls = QGroupBox("Learning")
+        # Same reasoning as status_box: kept alive as self.controls so the
+        # LEARN workspace's Dashboard area can re-home it.
+        controls = self.controls = QGroupBox("Learning")
         self.raaga_box = QComboBox()
         self.raaga_box.addItems(self.app.raagas.names())
         study_btn = QPushButton("Study this raaga")
@@ -106,7 +111,9 @@ class AgentPanel(QWidget):
         tabs.addTab(_wrap(self.critique), "Its own critique")
         self.tabs = tabs
 
-        critique_btn = QPushButton("Mark the current tune")
+        # Kept as self.critique_btn so the LEARN workspace's Practice/Quiz
+        # area can re-home it alongside the critique text it fills in.
+        critique_btn = self.critique_btn = QPushButton("Mark the current tune")
         critique_btn.clicked.connect(self._critique)
 
         # ---- talking to the agent ---------------------------------------

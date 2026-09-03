@@ -529,6 +529,65 @@ backends do. Ollama being up with the wrong model pulled is reported as
 unavailable rather than answered with a substitute, for the same reason the
 arranger never quietly swaps an instrument the creator named.
 
+## Canonical specification v0.3
+
+Added 2026-09-03. The four documents the sections above were written against
+are consolidated into one, `docs/spec/CANONICAL_SPEC_v0.3.txt`, with its own
+numbering. `docs/spec/CROSSREF.md` maps every old section number cited in the
+code and in this file to its v0.3 home; `docs/PLAN_v0.3.md` is the work queue
+and status report. The decisions above stand unless a line here says
+otherwise.
+
+**The specification text is kept verbatim, not rewritten.** A section number
+quoted in a commit, a test name or a conversation must resolve to the
+creator's own wording, and a Markdown rewrite would drift from it within a
+week. Cross-referencing costs one table; re-numbering sixty-seven comments
+costs a diff with no behaviour in it.
+
+**Learning leaves the composer's tab bar.** Section 4 makes MAIN and LEARN
+two top-level workspaces, and TEST I fails the previous layout by name. The
+Learning and Training tabs were built as siblings of Tune and Lyrics because
+the earlier specifications asked for tabs; the widgets inside them are kept
+and re-homed under LEARN's six areas (dashboard, curriculum, sources,
+practice, knowledge, history). The two workspaces are pages of one window
+rather than two windows, so the conversation dock, the status bar and the
+transport keep one owner.
+
+**Apply Brief does the whole job.** Section 6 lists eleven things the button
+must do; before this it did one, saving the fields, and the suggestion lived
+behind a second button. That read as "nothing happened", which section 6.1
+forbids. The second button stays as the way to ask for alternatives (section
+7); both run one action that reports its phases.
+
+**Every important action reports a state, not just a message.** Section 6.1's
+Idle / Starting / Working / Completed / Failed / Cancelled contract is one
+small model (`core/actions.py`) that the status bar, the panels and the
+project's error log all read from. It is adopted by Apply Brief first because
+that is the one the specification names; other actions move to it as they are
+touched.
+
+**Secure key storage is `keyring` where present, the file where not.**
+Section 42 says "OS-appropriate secure credential storage where practical".
+On Windows `keyring` writes to Credential Manager and installs without a
+compiler, so it is an optional dependency rather than a core one: the
+application must still start with only `requirements.txt`. The environment
+variable keeps precedence so `setx` still works and a build machine can
+inject a key without a UI. The suite forces the file backend so no test can
+touch the creator's real credential store.
+
+**Provider status is data first, a table second.** Section 41 wants Configured
+/ Not configured / Unavailable and Available / Not installed / Ready visible.
+The registry already knew all of that in the form of log lines; it now
+returns it as `ProviderStatus` rows, and the settings dialog, the diagnostics
+bundle and the LEARN dashboard render the same rows rather than each asking
+the backends again.
+
+**Secrets are redacted at the formatter.** A key that reaches a log line
+through an exception message or a request dump is masked before any handler
+writes it, and the diagnostics export scrubs the same patterns again and
+never bundles `credentials.json`. Two layers because the second exists to
+catch what the first was not written for.
+
 ## Not built, deliberately
 
 * Video, dialogue, scene generation and lip sync - specification section 24

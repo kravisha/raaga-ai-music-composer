@@ -5,6 +5,11 @@ faster-whisper>=1.0
 # Claude, for the work whose quality is heard (lyrics, raaga reasoning)
 anthropic>=0.40
 
+# OS-native secret storage for the Anthropic key (Windows Credential Manager
+# on this machine). Without it the key still works from credentials.json or
+# the environment variable - see core/secrets.py.
+keyring>=25
+
 # Windows packaging
 pyinstaller>=6.4
 
