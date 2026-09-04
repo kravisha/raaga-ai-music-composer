@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 import random
+import zlib
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -36,6 +37,21 @@ TONIC = 60
 
 VARIANT_NAMES = {1: "R1", 2: "R2", 3: "R3", 4: "G3", 5: "M1", 6: "M2",
                  8: "D1", 9: "D2", 10: "N2", 11: "N3"}
+
+
+def practice_seed(unit_id: str, attempt: int = 0) -> int:
+    """The seed for one attempt at one unit.
+
+    Derived from the unit id and the attempt number, never from the clock or
+    from ``hash()``: the same attempt at the same lesson sets the same
+    exercises in every process (str hashes are salted per process), and each
+    retry sets different ones.  A retry that replays the exercises the agent
+    just failed is not a retry - with a clock-based seed every attempt made
+    within the same second was identical, so a lesson that failed once failed
+    the same way until the curriculum gave up on it.
+    """
+    seed = zlib.crc32(f"{unit_id}#{int(attempt)}".encode("utf-8")) & 0x7FFFFFFF
+    return seed or 1
 
 
 @dataclass
@@ -75,7 +91,7 @@ class PracticeEngine:
     # ==================================================================
     def run(self, unit: Unit, raaga_name: str = "", seed: int = 0
             ) -> PracticeReport:
-        rng = random.Random(seed or (hash(unit.id) & 0xFFFF))
+        rng = random.Random(seed or practice_seed(unit.id))
         name = unit.raaga_name or raaga_name
         raaga = None
         if name:

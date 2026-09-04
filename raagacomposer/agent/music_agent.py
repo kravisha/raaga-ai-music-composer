@@ -29,7 +29,7 @@ from .knowledge import KnowledgeRepository, Phrase
 from .learned import (describe_knowledge, knowledge_confidence,
                       learned_phrase_bank, learned_raaga)
 from .originality import PhraseIndex, check as check_originality
-from .practice import PracticeEngine, PracticeReport
+from .practice import PracticeEngine, PracticeReport, practice_seed
 from .research import ResearchAgent, SourceCandidate
 
 log = get_logger("agent.music")
@@ -314,8 +314,12 @@ class MusicAgent:
 
     def _practice_step(self, unit: Unit, raaga: str) -> LearningStep:
         step = LearningStep(action="practice", unit_id=unit.id, raaga=raaga)
+        # Each attempt sets fresh exercises, and the same attempt sets the
+        # same ones in every run.  Seeding from the clock replayed one failed
+        # attempt identically for as long as the second lasted (REG-100).
+        attempt = self.repo.progress(unit.id).attempts
         report = self.practice.run(unit, raaga,
-                                   seed=int(time.time()) % 100000)
+                                   seed=practice_seed(unit.id, attempt))
         progress = self.curriculum.record_attempt(
             unit, report.score, report.passed, report.detail)
         step.score = report.score
