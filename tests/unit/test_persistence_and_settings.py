@@ -218,3 +218,56 @@ def test_an_atomic_save_leaves_no_temporary_file(settings):
     project, directory = store.create("Atomic")
     store.save(project, directory)
     assert not list(directory.glob("*.tmp"))
+
+
+# --------------------------------------------------------------------------
+# provenance (docs/PLAN_agent_factory.md, "Item 4, integrated")
+# --------------------------------------------------------------------------
+def test_melody_provenance_survives_save_and_reopen(settings):
+    store = ProjectStore(settings)
+    project, directory = store.create("Provenance Round Trip")
+    section = Section(name="Pallavi", start=0.0, end=8.0)
+    melody = MelodyVersion(
+        version=1, raaga="Keeravani", sections=[section],
+        notes=[Note(swara="S", midi=60, section_id=section.id),
+              Note(swara="R2", midi=62, section_id=section.id),
+              Note(swara="G2", midi=64, section_id=section.id)],
+        provenance=[{"start": 0, "end": 2, "swaras": "S R2 G2",
+                    "source": "learned", "phrase_id": "phr_abc",
+                    "origin": "a lesson recording", "section_id": section.id}],
+        guidance_note="avoid large leaps")
+    project.melodies = [melody]
+    project.approved_melody = 1
+    store.save(project, directory)
+
+    reopened = store.open(directory)
+    got = reopened.melody()
+    assert got.provenance == melody.provenance
+    assert got.guidance_note == "avoid large leaps"
+
+
+def test_a_project_saved_without_provenance_loads_with_an_empty_list(settings):
+    """A project.json written before this field existed has no ``provenance``
+    key at all; ``core.serde.from_jsonable`` must tolerate that rather than
+    fail to load an old project."""
+    store = ProjectStore(settings)
+    project, directory = store.create("Old Project")
+    section = Section(name="Pallavi", start=0.0, end=8.0)
+    project.melodies = [MelodyVersion(version=1, raaga="Mohanam",
+                                      sections=[section],
+                                      notes=[Note(swara="G3", midi=64,
+                                                  section_id=section.id)])]
+    project.approved_melody = 1
+    store.save(project, directory)
+
+    path = directory / PROJECT_FILE
+    data = json.loads(path.read_text(encoding="utf-8"))
+    melody_data = data["melodies"][0]
+    assert "provenance" in melody_data      # sanity: the field is written
+    del melody_data["provenance"]
+    del melody_data["guidance_note"]
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    reopened = store.open(directory)
+    assert reopened.melody().provenance == []
+    assert reopened.melody().guidance_note == ""

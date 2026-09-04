@@ -10,7 +10,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 
 def new_id(prefix: str = "") -> str:
@@ -152,6 +152,15 @@ class MelodyVersion:
     validation: List[str] = field(default_factory=list)
     parent_version: Optional[int] = None
     derived_from: str = ""
+    # Where each quoted fragment came from (music/melody.py), one entry per
+    # quote: {"start", "end" (note indices, inclusive), "swaras", "source"
+    # ("prayoga" | "learned"), "phrase_id", "origin", "section_id"}.  A
+    # project saved before this field existed loads with an empty list
+    # (core/serde.py tolerates a missing key).
+    provenance: List[Dict[str, Any]] = field(default_factory=list)
+    # What guided regeneration (app.py, generate_tune) was told to avoid on
+    # the winning candidate, for "why did you choose this phrase?".
+    guidance_note: str = ""
 
     @property
     def duration(self) -> float:

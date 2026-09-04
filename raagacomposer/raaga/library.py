@@ -66,6 +66,12 @@ class Raaga:
     # view (agent/learned.py, learned_raaga) ever carries one.  Excluded from
     # repr/equality and never serialised so it cannot leak into raagas.json.
     idiom: Optional[Any] = field(default=None, repr=False, compare=False)
+    # Where each learned prayoga came from (agent/learned.py, learned_raaga),
+    # keyed by the phrase's swaras joined with a space: {"phrase_id": ...,
+    # "origin": ...}.  Only the learned view ever fills this; excluded from
+    # repr/equality and never serialised for the same reason as ``idiom``.
+    prayoga_sources: Dict[str, Any] = field(default_factory=dict, repr=False,
+                                            compare=False)
 
     # -- note sets ---------------------------------------------------------
     @property

@@ -19,12 +19,12 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from .agent.guidance import build_guidance
 from .agent.knowledge import Lesson
 from .agent.music_agent import MusicAgent
 from .training.controller import TrainingController
 from .kb.context import KnowledgeContextBuilder
 from .kb.service import KnowledgeBaseService
-from .agent.originality import check as check_originality
 from .audio import export as export_engine
 from .audio.playback import PlaybackEngine
 from .core.actions import ActionState, ActionStatus
@@ -856,32 +856,80 @@ class AppController:
         version = (max((m.version for m in self.project.melodies), default=0)) + 1
         self.status(f"Composing a tune in {raaga.name}...")
 
-        index = self.agent.phrase_index(raaga.name)
+        brief = self.project.brief
+        project_id = self.project.project_id
+        max_rewrites = max(0, int(getattr(self.settings, "compose_rewrites", 3)))
+        threshold = float(getattr(self.settings, "compose_threshold", 0.7))
+        bank = self.agent.phrase_bank(raaga.name)
 
         def work(ctx: JobContext) -> MelodyVersion:
             ctx.progress(0.15, "Planning sections")
             sections = plan_sections(opts.duration_target, opts.tempo_bpm,
                                      opts.beats_per_cycle, opts.song_type)
+
+            # What the raaga's lessons already say - critiques, failed
+            # rewrites of an earlier tune, creator feedback - applies from
+            # the first draft, the same way agent/practice.py always builds
+            # guidance before an attempt runs rather than only after one
+            # fails.
+            initial_guidance = build_guidance(self.agent.repo, raaga.name)
+            opts.guidance = initial_guidance
+            guidance_note = initial_guidance.describe()
+
             ctx.progress(0.4, "Writing phrases")
             melody = melody_engine.generate(raaga, opts, sections, version=version)
 
-            # A tune must be the agent's own. If it has drifted into repeating
-            # something it learned, write a different one.
-            for attempt in range(3):
+            # A tune must earn its keep: the agent listens back with its own
+            # evaluator (originality included) and, when it falls short,
+            # rewrites with guidance built from what went wrong - three tries
+            # by default (settings.compose_rewrites), best kept (spec section
+            # 6.1's phase contract makes each rewrite visible rather than a
+            # silent retry loop).
+            best, best_score = melody, -1.0
+            rewrite_lines: List[str] = []
+            for attempt in range(max_rewrites + 1):
                 ctx.check()
-                report = check_originality([n.swara for n in melody.notes], index)
-                if report.is_original:
+                ctx.progress(min(0.8, 0.45 + 0.08 * attempt), "Listening back")
+                evaluation = self.agent.evaluator(raaga.name).evaluate(
+                    melody.notes, raaga, brief=brief, tempo_bpm=opts.tempo_bpm,
+                    expected_seconds=opts.duration_target, learned_phrases=bank)
+                overall = evaluation.overall()
+                original = (evaluation.originality is None
+                           or evaluation.originality.is_original)
+                if overall > best_score:
+                    best, best_score = melody, overall
+
+                if overall >= threshold and original:
                     break
-                log.info("regenerating the tune: %s", report.summary())
-                ctx.progress(0.5 + 0.1 * attempt, "Rewriting to stay original")
+                if attempt >= max_rewrites:
+                    break
+
+                try:
+                    self.agent.record_lessons(
+                        evaluation, raaga=raaga.name, task="composition",
+                        method="generate", result=overall,
+                        source_run=f"{project_id}:v{version}:try{attempt + 1}")
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("could not record lessons from this rewrite: %s", exc)
+
+                kinds = sorted({f.kind for f in evaluation.findings})
+                rewrite_lines.append(f"rewrite {attempt + 1}: {', '.join(kinds)}")
+
+                guidance = build_guidance(self.agent.repo, raaga.name)
+                opts.guidance = guidance
                 opts.seed += 7919
+                guidance_note = guidance.describe()
+                ctx.progress(min(0.82, 0.5 + 0.08 * attempt),
+                            f"Rewriting: {', '.join(guidance.kinds[:3])}"
+                            if guidance.kinds else "Rewriting")
                 melody = melody_engine.generate(raaga, opts, sections,
                                                 version=version)
 
-            ctx.progress(0.85, "Checking raaga fidelity")
-            check = validate(melody, raaga, opts.voice_low, opts.voice_high)
-            melody.validation = check.issues
-            return melody
+            ctx.progress(0.9, "Checking raaga fidelity")
+            check = validate(best, raaga, opts.voice_low, opts.voice_high)
+            best.validation = rewrite_lines + check.issues
+            best.guidance_note = guidance_note
+            return best
 
         self.jobs.submit("tune.generate", "melody:all", work,
                          on_done=lambda m: self._tune_ready(m, "Generated"),
@@ -957,7 +1005,8 @@ class AppController:
                 raaga=melody.raaga, brief=self.project.brief,
                 notes=melody.notes, tempo_bpm=melody.tempo_bpm,
                 structure={"sections": [s.name for s in melody.sections],
-                           "version": melody.version})
+                           "version": melody.version},
+                seed=melody.seed)
             self.last_evaluation = evaluation
             if evaluation.scores:
                 critique = f" - the agent scores it {evaluation.overall():.2f}"
@@ -1043,6 +1092,10 @@ class AppController:
 
     def ask_agent(self, question: str) -> str:
         raaga = self.project.raaga.selected or ""
+        melody = self.project.melody()
+        low = (question or "").lower()
+        if melody is not None and ("why" in low or "phrase" in low):
+            return self.agent.explain_choice(melody, raaga or melody.raaga)
         return self.agent.explain(question, raaga)
 
     def agent_knowledge(self, name: str = "") -> str:
@@ -1085,6 +1138,15 @@ class AppController:
             self._record_feedback_lessons(text)
         except Exception as exc:  # noqa: BLE001
             log.warning("could not record a lesson from this feedback: %s", exc)
+        try:
+            sentiment = self.agent.feedback_sentiment(text)
+            if sentiment in ("positive", "negative"):
+                raaga = self.project.raaga.selected or self.agent.curriculum.current_raaga()
+                self.agent.record_field_feedback(
+                    raaga, text, sentiment == "positive", self.last_evaluation,
+                    self.project.project_id)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("could not record field feedback for the factory: %s", exc)
         return answer
 
     def _record_feedback_lessons(self, text: str) -> None:
@@ -1097,6 +1159,15 @@ class AppController:
             failure_reason=text[:200], task="composition",
             method="creator feedback", confidence=0.95,
             source_run=self.project.project_id))
+        # The creator's words in the evaluator's vocabulary, so the next
+        # tune's guidance acts on them even when the critic found nothing.
+        for kind in self.agent.feedback_kinds(text):
+            self.agent.repo.add_lesson(Lesson(
+                raaga=raaga, kind=kind, dimension="creator",
+                failure_reason=f"the creator said: {text[:160]}",
+                correction=kind.replace("_", " "), task="composition",
+                method="creator feedback", confidence=0.95,
+                source_run=self.project.project_id))
         if self.last_evaluation is not None:
             self.agent.record_lessons(
                 self.last_evaluation, raaga=raaga, task="composition",
