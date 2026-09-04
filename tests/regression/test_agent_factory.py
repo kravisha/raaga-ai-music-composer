@@ -208,11 +208,13 @@ def test_af08_test_evolution(settings, raagas):
 # --------------------------------------------------------------------------
 # REG-095 re-verified: train_step must not perturb learn_step
 # --------------------------------------------------------------------------
-def test_train_step_does_not_change_learn_step(tmp_path, settings, raagas):
-    """REG-095's own harness (does the learning loop ever stall, does it
-    reach good completion) gives the exact same step sequence whether or not
-    a ``train_step`` was ever called on the agent - the new path is
-    additive, not a change to ``learn_step``."""
+def test_train_step_hands_the_curriculum_on_to_learn_step(tmp_path, settings,
+                                                          raagas):
+    """The two loops keep one ledger.  A unit the student applied
+    independently under the trainer is a unit passed, so ``learn_step``
+    continues from the next unit and its sequence from there is exactly
+    REG-095's own: ``train_step`` changes where the curriculum stands, never
+    how ``learn_step`` behaves."""
     baseline_agent = MusicAgent(settings, raagas)
     try:
         seen_baseline = []
@@ -236,7 +238,11 @@ def test_train_step_does_not_change_learn_step(tmp_path, settings, raagas):
 
     trained_agent = MusicAgent(other_settings, raagas)
     try:
-        trained_agent.train_step()
+        outcome = trained_agent.train_step()
+        first_unit = seen_baseline[0][1]
+        assert outcome is not None
+        assert trained_agent.repo.progress(first_unit).status == "passed", \
+            "the trainer's independent-application pass is a curriculum pass"
         seen_after_train = []
         for _ in range(60):
             step = trained_agent.learn_step()
@@ -247,4 +253,45 @@ def test_train_step_does_not_change_learn_step(tmp_path, settings, raagas):
     finally:
         trained_agent.close()
 
-    assert seen_baseline == seen_after_train
+    assert seen_after_train == seen_baseline[1:]
+
+
+def test_af04b_a_wrong_belief_is_corrected_through_a_training_cycle(taught_agent):
+    """Acceptance test 4 the way it happens in training, not by calling the
+    Judge by hand: the student confidently believes Keeravani has G3, so it
+    calls a real Keeravani phrase invalid; the trainer, going by the
+    library, disagrees; the cycle convenes the Judge, AllowedSwarasRule
+    rules for the trainer, the correction names the library's swara set,
+    the wrong scale claims are overruled, and the learned view is right
+    again.  The ruling and a candidate reusable lesson remain; no judge
+    object does."""
+    agent = taught_agent
+    for key, value in (("arohanam", "S R2 G3 M1 P D1 N3 S+"),
+                       ("avarohanam", "S+ N3 D1 P M1 G3 R2 S"),
+                       ("swaras", "S R2 G3 M1 P D1 N3")):
+        agent.repo.add_fact(Fact(raaga="Keeravani", key=key, value=value,
+                                 confidence=1.0, notes="a wrong belief"))
+    assert "G3" in agent.raaga_for_composition("Keeravani")[0].allowed
+
+    store = agent.factory_store()
+    for _ in range(30):
+        outcome = agent.train_step()
+        if outcome is None or outcome.ruling is not None:
+            break
+    disputes = store.disputes()
+    assert disputes, "the wrong belief never met the trainer"
+    ruling = store.ruling(disputes[0].ruling_id)
+    assert ruling is not None and ruling.resolved
+    assert ruling.decided_by == "AllowedSwarasRule"
+    assert ruling.accepted_claim == "trainer"
+    assert "Keeravani's swaras is S R2 G2 M1 P D1 N3" in ruling.correction_student
+
+    corrected = agent.raaga_for_composition("Keeravani")[0]
+    assert "G3" not in corrected.allowed
+    wrong = [f for f in agent.repo.facts("Keeravani", "arohanam") if "G3" in f.value]
+    assert wrong and all(f.confidence <= 0.3 and "overruled" in f.notes for f in wrong)
+
+    reusable = store.reusable_lessons(domain="carnatic-music")
+    assert reusable and reusable[0].rule_or_procedure.startswith(
+        "Keeravani's swaras is S R2 G2 M1 P D1 N3")
+    assert reusable[0].validation_status.value == "candidate"

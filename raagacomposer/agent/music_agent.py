@@ -205,6 +205,33 @@ class MusicAgent:
         store.save_profile(profile)
         return profile
 
+    def _record_cycle_in_curriculum(self, lesson, outcome) -> None:
+        """The curriculum is the other ledger of the same study: a unit the
+        student applied independently under the trainer is a unit passed,
+        and a cycle that failed every test is a failed attempt, so
+        ``next_unit`` moves on or rests exactly as it does for learn_step.
+        Without this the trainer would set the first lesson forever."""
+        from ..factory.models import TestLevel
+
+        unit = self.curriculum.unit(lesson.origin) if lesson.origin else None
+        if unit is None or not outcome.results:
+            return
+        if self.repo.progress(unit.id).status == "passed":
+            return
+        independent = [r for r in outcome.results
+                       if r.passed and r.level >= TestLevel.T4_INDEPENDENT_APPLICATION]
+        if independent:
+            best = max(r.score for r in independent)
+            self.curriculum.record_attempt(
+                unit, best, True,
+                f"factory: {outcome.mastery_after.label} after "
+                f"{len(outcome.results)} test(s)")
+        elif not any(r.passed for r in outcome.results):
+            worst = min(r.score for r in outcome.results)
+            self.curriculum.record_attempt(
+                unit, worst, False,
+                f"factory: every test failed at {outcome.mastery_after.label}")
+
     def train_step(self, raaga: Optional[str] = None):
         """One turn of the Agent Factory learning cycle (document 01's ten
         steps), on top of the same curriculum, knowledge and engines
@@ -230,6 +257,7 @@ class MusicAgent:
             rules = hard_rules(self.library, self.phrase_index(active))
             cycle = LearningCycle(store, student, trainer, rules=rules)
             outcome = cycle.run(lesson)
+            self._record_cycle_in_curriculum(lesson, outcome)
             self.repo.log_event(
                 "factory.cycle",
                 f"{lesson.concept}: {outcome.mastery_before.label} -> "

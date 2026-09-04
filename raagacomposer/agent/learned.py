@@ -13,7 +13,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 from ..core.logging_setup import get_logger
 from ..raaga.library import Raaga, RaagaLibrary, parse_swara
 from .idiom import RaagaIdiom
-from .knowledge import KnowledgeRepository
+from .knowledge import Fact, KnowledgeRepository
 
 log = get_logger("agent.learned")
 
@@ -34,8 +34,18 @@ def learned_raaga(repo: KnowledgeRepository, library: RaagaLibrary,
     facts that came from the repository rather than from the fallback.
     """
     fallback = library.get(name)
-    facts = {f.key: f for f in repo.facts(name)
-             if f.confidence >= min_confidence}
+    # One fact per key: the most trusted claim, whatever order the store
+    # returns them in.  A dict comprehension kept whichever came last, so
+    # a contradicting claim could override a better one by accident.
+    facts: Dict[str, Fact] = {}
+    for fact in repo.facts(name):
+        if fact.confidence < min_confidence:
+            continue
+        held = facts.get(fact.key)
+        if held is None or fact.confidence > held.confidence or (
+                fact.confidence == held.confidence
+                and fact.learned_at > held.learned_at):
+            facts[fact.key] = fact
     if not facts and fallback is None:
         return None, 0.0
     if fallback is None and "arohanam" not in facts:

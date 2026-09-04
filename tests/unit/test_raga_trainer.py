@@ -84,13 +84,16 @@ def test_build_tests_t0_t1_for_a_fresh_concept(trainer):
     lesson = Lesson(domain="carnatic-music", concept="fresh-concept",
                     origin=AROHANAM_UNIT)
     tests = raga_trainer.build_tests(lesson, profile, [])
-    assert len(tests) == 2
+    # The earned rung (T0 and T1 for a fresh concept) plus one rung above
+    # it, so the adaptive trainer has something to promote to.
+    assert len(tests) >= 3
     assert tests[0].level == TestLevel.T0_RECOGNITION
     assert tests[0].payload["skill_type"] == "listen.identify"
     assert tests[1].level == TestLevel.T1_RECALL
     assert tests[1].payload["skill_type"] == "recall.fact"
     assert tests[0].novelty == 1.0
     assert tests[1].novelty == 1.0
+    assert any(t.level == TestLevel.T2_EXPLANATION for t in tests[2:])
 
 
 def test_build_tests_t7_uses_correct_phrase(trainer):

@@ -120,9 +120,13 @@ class LearningCycle:
                                       escalate=self.escalate)
                 if (this_ruling.resolved and this_ruling.decided_by
                        and this_ruling.decided_by != "escalation"):
+                    # The reusable lesson is the rule the losing side was
+                    # told, when there is one; the rationale otherwise.
                     reusable = ReusableLesson(
                         source_event=this_ruling.id,
-                        rule_or_procedure=this_ruling.rationale,
+                        rule_or_procedure=(this_ruling.correction_student
+                                           or this_ruling.correction_trainer
+                                           or this_ruling.rationale),
                         knowledge_class=KnowledgeClass.DISPUTE_LESSON,
                         confidence=this_ruling.confidence,
                         validation_status=ValidationStatus.CANDIDATE,

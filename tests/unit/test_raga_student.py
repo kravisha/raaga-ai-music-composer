@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import pytest
 
+from raagacomposer.agent.knowledge import Fact
 from raagacomposer.agent.music_agent import MusicAgent
 from raagacomposer.agent.student import RagaStudent
 from raagacomposer.factory.models import Lesson, TestLevel, TestSpec
@@ -151,10 +152,12 @@ def test_apply_correction_writes_a_fact_and_a_lesson(taught_agent, student):
     lesson = _arohanam_lesson(taught_agent)
     before = len(taught_agent.repo.lessons(unit_id=UNIT_ID, include_applied=True))
 
-    # A key that is not already seeded, so ``add_fact`` inserts a fresh row
-    # rather than merging into an existing one at whatever confidence it
-    # already had - the exact 0.9 the brief asks for is only guaranteed on
-    # a first insert.
+    # A key the student had a wrong, confident belief about: the ruling's
+    # value goes in as hard knowledge and the wrong claim is overruled, so
+    # the learned view changes rather than the two claims sharing a key.
+    taught_agent.repo.add_fact(Fact(
+        raaga="Keeravani", key="disputed_cadence_note", value="R2",
+        confidence=0.95, notes="a wrong belief"))
     correction = ("Keeravani's disputed_cadence_note is P by the library "
                   "(hard knowledge)")
     raga_student.apply_correction(correction, lesson)
@@ -163,8 +166,11 @@ def test_apply_correction_writes_a_fact_and_a_lesson(taught_agent, student):
     assert len(after) == before + 1
     assert after[0].kind == "judge_correction"
 
-    facts = taught_agent.repo.facts("Keeravani", "disputed_cadence_note")
-    assert len(facts) == 1
-    assert facts[0].value == "P"
-    assert facts[0].confidence == 0.9
-    assert "ruling" in facts[0].notes
+    facts = {f.value: f for f in
+             taught_agent.repo.facts("Keeravani", "disputed_cadence_note")}
+    assert facts["P"].confidence == 1.0
+    assert "ruling" in facts["P"].notes
+    assert facts["R2"].confidence <= 0.3
+    assert "overruled" in facts["R2"].notes
+    assert taught_agent.repo.best_fact(
+        "Keeravani", "disputed_cadence_note").value == "P"

@@ -38,6 +38,14 @@ MEANINGS = {
 
 # A ruling's correction text that names a fact, written in the shape
 # FactRule.decide produces: "<raaga>'s <key> is <value> by the library ...".
+def _looks_like_swaras(text: str) -> bool:
+    """Every token is a swara name, so a rule can judge it as a phrase."""
+    from ..raaga.library import SWARA_SEMITONES, parse_swara
+    tokens = (text or "").split()
+    return bool(tokens) and all(parse_swara(t)[0] in SWARA_SEMITONES
+                                for t in tokens)
+
+
 FACT_CORRECTION = re.compile(
     r"^(?P<raaga>.+?)'s (?P<key>\w+) is (?P<value>.+?) by the library", re.I)
 
@@ -222,9 +230,15 @@ class RagaStudent:
         for notes in report.artifacts:
             evidence.append("phrase: " + " ".join(n.swara for n in notes))
         if not report.artifacts:
+            # The phrase under judgement, not the student's answer about
+            # it: a classification exercise keeps its tokens in ``detail``
+            # and its verdict in ``heard``; a repair keeps the repaired
+            # line in ``heard``.
             for exercise in report.exercises:
-                if exercise.heard:
-                    evidence.append("phrase: " + exercise.heard)
+                phrase = (exercise.detail if skill_type == "classify.valid"
+                          else exercise.heard)
+                if phrase and _looks_like_swaras(phrase):
+                    evidence.append("phrase: " + phrase)
         evidence.append(f"raaga: {raaga}")
         evidence.append(f"score: {report.score}")
         evidence.extend(f"{e.name}: {e.detail}" for e in report.exercises
@@ -240,15 +254,16 @@ class RagaStudent:
         learned_raaga_obj, _ = self.agent.raaga_for_composition(raaga)
         if learned_raaga_obj is None or not report.artifacts:
             return "invalid"
-        evaluator = self.agent.evaluator(raaga)
-        bank = self.agent.phrase_bank(raaga)
+        # A grammar verdict from what the student believes the raaga to be:
+        # every generated line must use only its swaras and move the way
+        # its arohanam and avarohanam allow.  The trainer states the same
+        # verdict from the library, so the two differ exactly when what was
+        # learned contradicts what is known - the case the Judge is for.
         for notes in report.artifacts:
-            evaluation = evaluator.evaluate(
-                notes, learned_raaga_obj, tonic_midi=TONIC,
-                learned_phrases=bank)
-            if evaluation.passed(unit.minimum_pass_score):
-                return "valid"
-        return "invalid"
+            tokens = [n.swara for n in notes]
+            if not self.agent.practice._judge_valid(learned_raaga_obj, tokens):
+                return "invalid"
+        return "valid"
 
     def _perform_explain(self, raaga: str, params: dict) -> Performance:
         keys = list(params.get("facts", [])) or self._fact_keys(None, raaga)
@@ -279,8 +294,26 @@ class RagaStudent:
 
         match = FACT_CORRECTION.match(correction or "")
         if match:
+            # A ruling from hard knowledge is as sure as the library: the
+            # right value goes in at full confidence and every claim that
+            # contradicted it is overruled, so the learned view changes.
+            fact_raaga = match.group("raaga").strip()
+            key = match.group("key").strip()
+            value = match.group("value").strip()
             self.agent.repo.add_fact(Fact(
-                raaga=match.group("raaga").strip(),
-                key=match.group("key").strip(),
-                value=match.group("value").strip(), confidence=0.9,
+                raaga=fact_raaga, key=key, value=value, confidence=1.0,
                 notes="corrected by a Judge ruling"))
+            self.agent.repo.overrule_facts(
+                fact_raaga, key, value, note="overruled by a Judge ruling")
+            if key == "swaras":
+                # The scale claims that put a foreign note into the
+                # inventory are contradicted by the same ruling.
+                from ..raaga.library import parse_swara
+                ruled = {parse_swara(t)[0] for t in value.split()}
+                for scale_key in ("arohanam", "avarohanam"):
+                    for held in self.agent.repo.facts(fact_raaga, scale_key):
+                        bases = {parse_swara(t)[0] for t in held.value.split()}
+                        if bases - ruled:
+                            self.agent.repo.overrule_fact(
+                                fact_raaga, scale_key, held.value,
+                                note="overruled by a Judge ruling on the swaras")
