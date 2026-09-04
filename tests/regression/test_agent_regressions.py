@@ -14,7 +14,8 @@ import pytest
 from raagacomposer.agent import analysis
 from raagacomposer.agent.curriculum import CurriculumEngine
 from raagacomposer.agent.evaluator import Evaluation
-from raagacomposer.agent.knowledge import KnowledgeRepository
+from raagacomposer.agent.guidance import build_guidance
+from raagacomposer.agent.knowledge import KnowledgeRepository, Lesson
 from raagacomposer.agent import music_agent
 from raagacomposer.agent.music_agent import MusicAgent
 from raagacomposer.agent.practice import (ExerciseResult, PracticeEngine,
@@ -259,7 +260,7 @@ def test_reg_100b_retries_within_one_second_are_not_the_same_exercise(
     agent = MusicAgent(settings, raagas)
     seeds = []
 
-    def failing_run(unit, raaga_name="", seed=0):
+    def failing_run(unit, raaga_name="", seed=0, guidance=None):
         seeds.append((unit.id, seed))
         return PracticeReport(unit_id=unit.id, skill_type=unit.skill_type,
                               score=0.2, passed=False, detail="failed")
@@ -288,11 +289,12 @@ def test_reg_101_a_failed_attempt_becomes_a_lesson(
     same unit was a fresh roll of the dice with no memory of what went wrong
     (spec section 38).  Now every finding on a failed Evaluation becomes a
     lesson, the same mistake recurring is counted rather than duplicated, and
-    a passing attempt writes nothing at all."""
+    a passing attempt writes no new lesson (it may retire the ones that
+    guided it into passing - see REG-102b)."""
     settings.knowledge_db = str(tmp_path / "k.db")
     agent = MusicAgent(settings, raagas)
 
-    def failing_run(unit, raaga_name="", seed=0):
+    def failing_run(unit, raaga_name="", seed=0, guidance=None):
         evaluation = Evaluation()
         evaluation.note("swara_correctness", "outside_swara",
                         "1 note(s) outside Keeravani: G3", evidence="G3")
@@ -323,15 +325,18 @@ def test_reg_101_a_failed_attempt_becomes_a_lesson(
         assert all(l.recurrences == 2 for l in second_lessons)
         assert "again:" in step2.detail
 
-        before = agent.repo.stats()["lessons"]
+        before = len(agent.repo.lessons(unit_id=unit_id, include_applied=True))
 
-        def passing_run(unit, raaga_name="", seed=0):
+        def passing_run(unit, raaga_name="", seed=0, guidance=None):
             return PracticeReport(unit_id=unit.id, skill_type=unit.skill_type,
                                   score=0.95, passed=True, detail="passed")
 
         monkeypatch.setattr(agent.practice, "run", passing_run)
         agent.learn_step()
-        assert agent.repo.stats()["lessons"] == before
+        # No new rows: the pass only retires the lessons that guided it
+        # (spec section 38's guidance loop, REG-102b), never duplicates one.
+        after = agent.repo.lessons(unit_id=unit_id, include_applied=True)
+        assert len(after) == before
     finally:
         agent.close()
 
@@ -345,7 +350,7 @@ def test_reg_101b_a_failed_listening_exercise_becomes_a_lesson(
     settings.knowledge_db = str(tmp_path / "k.db")
     agent = MusicAgent(settings, raagas)
 
-    def failing_exercise_run(unit, raaga_name="", seed=0):
+    def failing_exercise_run(unit, raaga_name="", seed=0, guidance=None):
         exercises = [
             ExerciseResult(name="name the swara 1", score=0.0, passed=False,
                           expected="G2", heard="G3", detail="heard wrong"),
@@ -369,3 +374,153 @@ def test_reg_101b_a_failed_listening_exercise_becomes_a_lesson(
         assert "heard" in lessons[0].failure_reason
     finally:
         agent.close()
+
+
+# --------------------------------------------------------------------------
+# REG-102  a retry is informed by the last failure
+# --------------------------------------------------------------------------
+def _teach_through_prayogas(agent: MusicAgent, max_steps: int = 40) -> None:
+    """The same path test_agent_acceptance's ``study()`` takes: real research
+    and real practice, no mocks, until the agent has heard Keeravani's
+    characteristic phrases."""
+    for _ in range(max_steps):
+        if agent.repo.progress("b06.prayogas:Keeravani").status == "passed":
+            break
+        step = agent.learn_step()
+        if step.action == "idle":
+            break
+
+
+def test_reg_102_a_retry_is_informed_by_the_last_failure(
+        tmp_path, settings, raagas, monkeypatch):
+    """A failed attempt at ``b13.short_phrase:Keeravani`` writes lessons; the
+    guidance built from them changes the *next* attempt at the very same
+    seed enough that the finding it was built to avoid does not recur, and
+    the line scores higher for it.
+
+    Seed 75 is pinned: with a repository taught up through the prayogas unit
+    by the reference provider (real research, real practice - no mocks), the
+    unguided attempt at this seed fails with a ``not_original`` finding and
+    nothing else, and guidance built from that one finding is enough to make
+    the retry both drop the finding and score higher.  ``build_guidance`` now
+    also fills ``Guidance.avoid_runs`` from the matched phrase's own swaras,
+    so the retry's generation is barred from replaying three notes of it in a
+    row, not only from quoting it outright (docs/PLAN_learning_loop.md, the
+    ``avoid_runs`` lever) - the unit test
+    ``test_avoid_runs_never_replays_three_notes_of_a_bank_phrase`` in
+    tests/unit/test_practice_guidance.py pins that guarantee directly.
+
+    A 1..400 search on this unit: 20 seeds fail unguided with
+    ``not_original``.  A first cut of the guidance fixed 7 of them, because
+    the lesson named only the phrase the *last* exercise had copied (the
+    evaluation's own originality report) while the findings came from all
+    eight exercises, and because the cadence step that fixes a phrase's last
+    note was never checked.  With every copied phrase taken from the
+    findings' evidence and the cadence held to the same rules, guided retries
+    drop the finding on 16 of the 20 (15 by not quoting the phrases, one more
+    by not replaying them).  The remaining 4 are lines whose free walk lands
+    on a scale run the raaga's own prayogas contain, which the originality
+    checker counts against a six-note line; that is evaluator calibration
+    (spec section 61), not guidance.  Seed 75 is one of the 16."""
+    settings.knowledge_db = str(tmp_path / "k.db")
+    monkeypatch.setattr(music_agent.time, "time", lambda: 1_700_000_000.0)
+    agent = MusicAgent(settings, raagas)
+    try:
+        _teach_through_prayogas(agent)
+        unit = agent.curriculum.unit("b13.short_phrase:Keeravani")
+        assert unit is not None
+
+        seed = 75
+        unguided = agent.practice.run(unit, "Keeravani", seed=seed)
+        assert not unguided.passed, unguided.summary()
+        failed_kinds = {f.kind for f in unguided.findings}
+        assert "not_original" in failed_kinds, failed_kinds
+
+        agent.record_lessons(
+            unguided.evaluation, raaga="Keeravani", unit_id=unit.id, attempt=0,
+            task=unit.learning_goal, method=f"{unit.skill_type} seed {seed}",
+            result=unguided.score, source_run=f"practice:{unit.id}:0",
+            findings=unguided.findings or None)
+        guidance = build_guidance(agent.repo, "Keeravani", unit.id)
+        assert not guidance.is_empty()
+
+        guided = agent.practice.run(unit, "Keeravani", seed=seed,
+                                    guidance=guidance)
+        guided_kinds = {f.kind for f in guided.findings}
+        assert "not_original" not in guided_kinds, guided_kinds
+        assert guided.score > unguided.score, (guided.score, unguided.score)
+    finally:
+        agent.close()
+
+
+def test_reg_102b_lessons_of_a_passed_unit_are_marked_applied(
+        tmp_path, settings, raagas, monkeypatch):
+    """Once guidance built from a unit's own lessons carries it to a pass,
+    those lessons have done their job and are retired - not deleted, so the
+    history stays, but out of the way of the next attempt's guidance."""
+    settings.knowledge_db = str(tmp_path / "k.db")
+    agent = MusicAgent(settings, raagas)
+    calls = {"n": 0}
+
+    def flaky_run(unit, raaga_name="", seed=0, guidance=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            evaluation = Evaluation()
+            evaluation.note("structure", "no_cadence",
+                            "it does not come to rest on a resting note (S)",
+                            evidence="D1")
+            evaluation.confidence = 0.6
+            evaluation.recommendation = "end on a resting note"
+            return PracticeReport(unit_id=unit.id, skill_type=unit.skill_type,
+                                  score=0.2, passed=False, detail="failed",
+                                  evaluation=evaluation)
+        return PracticeReport(unit_id=unit.id, skill_type=unit.skill_type,
+                              score=0.95, passed=True, detail="passed")
+
+    try:
+        monkeypatch.setattr(agent.practice, "run", flaky_run)
+        monkeypatch.setattr(music_agent.time, "time", lambda: 1_700_000_000.0)
+
+        step1 = agent.learn_step()
+        assert step1.action == "practice"
+        assert not step1.passed
+        unit_id = step1.unit_id
+        lessons_before = agent.repo.lessons(unit_id=unit_id)
+        assert lessons_before and lessons_before[0].kind == "no_cadence"
+
+        step2 = agent.learn_step()
+        assert step2.unit_id == unit_id
+        assert step2.passed
+        assert "guided:" in step2.detail
+
+        remaining = agent.repo.lessons(unit_id=unit_id)
+        assert remaining == []
+        with_applied = agent.repo.lessons(unit_id=unit_id, include_applied=True)
+        assert with_applied and all(l.applied for l in with_applied)
+    finally:
+        agent.close()
+
+
+def test_reg_102c_guidance_survives_a_restart(tmp_path, settings, raagas):
+    """Section 27's "learn, restart, retrieve" applied to guidance: a lesson
+    written in one process guides an attempt made by a completely different
+    ``MusicAgent`` instance opened later on the same database."""
+    settings.knowledge_db = str(tmp_path / "k.db")
+    unit_id = "b13.short_phrase:Keeravani"
+
+    first = MusicAgent(settings, raagas)
+    first.repo.add_lesson(Lesson(
+        raaga="Keeravani", unit_id=unit_id, kind="no_cadence",
+        dimension="structure",
+        failure_reason="it does not come to rest on a resting note (S)",
+        evidence="D1"))
+    first.close()
+
+    second = MusicAgent(settings, raagas)
+    try:
+        guidance = build_guidance(second.repo, "Keeravani", unit_id)
+        assert not guidance.is_empty()
+        assert guidance.must_end_on_nyasa
+        assert guidance.avoid_endings == {"D1"}
+    finally:
+        second.close()

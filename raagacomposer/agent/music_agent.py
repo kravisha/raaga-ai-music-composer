@@ -25,6 +25,7 @@ from ..raaga.library import Raaga, RaagaLibrary, library as default_library
 from ..raaga.selection import expand_feel_words
 from .curriculum import CurriculumEngine, Unit
 from .evaluator import Evaluation, Evaluator, Finding
+from .guidance import Guidance, build_guidance
 from .knowledge import KnowledgeRepository, Lesson, Phrase
 from .learned import (describe_knowledge, knowledge_confidence,
                       learned_phrase_bank, learned_raaga)
@@ -174,15 +175,28 @@ class MusicAgent:
         """
         stored: List[Lesson] = []
         seen: set = set()
-        for finding in (findings if findings is not None
-                        else evaluation.findings):
+        chosen = list(findings if findings is not None
+                      else evaluation.findings)
+        # Every phrase the attempt was caught copying, from every exercise:
+        # the evidence of a not_original finding starts with the phrase id.
+        # The evaluation's own originality report names only the last
+        # exercise's match, which is not always the one that matters.
+        copied: List[str] = []
+        for finding in chosen:
+            if finding.kind == "not_original":
+                head = (finding.evidence or "").split(" ")[0]
+                if head.startswith("phr_") and head not in copied:
+                    copied.append(head)
+        if (evaluation.originality and evaluation.originality.matched_phrase_id
+                and evaluation.originality.matched_phrase_id not in copied):
+            copied.append(evaluation.originality.matched_phrase_id)
+        for finding in chosen:
             if finding.kind in seen:
                 continue
             seen.add(finding.kind)
             related: List[str] = []
-            if (finding.kind == "not_original" and evaluation.originality
-                    and evaluation.originality.matched_phrase_id):
-                related = [evaluation.originality.matched_phrase_id]
+            if finding.kind == "not_original":
+                related = list(copied)
             base_confidence = (confidence if confidence is not None
                               else evaluation.confidence)
             lesson = Lesson(
@@ -363,7 +377,10 @@ class MusicAgent:
         # attempt identically for as long as the second lasted (REG-100).
         attempt = self.repo.progress(unit.id).attempts
         seed = practice_seed(unit.id, attempt)
-        report = self.practice.run(unit, raaga, seed=seed)
+        # What the agent's own lessons say before this attempt runs
+        # (spec section 15 #9, docs/PLAN_learning_loop.md Part 1).
+        guidance = build_guidance(self.repo, raaga, unit.id)
+        report = self.practice.run(unit, raaga, seed=seed, guidance=guidance)
         progress = self.curriculum.record_attempt(
             unit, report.score, report.passed, report.detail)
         step.score = report.score
@@ -372,6 +389,10 @@ class MusicAgent:
                        f"({'passed' if report.passed else 'retry'})")
         if not report.passed and report.evaluation is not None:
             step.detail += f"; {report.evaluation.recommendation}"
+        if not guidance.is_empty():
+            step.detail += f"; guided: {guidance.describe()}"
+            self.repo.log_event("guidance.applied", ", ".join(guidance.kinds),
+                                unit_id=unit.id, raaga=raaga)
         if report.passed and report.artifacts:
             self._keep_best_artifact(unit, raaga, report)
         if progress.status == "failed":
@@ -389,7 +410,24 @@ class MusicAgent:
                 lessons = self._record_exercise_lessons(
                     unit, raaga, attempt, method, source_run, report)
             self._note_recurrence(step, lessons)
+        elif not guidance.is_empty():
+            self._apply_lessons_of_unit(unit, raaga, guidance)
         return step
+
+    def _apply_lessons_of_unit(self, unit: Unit, raaga: str,
+                               guidance: Guidance) -> None:
+        """A pass retires the lessons of this unit that guided it - they did
+        their job.  Lessons from the raaga's other units stay on record: the
+        same mistake elsewhere still needs avoiding (docs/PLAN_learning_loop.md,
+        "Lessons are per raaga with a unit bonus, not per unit only")."""
+        unit_lesson_ids = {l.id for l in
+                           self.repo.lessons(raaga=raaga, unit_id=unit.id,
+                                             limit=500)}
+        applied = [lid for lid in guidance.lesson_ids if lid in unit_lesson_ids]
+        for lesson_id in applied:
+            self.repo.mark_lesson_applied(lesson_id)
+        self.repo.log_event("lessons.applied", str(len(applied)),
+                            unit_id=unit.id, raaga=raaga)
 
     @staticmethod
     def _exercise_base_name(name: str) -> str:

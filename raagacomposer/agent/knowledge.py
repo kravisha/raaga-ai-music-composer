@@ -715,16 +715,22 @@ class KnowledgeRepository:
             if existing is not None:
                 recurrences = existing["recurrences"] + 1
                 confidence = max(existing["confidence"], lesson.confidence)
+                # Related knowledge accumulates: a phrase copied on the
+                # second attempt is as much to avoid as the first one.
+                related = json.loads(existing["related"]) if existing["related"] else []
+                related += [r for r in lesson.related if r not in related]
                 with self._conn:
                     self._conn.execute(
                         "UPDATE lessons SET last_at=?, attempt=?, result=?,"
                         " failure_reason=?, evidence=?, correction=?,"
-                        " source_run=?, confidence=?, recurrences=? WHERE id=?",
+                        " source_run=?, confidence=?, recurrences=?, related=?"
+                        " WHERE id=?",
                         (lesson.last_at, lesson.attempt, lesson.result,
                          lesson.failure_reason, lesson.evidence, lesson.correction,
                          lesson.source_run, confidence, recurrences,
-                         existing["id"]))
+                         json.dumps(related), existing["id"]))
                 stored = self._row_to_lesson(existing)
+                stored.related = related
                 stored.last_at = lesson.last_at
                 stored.attempt = lesson.attempt
                 stored.result = lesson.result
