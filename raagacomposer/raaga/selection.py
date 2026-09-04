@@ -155,7 +155,12 @@ def suggest(brief: CreativeBrief, lib: Optional[RaagaLibrary] = None,
     for raaga in lib.all():
         matched = [m for m in raaga.moods if m in words]
         score = len(matched) * 1.0
-        if not words:
+        if not words and raaga.moods:
+            # A thin brief is answered by raagas that have something curated
+            # to say.  A melakarta the Stage 1 pack supplies and nobody
+            # curated has no mood evidence at all, so it does not get to
+            # crowd the list on a shrug; the block-character scorer of
+            # docs/PLAN_stage1_knowledge.md S2 is what will speak for it.
             score += 0.25
         # Prefer raagas whose comfortable tempo matches the requested one.
         if brief.tempo_preference and raaga.tempo_range:
@@ -184,10 +189,10 @@ def suggest(brief: CreativeBrief, lib: Optional[RaagaLibrary] = None,
 
 def _rationale(raaga: Raaga, matched: Sequence[str], explicit: bool) -> str:
     if explicit:
-        return f"You asked for {raaga.name}. {raaga.notes}"
+        return f"You asked for {raaga.name}. {raaga.character()}".strip()
     if matched:
-        return (f"Carries {', '.join(matched[:3])}. {raaga.notes}")
-    return raaga.notes or f"{raaga.name} fits the general shape of the brief."
+        return f"Carries {', '.join(matched[:3])}. {raaga.character()}".strip()
+    return raaga.character() or f"{raaga.name} fits the general shape of the brief."
 
 
 def compare(a: Raaga, b: Raaga) -> str:

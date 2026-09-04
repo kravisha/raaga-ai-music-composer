@@ -678,12 +678,81 @@ the files, and checks that every melakarta the library carries agrees with
 the pack's arohanam and avarohanam. The heuristic tags are checked for
 presence, never for truth.
 
-**Not built yet, deliberately.** Loading all 72 melakartas into the library,
-the block-character emotion profiles, the brief-to-raga engine with its
-diversity and penalty rules, and audition playback are the next increment
-(`docs/PLAN_stage1_knowledge.md`). Apply Brief already ranks from the
-knowledge base with a deterministic fallback (v0.3 section 6); the pack's
-engine is the design for making that ranking explainable from the maps.
+**The pack is generated into library data, never read at runtime.**
+`docs/spec/` is frozen so that a section quoted in a commit resolves to the
+creator's own wording, and a runtime that reads its text would make it a
+dependency instead of a document. `tools/build_melakartas.py` parses the
+three map files, runs the pack's own validation rules (document 06) and
+writes `raagacomposer/raaga/data/melakartas.json`, which the library loads.
+A unit test regenerates and compares, so the two cannot drift apart in
+silence; `--check` is the same comparison from the command line.
+
+**A melakarta is matched by its number, never by its name.** The library
+calls melakarta 65 Kalyani and the pack calls it Mechakalyani, so the merge
+needs some way to see that they are one raaga - but names are the wrong
+instrument for it. "Bhairavi" is a janya and "Natabhairavi" is melakarta 20,
+and no amount of transliteration-matching separates those two safely. The
+melakarta number is what both sides actually assert, so it is what they are
+joined on; the names are then checked against each other and a disagreement
+is logged rather than guessed at.
+
+**A curated entry wins, and gains only what the pack knows.** The eight
+melakartas already in `raagas.json` carry prayogas, jeeva swaras, resting
+notes, gamaka and a tempo range that the pack does not have; they keep every
+one of them and gain the chakra, the three blocks, the block characters and
+the starter tags. The pack's spelling becomes an alias, so one melakarta is
+one entry (sections 34 and 35).
+
+**A melakarta nobody curated is a scale, and says so.** The other 64 join
+with their arohanam, avarohanam and block character and nothing else - no
+invented jeeva swaras, no resting notes, and no tempo range, because section
+37 ends "unknown fields remain unknown; do not fabricate completeness". They
+compose from the scale alone and `describe()` and `character()` state the
+limit rather than implying a depth that is not there. `Raaga.scale_only` is
+that condition, and it stops being true the moment the agent hears a phrase.
+
+**A raaga with no curated character does not answer a thin brief.** An empty
+brief used to hand every raaga the same small bonus, which with 72 melakartas
+would have filled the list with scales nobody could give a reason for. The
+bonus now goes to raagas that have something curated to say; the pack's
+block-character scorer (`docs/PLAN_stage1_knowledge.md` S2) is what will
+speak for the rest. Asked for by name, a scale-only melakarta is selected,
+composed from and explained exactly like any other.
+
+**Seventy-two names in one namespace need whole words.** Bare substring
+matching was safe with eighteen raagas. With seventy-two, a name buried
+inside an ordinary word starts answering briefs nobody wrote, so
+`find_in_text` matches whole words and still prefers the longest name in the
+text - Mechakalyani over Kalyani, Natabhairavi over Bhairavi. `get`'s
+partial-match fallback picks the longest name found inside the query, or
+failing that the shortest name the query is found inside, rather than
+whichever the dictionary happened to yield first. An alias claimed twice is
+logged and left with its first owner.
+
+**A bare scale does not displace a raaga a student is taught to tell apart.**
+The seam a probe found rather than a test: two places rank "which other
+raaga explains these notes" - the practice engine's neighbour-drift
+exercises and the evaluator's drift score - and both broke ties by whatever
+order the library happened to yield. With eighteen raagas that was harmless.
+With seventy-two, Kalyani's four confusable neighbours went from
+Shankarabharanam, Hamsadhwani, Kambhoji and Mohanam to four melakartas
+picked out of dozens tied on overlap, so the exercise stopped training
+against the raagas anyone confuses. Both now break ties towards a curated
+raaga and then by name. A melakarta that genuinely shares more swaras is
+still the nearer neighbour and still wins, so the drift exercises did get
+harder - that is the library being more complete, not a regression. The
+evaluator's tie-break also compared each candidate's size against the target
+raaga rather than against the current best, which meant every tied candidate
+smaller than the target replaced the last one; candidates are now compared
+with each other. Measured: for tunes that stay inside their own raaga the
+drift score is unchanged to three decimals across five raagas and twelve
+seeds each, because nothing can explain those notes better than the raaga
+itself.
+
+**Still to come:** the block-character emotion vector with the pack's
+weights, contradiction penalties and diversity rule; selection feedback as
+learned weights; and arohanam/avarohanam audition
+(`docs/PLAN_stage1_knowledge.md` S2 to S4, with pack tests D and E).
 
 ## Not built, deliberately
 

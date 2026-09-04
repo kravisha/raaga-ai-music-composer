@@ -5,6 +5,7 @@ with its grammar.  Grammar rows are hard knowledge; tags are heuristics and
 are not tested for truth here."""
 from __future__ import annotations
 
+import importlib.util
 import re
 from pathlib import Path
 from typing import Dict, List
@@ -131,7 +132,76 @@ def test_the_library_melakarta_entries_agree_with_the_pack(records):
         assert _bases(raaga.arohanam) == record["aro"], raaga.name
         assert _bases(raaga.avarohanam) == record["avaro"], raaga.name
         checked += 1
-    assert checked >= 7, "the library should carry several melakartas"
+    assert checked == 72, "the library carries every melakarta the pack defines"
+
+
+def _builder():
+    spec = importlib.util.spec_from_file_location(
+        "build_melakartas",
+        PACK.parents[2] / "tools" / "build_melakartas.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _rescale(record: dict, arohanam: str) -> None:
+    """Give a record a different scale, consistently in both directions.
+
+    Changing only the arohanam trips the reversal rule before anything else,
+    which is not what most of these cases are trying to provoke.
+    """
+    aro = arohanam.split()
+    record["arohanam"] = aro
+    record["avarohanam"] = list(reversed(aro))
+
+
+@pytest.mark.parametrize("break_it, complaint", [
+    (lambda rs: rs.pop(), "1..72"),
+    (lambda rs: _rescale(rs[20], "S R2 G2 M1 P D1 S+"), "eight steps"),
+    # Melakarta 21 is in the first half, so its madhyama must be M1.
+    (lambda rs: _rescale(rs[20], "S R2 G2 M2 P D1 N3 S+"), "must use M1"),
+    (lambda rs: _rescale(rs[0], "S R2 G1 M1 P D1 N1 S+"),
+     "not one of the six R-G blocks"),
+    (lambda rs: _rescale(rs[0], "S R1 G1 M1 P D2 N1 S+"),
+     "not one of the six D-N blocks"),
+    (lambda rs: rs[35].__setitem__("avarohanam", "S+ N3 D3 P M1 G3 R2 S".split()),
+     "not the arohanam reversed"),
+    (lambda rs: rs[35].__setitem__("arohanam", "S R3 G3 M1 D3 P N3 S+".split()),
+     "Panchama is not fixed"),
+    (lambda rs: rs[20].__setitem__("dn", "D2N3"),
+     "stated blocks do not match the scale"),
+    (lambda rs: rs[7].__setitem__("tags", []), "tags or uses are missing"),
+    (lambda rs: rs[7].__setitem__("good_for", []), "tags or uses are missing"),
+    (lambda rs: rs[7]["block_character"].__setitem__(rs[7]["rg"], ""),
+     "has no character"),
+])
+def test_the_validator_rejects_a_record_that_breaks_the_packs_rules(
+        break_it, complaint):
+    """The rules in pack document 06 are enforced, not merely quoted."""
+    builder = _builder()
+    records = builder.parse()
+    break_it(records)
+    with pytest.raises(builder.PackError, match=complaint):
+        builder.validate(records)
+
+
+def test_the_validator_accepts_the_pack_as_it_stands():
+    builder = _builder()
+    builder.validate(builder.parse())
+
+
+def test_the_generated_library_data_still_says_what_the_pack_says():
+    """``raagacomposer/raaga/data/melakartas.json`` is generated, not written.
+
+    The pack under ``docs/spec/`` is frozen and nothing at runtime reads it,
+    so the committed data is what the library actually loads.  This is the
+    check that the two have not drifted apart; ``--check`` is the same
+    comparison from the command line.
+    """
+    builder = _builder()
+    committed = builder.OUT.read_text(encoding="utf-8")
+    assert committed == builder.rendered(builder.build()), (
+        "melakartas.json is out of date; run tools/build_melakartas.py")
 
 
 def test_heuristic_tags_are_present_but_are_not_grammar(records):

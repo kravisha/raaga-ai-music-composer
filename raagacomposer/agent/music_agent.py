@@ -425,9 +425,9 @@ class MusicAgent:
     def _reason(raaga: Raaga, matched: Sequence[str], explicit: bool,
                 learned: bool) -> str:
         if explicit:
-            return f"You asked for {raaga.name}. {raaga.notes}"
+            return f"You asked for {raaga.name}. {raaga.character()}".strip()
         head = f"Carries {', '.join(matched[:3])}. " if matched else ""
-        tail = raaga.notes or ""
+        tail = raaga.character()
         studied = " I have studied this one." if learned else \
             " I have not studied this one yet, so this is from the reference book."
         return (head + tail + studied).strip()

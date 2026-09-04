@@ -555,8 +555,14 @@ class ResearchAgent:
             ("graha", " ".join(raaga.graha)),
             ("gamaka", ", ".join(f"{k}:{v}" for k, v in raaga.gamaka.items())),
             ("moods", ", ".join(raaga.moods)),
-            ("tempo_range", f"{raaga.tempo_range[0]}-{raaga.tempo_range[-1]}"),
+            # A melakarta that came from the Stage 1 pack has no curated
+            # tempo range, and an empty pair is skipped below rather than
+            # written as a fact nobody stated.
+            ("tempo_range", f"{raaga.tempo_range[0]}-{raaga.tempo_range[-1]}"
+                            if raaga.tempo_range else ""),
             ("melakarta", str(raaga.melakarta or "janya")),
+            ("chakra", raaga.chakra),
+            ("block_character", raaga.block_summary()),
             ("notes", raaga.notes),
         ]
         written = 0

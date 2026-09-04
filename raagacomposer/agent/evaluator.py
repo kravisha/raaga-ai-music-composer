@@ -250,15 +250,28 @@ class Evaluator:
         """Does another raaga explain these notes better than this one?"""
         used = set(bases)
         target = len(used & set(raaga.allowed)) / max(1, len(used))
+        # Which other raaga explains these notes best?  A raaga that fits as
+        # well but is *smaller* is the more dangerous neighbour, and on a tie
+        # a raaga somebody curated is named ahead of a bare parent scale:
+        # since the Stage 1 pack put all 72 melakartas in the library dozens
+        # of scales tie here, and "whichever the library happened to yield
+        # last" is not an accusation worth making.  Candidates are ranked
+        # against each other; the size comparison used to be made against the
+        # target raaga instead, which meant every tied candidate smaller than
+        # the target replaced the last one.
+        def rank(other: Raaga) -> tuple:
+            return (len(used & set(other.allowed)) / max(1, len(used)),
+                    -len(other.allowed), not other.scale_only)
+
         best_other, best_name = 0.0, ""
-        for other in self.library.all():
+        best: Optional[Raaga] = None
+        for other in sorted(self.library.all(), key=lambda r: r.name):
             if other.name == raaga.name:
                 continue
-            fit = len(used & set(other.allowed)) / max(1, len(used))
-            # A raaga that also fits but is *smaller* is the dangerous neighbour.
-            if fit > best_other or (fit == best_other
-                                    and len(other.allowed) < len(raaga.allowed)):
-                best_other, best_name = fit, other.name
+            if best is None or rank(other) > rank(best):
+                best = other
+        if best is not None:
+            best_other, best_name = rank(best)[0], best.name
         if best_other > target:
             evaluation.note(
                 "raaga_drift", "neighbour_drift",

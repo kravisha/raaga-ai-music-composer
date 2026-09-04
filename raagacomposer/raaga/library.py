@@ -12,16 +12,22 @@ fifth.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from ..core.logging_setup import get_logger
 from ..core.settings import config_dir
+from ..kb.normalize import normalise_name
 
 log = get_logger("raaga.library")
 
 DATA_FILE = Path(__file__).with_name("data") / "raagas.json"
+#: The 72 parent scales, generated from the Stage 1 knowledge pack by
+#: ``tools/build_melakartas.py``.  Grammar the application can rely on;
+#: everything curated about a raaga still lives in ``raagas.json``.
+MELAKARTA_FILE = Path(__file__).with_name("data") / "melakartas.json"
 USER_FILE_NAME = "raagas_user.json"
 
 SWARA_SEMITONES: Dict[str, int] = {}
@@ -62,6 +68,20 @@ class Raaga:
     melakarta: Optional[int] = None
     notes: str = ""
     source: str = "builtin"
+    # -- the Stage 1 melakarta pack (docs/spec/stage1_knowledge_pack/) -----
+    # Grammar: which chakra the melakarta belongs to and the three blocks its
+    # scale decomposes into (R-G, madhyama, D-N).
+    chakra: str = ""
+    rg: str = ""
+    madhyama: str = ""
+    dn: str = ""
+    # Heuristic: what each block is said to colour the raaga with, the pack's
+    # starter tags and the uses it suggests.  Kept apart from ``moods``, which
+    # is curated, so a learned selection weight can move one and not the other
+    # (pack document 05 section 6).
+    block_character: Dict[str, str] = field(default_factory=dict)
+    tags: List[str] = field(default_factory=list)
+    good_for: List[str] = field(default_factory=list)
     # The learned tendencies (agent/idiom.py, RaagaIdiom); only the learned
     # view (agent/learned.py, learned_raaga) ever carries one.  Excluded from
     # repr/equality and never serialised so it cannot leak into raagas.json.
@@ -163,6 +183,49 @@ class Raaga:
                     best = s + ("+" * octave if octave > 0 else "-" * -octave)
         return best
 
+    # -- what is actually known --------------------------------------------
+    @property
+    def scale_only(self) -> bool:
+        """True when all this raaga has is its scale.
+
+        A melakarta the Stage 1 pack supplies and nobody curated has an
+        arohanam, an avarohanam and a block character, and nothing else: no
+        jeeva swaras, no resting notes, no prayogas, no gamaka.  Specification
+        section 37 says unknown fields stay unknown, so the application says
+        so rather than composing as though it knew more.
+        """
+        return not (self.prayogas or self.jeeva or self.nyasa or self.gamaka)
+
+    def block_summary(self) -> str:
+        """The pack's explainable character: block by block, never by name.
+
+        ``"R2G2 tender, introspective, humane; M1 grounded, earthy, settled;
+        D1N3 poignant contrast, dramatic upward pull, strong resolution"``.
+        """
+        parts = [f"{block} {self.block_character[block]}"
+                 for block in (self.rg, self.madhyama, self.dn)
+                 if block and block in self.block_character]
+        return "; ".join(parts)
+
+    def character(self) -> str:
+        """One sentence about the raaga, from whatever is actually known.
+
+        A curated note where there is one; otherwise the pack's block logic,
+        which is the point of the block model - a reason traceable to the map
+        rather than to a name (pack document 01 section F).
+        """
+        if self.notes:
+            return self.notes
+        summary = self.block_summary()
+        if not summary:
+            return ""
+        sentence = f"Melakarta {self.melakarta}: {summary}."
+        if self.scale_only:
+            sentence += (" That is the parent scale and its character; no "
+                         "characteristic phrases have been curated or heard "
+                         "for it yet.")
+        return sentence
+
     # -- descriptive -------------------------------------------------------
     def gamaka_for(self, token: str) -> str:
         return self.gamaka.get(parse_swara(token)[0], "")
@@ -180,21 +243,38 @@ class Raaga:
         return hits / max(1.0, len(self.moods) ** 0.5)
 
     def describe(self) -> str:
-        return (f"{self.name}\n"
-                f"  Arohanam:   {' '.join(self.arohanam)}\n"
-                f"  Avarohanam: {' '.join(self.avarohanam)}\n"
-                f"  Jeeva swaras: {', '.join(self.jeeva) or '-'}\n"
-                f"  Resting (nyasa): {', '.join(self.nyasa) or '-'}\n"
-                f"  Moods: {', '.join(self.moods) or '-'}\n"
-                f"  Tempo: {self.tempo_range[0]}-{self.tempo_range[-1]} bpm\n"
-                f"  {self.notes}")
+        tempo = (f"{self.tempo_range[0]}-{self.tempo_range[-1]} bpm"
+                 if self.tempo_range else "not known")
+        lines = [self.name,
+                 f"  Arohanam:   {' '.join(self.arohanam)}",
+                 f"  Avarohanam: {' '.join(self.avarohanam)}",
+                 f"  Jeeva swaras: {', '.join(self.jeeva) or '-'}",
+                 f"  Resting (nyasa): {', '.join(self.nyasa) or '-'}",
+                 f"  Moods: {', '.join(self.moods) or '-'}",
+                 f"  Tempo: {tempo}"]
+        if self.melakarta:
+            chakra = f", chakra {self.chakra}" if self.chakra else ""
+            lines.append(f"  Melakarta {self.melakarta}{chakra}")
+        summary = self.block_summary()
+        if summary:
+            lines.append(f"  Character: {summary}")
+        if self.scale_only:
+            lines.append("  This is the parent scale and its character only - "
+                         "no characteristic phrases, resting notes or gamaka "
+                         "have been learned or curated for it yet.")
+        if self.notes:
+            lines.append(f"  {self.notes}")
+        return "\n".join(lines)
 
 
 class RaagaLibrary:
-    def __init__(self, extra_path: Optional[Path] = None) -> None:
+    def __init__(self, extra_path: Optional[Path] = None,
+                 melakartas: bool = True) -> None:
         self._raagas: Dict[str, Raaga] = {}
         self._alias: Dict[str, str] = {}
         self.load(DATA_FILE, "builtin")
+        if melakartas:
+            self.load_melakartas(MELAKARTA_FILE)
         user = Path(extra_path) if extra_path else config_dir() / USER_FILE_NAME
         if user.exists():
             self.load(user, "user")
@@ -236,6 +316,119 @@ class RaagaLibrary:
                 self._alias[a.lower()] = raaga.name.lower()
         log.info("raaga library: %d raagas after loading %s", len(self._raagas), path.name)
 
+    def _index(self, raaga: Raaga, *names: str) -> None:
+        """Point every spelling of ``raaga`` at its entry, without silence.
+
+        Two raagas claiming one spelling is a real ambiguity - it is how
+        "Bhairavi" would quietly become "Natabhairavi" - so a collision is
+        logged and the first claim keeps the name.
+        """
+        key = raaga.name.lower()
+        for name in names:
+            alias = (name or "").strip().lower()
+            if not alias:
+                continue
+            owner = self._alias.get(alias)
+            if owner and owner != key:
+                log.warning("raaga alias %r already means %r; leaving it alone "
+                            "rather than pointing it at %r", alias, owner, raaga.name)
+                continue
+            self._alias[alias] = key
+
+    def load_melakartas(self, path: Path = MELAKARTA_FILE) -> None:
+        """Merge the Stage 1 pack's 72 parent scales into the library.
+
+        A curated entry wins.  It carries prayogas, resting notes, gamaka and
+        a tempo range the pack has none of, so a melakarta already in
+        ``raagas.json`` keeps everything it has and gains only what the pack
+        knows that it does not: the chakra, the three blocks, their character,
+        the starter tags and the suggested uses.  The pack's own spelling
+        becomes an alias, so "Mechakalyani" and "Kalyani" reach one entry
+        rather than two (specification sections 34 and 35: nothing curated is
+        overwritten, and one thing is one thing).
+
+        Records are matched by melakarta number, never by name.  Names would
+        be guesswork here - "Bhairavi" is a janya and "Natabhairavi" is
+        melakarta 20, and no amount of transliteration-matching makes that
+        distinction safely.
+
+        A melakarta nobody curated joins as a scale-only raaga: its scale and
+        its block character, with everything else left unknown.
+        """
+        try:
+            data = json.loads(Path(path).read_text(encoding="utf-8"))
+        except Exception as exc:  # noqa: BLE001
+            log.error("cannot read melakarta file %s: %s", path, exc)
+            return
+
+        by_number: Dict[int, Raaga] = {}
+        for raaga in self._raagas.values():
+            if raaga.melakarta and raaga.melakarta not in by_number:
+                by_number[int(raaga.melakarta)] = raaga
+
+        merged = added = 0
+        for entry in data.get("melakartas", []):
+            try:
+                number = int(entry["id"])
+                blocks = dict(entry.get("block_character", {}))
+                existing = by_number.get(number)
+                if existing is not None:
+                    if normalise_name(existing.name) not in normalise_name(entry["name"]) \
+                            and normalise_name(entry["name"]) not in normalise_name(existing.name):
+                        log.warning("melakarta %d is %r in the pack and %r in the "
+                                    "library; keeping the library's name",
+                                    number, entry["name"], existing.name)
+                    existing.chakra = existing.chakra or entry.get("chakra", "")
+                    existing.rg = existing.rg or entry.get("rg", "")
+                    existing.madhyama = existing.madhyama or entry.get("madhyama", "")
+                    existing.dn = existing.dn or entry.get("dn", "")
+                    existing.block_character = existing.block_character or blocks
+                    existing.tags = existing.tags or list(entry.get("tags", []))
+                    existing.good_for = existing.good_for or list(entry.get("good_for", []))
+                    if entry["name"].lower() != existing.name.lower() \
+                            and entry["name"] not in existing.aliases:
+                        existing.aliases.append(entry["name"])
+                    self._index(existing, entry["name"])
+                    merged += 1
+                    continue
+
+                raaga = Raaga(
+                    name=entry["name"],
+                    arohanam=list(entry.get("arohanam", [])),
+                    avarohanam=list(entry.get("avarohanam", [])),
+                    # Nothing else is known, and section 37 says unknown
+                    # fields stay unknown: no jeeva, nyasa, prayogas, gamaka,
+                    # moods, and no tempo range to pretend a preference with.
+                    tempo_range=[],
+                    melakarta=number,
+                    chakra=entry.get("chakra", ""),
+                    rg=entry.get("rg", ""),
+                    madhyama=entry.get("madhyama", ""),
+                    dn=entry.get("dn", ""),
+                    block_character=blocks,
+                    tags=list(entry.get("tags", [])),
+                    good_for=list(entry.get("good_for", [])),
+                    # No curated note either; ``character()`` speaks for it
+                    # from the block map instead.
+                    notes="",
+                    source="melakarta-pack",
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.error("bad melakarta entry %r: %s", entry.get("name"), exc)
+                continue
+            key = raaga.name.lower()
+            if key in self._raagas:
+                log.warning("melakarta %d is called %r, which the library "
+                            "already uses; leaving the existing entry alone",
+                            raaga.melakarta, raaga.name)
+                continue
+            self._raagas[key] = raaga
+            self._index(raaga, raaga.name)
+            added += 1
+
+        log.info("raaga library: %d melakartas merged, %d added as scale-only; "
+                 "%d raagas in all", merged, added, len(self._raagas))
+
     # -- lookup ------------------------------------------------------------
     def names(self) -> List[str]:
         return sorted(r.name for r in self._raagas.values())
@@ -249,11 +442,26 @@ class RaagaLibrary:
         key = self._alias.get(name.strip().lower())
         if key:
             return self._raagas.get(key)
+        # No exact spelling, so fall back to a partial match.  With seventy-two
+        # melakartas plenty of names contain other names - Mechakalyani
+        # contains Kalyani, Natabhairavi contains Bhairavi - and "whichever
+        # the dictionary yielded first" is not an answer.  Two directions,
+        # each with its own idea of the best match:
+        #
+        #   a name inside the text  ->  the longest one, the most specific
+        #                               thing the creator actually named;
+        #   the text inside a name  ->  the shortest one, the nearest whole
+        #                               name to what they typed.
         low = name.strip().lower()
-        for k, r in self._raagas.items():
-            if low in k or k in low:
-                return r
-        return None
+        inside_text = [a for a in self._alias if a in low]
+        if inside_text:
+            best = min(inside_text, key=lambda a: (-len(a), self._alias[a]))
+        else:
+            inside_name = [a for a in self._alias if low in a]
+            if not inside_name:
+                return None
+            best = min(inside_name, key=lambda a: (len(a), self._alias[a]))
+        return self._raagas.get(self._alias[best])
 
     def require(self, name: str) -> Raaga:
         raaga = self.get(name)
@@ -262,11 +470,21 @@ class RaagaLibrary:
         return raaga
 
     def find_in_text(self, text: str) -> Optional[Raaga]:
+        """The raaga a creator named in free text, if they named one.
+
+        Whole words only.  Bare substring matching was safe enough with
+        eighteen raagas; with seventy-two melakartas in the library a short
+        name buried inside an ordinary word would start answering briefs
+        nobody wrote.  The longest match still wins, so "Mechakalyani" beats
+        "Kalyani" and "Natabhairavi" beats "Bhairavi".
+        """
         low = (text or "").lower()
         best: Optional[Raaga] = None
         best_len = 0
         for key, target in self._alias.items():
-            if key in low and len(key) > best_len:
+            if len(key) <= best_len:
+                continue
+            if re.search(rf"\b{re.escape(key)}\b", low):
                 best_len = len(key)
                 best = self._raagas.get(target)
         return best
