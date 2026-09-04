@@ -620,9 +620,14 @@ class AppController:
                     order = {str(e.get("raaga", "")).lower():
                              str(e.get("reason", "")) for e in extra}
                     for item in suggestions:
-                        reason = order.get(item.name.lower())
-                        if reason:
-                            item.reason = reason
+                        gloss = order.get(item.name.lower())
+                        if gloss:
+                            # Explanation integrity: the score and the reason
+                            # are derived from the block map (raaga/emotion.py)
+                            # and a model never replaces that derivation.  It
+                            # may add a sentence beside it, attributed, so a
+                            # creator can tell which half a claim came from.
+                            item.reason = f"{item.reason} The adviser adds: {gloss}"
                     suggestions.sort(key=lambda s: (
                         s.name.lower() not in order,
                         -float(getattr(s, "score", 0.0))))
@@ -811,11 +816,34 @@ class AppController:
         return self.raagas.get(self.project.raaga.selected)
 
     def require_raaga(self) -> Raaga:
+        """The raaga to compose in, choosing one if the creator has not.
+
+        Apply Brief ranks by emotional fit and says so - that is the Stage 1
+        pack's engine and it does not care what the agent can play.  This is
+        a different question.  Nobody has chosen anything and a tune is about
+        to be written, so among the raagas that fit, prefer one there is
+        something to compose *with*: a raaga somebody curated prayogas,
+        resting notes and gamaka for, or better, one the agent has studied.
+        A bare parent scale is a last resort here, not a first answer.
+        """
         raaga = self.current_raaga()
-        if raaga is None:
-            suggestions = self.raaga_suggestions(1)
-            raaga = self.select_raaga(suggestions[0].name, suggestions[0].rationale)
-        return raaga
+        if raaga is not None:
+            return raaga
+        suggestions = self.raaga_suggestions(5)
+        studied = set(self.agent.repo.known_raagas()) if self.agent else set()
+
+        def playable(suggestion) -> tuple:
+            entry = self.raagas.get(suggestion.name)
+            if entry is None:
+                return (2, 0)
+            return (0 if entry.name in studied else 1 if not entry.scale_only
+                    else 2, 0)
+
+        best = min(suggestions, key=playable) if suggestions else None
+        if best is None:
+            fallback = self.raagas.get("Mohanam") or self.raagas.all()[0]
+            return self.select_raaga(fallback.name, "a safe default")
+        return self.select_raaga(best.name, best.rationale)
 
     def composing_raaga(self) -> Raaga:
         """The raaga as the agent knows it: learned phrases included."""

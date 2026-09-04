@@ -128,6 +128,25 @@ def test_b3_studying_a_raaga_raises_the_confidence_it_is_offered_with(agent):
     assert after.evidence
 
 
+def test_b3b_a_bare_scale_is_offered_less_surely_than_a_curated_raaga(agent):
+    """Score says how well it fits; confidence says how much is known.
+
+    A melakarta the Stage 1 pack supplied and nobody curated can fit a brief
+    perfectly - that is what the block model is for - but there is a parent
+    scale and a starter tag behind it and nothing else, and the confidence it
+    is offered with has to say so.
+    """
+    brief = CreativeBrief(mood="sad", feel="lonely late at night but warm")
+    suggestions = agent.suggest_raagas(brief, limit=8)
+    scales = [s for s in suggestions
+              if agent.library.require(s.name).scale_only]
+    curated = [s for s in suggestions
+               if not agent.library.require(s.name).scale_only]
+    assert scales and curated, [s.name for s in suggestions]
+    assert max(s.confidence for s in curated) > \
+        max(s.confidence for s in scales)
+
+
 def test_b4_an_explicit_request_still_wins(agent):
     brief = CreativeBrief(mood="celebration", raaga_preference="Kalyani")
     assert agent.suggest_raagas(brief, 3)[0].name == "Kalyani"

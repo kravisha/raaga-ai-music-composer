@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from ..core.logging_setup import get_logger
 from ..core.models import CreativeBrief, Note
 from ..core.settings import Settings
+from ..raaga import emotion
 from ..raaga.library import Raaga, RaagaLibrary, library as default_library
 from ..raaga.selection import expand_feel_words
 from .curriculum import CurriculumEngine, Unit
@@ -34,6 +35,20 @@ from .practice import PracticeEngine, PracticeReport, practice_seed
 from .research import ResearchAgent, SourceCandidate
 
 log = get_logger("agent.music")
+
+#: The most that what the agent has studied can add to a raaga's score out of
+#: 100 in Apply Brief.  Studying should move a raaga up the list, not carry
+#: one the brief does not resemble to the top of it: the creator asked for a
+#: feeling, and "I happen to know this one well" is not an answer to that.
+LEARNED_BONUS_CAP = 10.0
+
+#: How much is known about a raaga before anything has been studied.  Score
+#: says how well a raaga fits the brief; confidence says how much is actually
+#: known about it, and those are different questions - a parent scale from
+#: the Stage 1 pack can fit a brief perfectly and still be the thing we know
+#: least about in the list.
+SCALE_ONLY_KNOWN = 0.30
+CURATED_KNOWN = 0.45
 
 NEGATIVE = re.compile(
     r"\b(not|isn't|doesn't|does not|no|never|wrong|bad|poor|boring|mechanical|"
@@ -353,26 +368,43 @@ class MusicAgent:
         studied = {r for r in self.repo.known_raagas()}
         suggestions: List[RaagaSuggestion] = []
 
+        # The Stage 1 pack's engine does the ranking (raaga/emotion.py): the
+        # brief becomes a fourteen-dimension target and every raaga is scored
+        # on how well its blocks and its curated character match it, out of
+        # 100.  What the agent has actually studied is then added on top -
+        # bounded, so a raaga the brief does not resemble cannot be talked
+        # into the list by evidence alone, and the block reason stays the
+        # argument (docs/PLAN_stage1_knowledge.md S2).
+        target = emotion.target_vector(brief)
+        graded: List[emotion.Scored] = []
+        by_name: Dict[str, Tuple[List[str], float, bool]] = {}
+
         for raaga in self.library.all():
             evidence: List[str] = []
-            matched = [m for m in raaga.moods if m in words]
-            score = float(len(matched))
-            confidence = 0.35
+            base = emotion.score_raaga(brief, raaga, target)
+            score = base.score
             learned = raaga.name in studied
+            bonus = 0.0
+
+            # Confidence is how much is known about this raaga, not how well
+            # it matched: a parent scale with a starter tag is the least of
+            # it, something somebody curated prayogas and resting notes for
+            # is more, and something the agent has actually heard is most.
+            confidence = SCALE_ONLY_KNOWN if raaga.scale_only else CURATED_KNOWN
 
             if learned:
                 facets = knowledge_confidence(self.repo, raaga.name)
                 confidence = 0.35 + 0.5 * facets["overall"]
                 if facets["phrases"]:
                     evidence.append(f"{facets['phrases']} phrases heard")
-                    score += min(1.5, facets["phrases"] / 8.0)
+                    bonus += min(5.0, facets["phrases"] / 2.0)
                 mood_fact = self.repo.best_fact(raaga.name, "moods")
                 if mood_fact:
                     learned_moods = [m.strip().lower()
                                      for m in mood_fact.value.split(",")]
                     extra = [m for m in learned_moods if m in words]
                     if extra:
-                        score += 0.5 * len(extra)
+                        bonus += min(4.0, 1.5 * len(extra))
                         evidence.append("mood learned from " +
                                         (self.repo.source(mood_fact.source_id).title
                                          if self.repo.source(mood_fact.source_id)
@@ -382,28 +414,33 @@ class MusicAgent:
                     try:
                         heard = float(tempo_fact.value)
                         if abs(heard - brief.tempo_preference) < 20:
-                            score += 0.4
+                            bonus += 2.0
                             evidence.append(f"heard played near {heard:.0f} bpm")
                     except ValueError:
                         pass
 
-            if brief.tempo_preference and raaga.tempo_range:
-                low, high = raaga.tempo_range[0], raaga.tempo_range[-1]
-                score += 0.6 if low <= brief.tempo_preference <= high else -0.3
-
+            score += min(LEARNED_BONUS_CAP, bonus)
             if raaga is explicit:
-                score += 10.0
+                # Nothing outranks being asked for by name.
+                score += 100.0
                 confidence = max(confidence, 0.9)
                 evidence.append("you asked for it")
 
             if score <= 0:
                 continue
-            if matched:
-                confidence = min(0.95, confidence + 0.08 * len(matched))
-            reason = self._reason(raaga, matched, raaga is explicit, learned)
+            # A strong match is worth a little confidence of its own, but it
+            # cannot make up for not knowing the raaga: the fit term is small
+            # and the knowledge term above is what separates them.
+            confidence = min(0.95, confidence + 0.15 * base.fit)
+            base.score = round(score, 3)
+            graded.append(base)
+            by_name[raaga.name] = (evidence, round(confidence, 3), learned)
+
+        for item in emotion.spread(graded, limit=limit):
+            evidence, confidence, learned = by_name[item.name]
             suggestions.append(RaagaSuggestion(
-                name=raaga.name, score=round(score, 3),
-                confidence=round(min(0.95, confidence), 3), reason=reason,
+                name=item.name, score=item.score, confidence=confidence,
+                reason=self._reason(item, explicit is item.raaga, learned),
                 evidence=evidence, learned=learned))
 
         if not suggestions:
@@ -422,15 +459,21 @@ class MusicAgent:
         return suggestions[:limit]
 
     @staticmethod
-    def _reason(raaga: Raaga, matched: Sequence[str], explicit: bool,
-                learned: bool) -> str:
+    def _reason(scored: emotion.Scored, explicit: bool, learned: bool) -> str:
+        """Why this raaga, in the pack's own terms.
+
+        The block logic is the argument (pack document 05 section 4: "one
+        sentence reason using the block logic"), and the role says what this
+        one offers that the first choice does not, so a list of five reads as
+        a spread rather than five near-identical claims.
+        """
+        raaga = scored.raaga
         if explicit:
             return f"You asked for {raaga.name}. {raaga.character()}".strip()
-        head = f"Carries {', '.join(matched[:3])}. " if matched else ""
-        tail = raaga.character()
+        head = f"{emotion.sentence_case(scored.role)}: " if scored.role else ""
         studied = " I have studied this one." if learned else \
             " I have not studied this one yet, so this is from the reference book."
-        return (head + tail + studied).strip()
+        return (head + scored.reason + studied).strip()
 
     # ==================================================================
     # the learning loop (section 15)

@@ -198,21 +198,33 @@ def test_a_bare_scale_never_displaces_a_curated_raaga_it_ties_with(lib):
 
 
 # -- what this does to Apply Brief -----------------------------------------
-def test_a_thin_brief_is_not_crowded_by_scales(lib):
-    """A raaga with no curated character has no business answering a shrug."""
-    suggestions = suggest(CreativeBrief(), lib, limit=5)
+def test_a_brief_that_says_nothing_still_gets_a_curated_answer(lib):
+    """With no emotion to match, fall back to something we know about
+    rather than to a parent scale nobody could give a reason for."""
+    suggestions = suggest(CreativeBrief(mood="", feel="", situation=""),
+                          lib, limit=5)
     assert suggestions
-    for suggestion in suggestions:
-        assert not lib.require(suggestion.name).scale_only, suggestion.name
+    assert not lib.require(suggestions[0].name).scale_only
 
 
-def test_a_real_brief_still_ranks_the_curated_raagas_first(lib, curated_only):
-    """TEST A's brief gives the same answer it gave before the pack landed."""
+def test_a_melakarta_nobody_curated_can_now_earn_its_place(lib, curated_only):
+    """What S2 changed on purpose.
+
+    Under S1 the 64 scale-only melakartas were carried but could not be
+    ranked: they had no curated moods and mood matching was the whole of the
+    score.  The block-character engine can speak for them, so they compete -
+    and the reason they are offered with is traceable to their blocks.
+    """
     brief = CreativeBrief(situation="love failure", mood="sad",
                           feel="lonely late at night but still warm")
-    before = [s.name for s in suggest(brief, curated_only, limit=4)]
-    after = [s.name for s in suggest(brief, lib, limit=4)]
-    assert after == before
+    before = {s.name for s in suggest(brief, curated_only, limit=6)}
+    after = [s for s in suggest(brief, lib, limit=6)]
+    assert {s.name for s in after} != before, "the pack should change the answer"
+    for suggestion in after:
+        raaga = lib.require(suggestion.name)
+        if raaga.scale_only:
+            assert raaga.rg in suggestion.rationale or \
+                raaga.dn in suggestion.rationale, suggestion.rationale
 
 
 def test_a_scale_only_raaga_can_still_be_asked_for_by_name(lib):
