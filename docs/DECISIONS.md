@@ -952,6 +952,25 @@ floor of -1.10, and that was a *good* answer. Numeric tokens are legitimately
 uncertain - choosing 0.8 over 0.9 is not a mistake - so the floor has to be
 calibrated against the log rather than reasoned about.
 
+**`local_first` is the default, not merely available.** The point of the
+policy is that a local model is tried by default rather than on request, and
+it is safe to default to only because the judge exists to catch a bad local
+answer. `auto` keeps the older behaviour for anyone who wants it, and an
+existing `settings.json` that names a mode still wins - the default only
+decides what a machine with no stated preference does.
+
+**The configured escalation order decides the local chain, not strength.**
+Registering the tiers was not enough to make them mean anything: `chain()`
+ordered local backends by strength, and since every local model costs
+nothing the cost key could not separate them, so the largest and slowest went
+first. That is the opposite of "a cheap first attempt", and it made
+`routing_order` decorative - `qwen3:8b` led every chain while `qwen3:4b`, the
+tier chosen to be tried first, came last. In the judged modes the rung
+decides; a local backend the config does not name sorts after the ones it
+does, and a paid backend after every local one. The unjudged modes keep the
+strength ordering, because there is no judge there and strength is the only
+signal they have.
+
 **One tag of a family does not stand in for another.** The Ollama probe
 compared only the part before the colon, so `qwen3:8b` reported itself ready
 because `qwen3:4b` had been pulled, then answered every request with a 404.

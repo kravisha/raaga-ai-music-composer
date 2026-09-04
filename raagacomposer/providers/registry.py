@@ -132,7 +132,8 @@ def build_llm(settings: Settings) -> LLMProvider:
         refresh_seconds=settings.llm_refresh_seconds,
         thresholds=escalation.Thresholds.from_settings(settings),
         attempt_log=escalation.AttemptLog(Path(log_path)),
-        tiers=dict(settings.routing_tiers or {}))
+        tiers=dict(settings.routing_tiers or {}),
+        order=list(settings.routing_order or []))
     if router.available:
         log.info("LLM routing: %s", router.status())
     return router

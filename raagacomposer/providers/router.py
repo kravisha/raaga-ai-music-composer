@@ -60,7 +60,8 @@ class RoutedLLM(LLMProvider):
                  quality_floor: int = MEDIUM_FLOOR,
                  thresholds: Optional[escalation.Thresholds] = None,
                  attempt_log: Optional[escalation.AttemptLog] = None,
-                 tiers: Optional[Dict[str, str]] = None) -> None:
+                 tiers: Optional[Dict[str, str]] = None,
+                 order: Optional[Sequence[str]] = None) -> None:
         self._factories = list(factories)
         self.policy = policy if policy in POLICIES else "auto"
         self.refresh_seconds = max(0.0, refresh_seconds)
@@ -69,6 +70,13 @@ class RoutedLLM(LLMProvider):
         self.attempt_log = attempt_log
         #: model name -> tier name, so an attempt can say which rung it was.
         self.tier_of = {model: tier for tier, model in (tiers or {}).items()}
+        #: The rungs, cheapest first.  This is the escalation order the config
+        #: states, and in the judged modes it is what orders the local
+        #: backends - not their strength.  Every local model costs nothing, so
+        #: the cost key cannot separate them, and ordering by strength put the
+        #: largest and slowest first, which is the opposite of "a cheap first
+        #: attempt" and made the configured order decorative.
+        self.order = list(order or [])
         self._backends: List[LLMProvider] = []
         self._checked = 0.0
         self._key_seen = bool(Settings.secret("anthropic_api_key"))
@@ -211,9 +219,27 @@ class RoutedLLM(LLMProvider):
         # ordering inside each - sorting here is stable.
         if self.policy == "local_first":
             ordered = sorted(ordered, key=lambda b: 0 if b.is_local else 1)
+        if self.judged and self.order:
+            # ... and inside the local group, the configured escalation order
+            # decides, so the cheap first attempt really is attempted first.
+            ordered = sorted(ordered, key=self._rung)
         elif self.policy == "claude_first":
             ordered = sorted(ordered, key=lambda b: 1 if b.is_local else 0)
         return ordered
+
+    def _rung(self, backend: LLMProvider) -> tuple:
+        """Where a backend sits in the configured escalation order.
+
+        Paid backends stay after every local one; a local backend the config
+        does not name goes after the ones it does, rather than jumping the
+        queue on a strength number the policy no longer uses.
+        """
+        if not backend.is_local:
+            return (2, len(self.order), backend.name)
+        tier = self.tier_of.get(getattr(backend, "model", ""), "")
+        if tier in self.order:
+            return (0, self.order.index(tier), backend.name)
+        return (1, len(self.order), backend.name)
 
     @staticmethod
     def _empty(result: Any) -> bool:
