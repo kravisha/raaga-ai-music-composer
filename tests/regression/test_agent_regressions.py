@@ -14,8 +14,10 @@ import pytest
 from raagacomposer.agent import analysis
 from raagacomposer.agent.curriculum import CurriculumEngine
 from raagacomposer.agent.knowledge import KnowledgeRepository
+from raagacomposer.agent import music_agent
 from raagacomposer.agent.music_agent import MusicAgent
-from raagacomposer.agent.practice import PracticeEngine
+from raagacomposer.agent.practice import (PracticeEngine, PracticeReport,
+                                          practice_seed)
 from raagacomposer.agent.research import (ReferenceProvider, ResearchAgent,
                                           _collapse_repeats)
 from raagacomposer.core.models import Note
@@ -232,3 +234,45 @@ def test_reg_099b_agent_instructions_do_not_shadow_the_composer():
                            ("Replace violin with veena.", "arrange.replace"),
                            ("Make this part lighter.", "arrange.level")):
         assert interpret(text, ctx).intent == expected, text
+
+
+# --------------------------------------------------------------------------
+# REG-100  a retry must be a fresh attempt
+# --------------------------------------------------------------------------
+def test_reg_100_practice_seed_is_fixed_per_attempt_not_per_process():
+    """The default seed came from hash(unit.id), which is salted per process,
+    so the same lesson set different exercises from one run to the next."""
+    assert [practice_seed("a01.sound", i) for i in range(3)] == \
+        [1591698014, 702042824, 819004274]
+    assert practice_seed("b13.short_phrase:Keeravani") == 749140464
+    assert practice_seed("a01.sound", 0) != practice_seed("a02.pitch", 0)
+
+
+def test_reg_100b_retries_within_one_second_are_not_the_same_exercise(
+        tmp_path, settings, raagas, monkeypatch):
+    """The practice seed was the wall-clock second, so every retry made within
+    that second replayed the failed attempt note for note - a lesson that
+    failed once failed twelve times in a row with the same score, and REG-095
+    flaked whenever the clock happened to land on a bad seed."""
+    settings.knowledge_db = str(tmp_path / "k.db")
+    agent = MusicAgent(settings, raagas)
+    seeds = []
+
+    def failing_run(unit, raaga_name="", seed=0):
+        seeds.append((unit.id, seed))
+        return PracticeReport(unit_id=unit.id, skill_type=unit.skill_type,
+                              score=0.2, passed=False, detail="failed")
+
+    try:
+        monkeypatch.setattr(agent.practice, "run", failing_run)
+        monkeypatch.setattr(music_agent.time, "time", lambda: 1_700_000_000.0)
+        for _ in range(3):
+            step = agent.learn_step()
+            assert step.action == "practice"
+        unit_ids = {unit_id for unit_id, _ in seeds}
+        assert len(unit_ids) == 1, seeds
+        assert len({seed for _, seed in seeds}) == 3, seeds
+        assert [seed for _, seed in seeds] == \
+            [practice_seed(seeds[0][0], i) for i in range(3)]
+    finally:
+        agent.close()
