@@ -12,6 +12,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 from ..core.logging_setup import get_logger
 from ..raaga.library import Raaga, RaagaLibrary, parse_swara
+from .idiom import RaagaIdiom
 from .knowledge import KnowledgeRepository
 
 log = get_logger("agent.learned")
@@ -72,10 +73,14 @@ def learned_raaga(repo: KnowledgeRepository, library: RaagaLibrary,
 
     # Characteristic phrases: what the agent has actually heard, ranked by
     # confidence, ahead of anything the library merely asserts.
-    prayogas: List[List[str]] = []
-    for phrase in repo.phrases(raaga=name, min_confidence=min_confidence, limit=64):
-        if 2 <= len(phrase.swaras) <= 8:
-            prayogas.append(list(phrase.swaras))
+    # A monotone run through the scale is the arohanam or avarohanam being
+    # played: a fact the view already carries, not a phrase to quote or to
+    # learn habits from.  It stays in the bank the evaluator and the
+    # originality checker read; it does not become a prayoga or an idiom.
+    heard_phrases = [p for p in
+                     repo.phrases(raaga=name, min_confidence=min_confidence, limit=64)
+                     if 2 <= len(p.swaras) <= 8 and not _is_scale_run(base, p.swaras)]
+    prayogas: List[List[str]] = [list(p.swaras) for p in heard_phrases]
     heard = len(prayogas)
     for phrase in base.prayogas:
         if list(phrase) not in prayogas:
@@ -94,10 +99,28 @@ def learned_raaga(repo: KnowledgeRepository, library: RaagaLibrary,
         moods=moods,
         source="learned" if known else base.source,
     )
+    # Built from the final arohanam/avarohanam/nyasa (facts if known, the
+    # library otherwise) so degree() and cadence_for() agree with what the
+    # rest of this raaga view says, not with the fallback's ladder.
+    idiom = RaagaIdiom.from_phrases(raaga, heard_phrases)
+    raaga = replace(raaga, idiom=idiom)
     completeness = round(known / len(CORE_KEYS), 3)
-    log.debug("learned view of %s: %.0f%% from memory, %d heard phrases",
-              name, completeness * 100, heard)
+    log.debug("learned view of %s: %.0f%% from memory, %d heard phrases%s",
+              name, completeness * 100, heard,
+              f"; idiom: {idiom.describe()}" if idiom else "")
     return raaga, completeness
+
+
+# A monotone run of this many notes or more is the scale itself.
+SCALE_RUN_MIN = 6
+
+
+def _is_scale_run(raaga: Raaga, swaras: Sequence[str]) -> bool:
+    if len(swaras) < SCALE_RUN_MIN:
+        return False
+    degrees = [raaga.degree(s) for s in swaras]
+    steps = [b - a for a, b in zip(degrees, degrees[1:])]
+    return all(s == 1 for s in steps) or all(s == -1 for s in steps)
 
 
 def learned_phrase_bank(repo: KnowledgeRepository, name: str,
