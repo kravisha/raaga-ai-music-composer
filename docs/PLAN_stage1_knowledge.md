@@ -14,7 +14,7 @@ the queue for using it.
 | 02 to 04 | 72 melakarta records, validated at startup | All 72 are in the library, generated from the pack and validated when generated and again by test (S1) |
 | 01 B to E, 05 section 2 | Block-character profiles: R-G block + M + D-N block, explainable | Every melakarta carries its blocks and their character, rendered by `block_summary()` and used in the reason a suggestion gives (S1); no scoring from them yet |
 | 05 sections 1, 3, 5 | Brief to emotion vector; weighted scoring with contradiction penalties; diversity in the top five | Built (S2): `raaga/emotion.py`, used by both ranking paths. A semantic classifier for the target vector is still to come; the deterministic reader is the fallback it will fall back to |
-| 05 section 6 | Selection feedback as learned weights, separate from grammar | Feedback lowers or raises phrase confidence and writes lessons (PRs #5, #10); no selection weights |
+| 05 section 6 | Selection feedback as learned weights, separate from grammar | Built (S3): `selection_weights` in knowledge.db, per raaga and per emotion dimension, read only by the ranking |
 | 05 section 7, 06 E | Audition: play arohanam then avarohanam, eight events each, changing pitch | The practice engine renders scales for itself; no audition control in MAIN |
 | 06 | Startup validation; mandatory tests A to E | A to C run against the pack files, C also against the live library; D and E await the engine and the audition |
 
@@ -47,7 +47,7 @@ the queue for using it.
 |---|---|---|---|
 | S1 | Load and validate the 72 records; library precedence; a melakarta-only raaga composes from its scale | pack validation at startup; test C on live data | done |
 | S2 | Block profiles and the emotion-vector scorer; explainable reasons; diversity | pack test D on the sad, romantic, lonely, warm brief; no single default raaga | done |
-| S3 | Selection feedback as learned weights | a rejected suggestion ranks lower next time; grammar unchanged | open |
+| S3 | Selection feedback as learned weights | a rejected suggestion ranks lower next time; grammar unchanged | done |
 | S4 | Audition control and playback test | pack test E | open |
 
 Each is one branch and one PR, verified live before it is offered.
@@ -81,10 +81,28 @@ Pack test D is
 `tests/unit/test_emotion_selection.py::test_d_brief_selection_smoke_test`.
 The judgment calls are in `docs/DECISIONS.md` under "Stage 1 knowledge pack".
 
-What S3 inherits: scoring is one function of a target vector and a profile
-vector, so a learned weight is a multiplier on a dimension or on a block's
-contribution and never touches `arohanam`, `avarohanam` or anything else the
-pack marks `[GRAMMAR]` - which is what pack document 05 section 6 and
-framework document 04 section 6 both require. `Scored` already carries the
-fit, the bonuses and the penalties a feedback signal would adjust, and
-`Raaga.tags` is the per-raaga heuristic the weights would attach to.
+## S3, as built
+
+`selection_weights` in `knowledge.db` (schema 3) stores what the creator's
+choices taught us as `(raaga, dimension, weight, observations)`: one row per
+emotion dimension the brief was asking for, plus a `"*"` row for the raaga
+however it was asked for. `KnowledgeRepository.record_selection_feedback`
+writes it, `selection_weight_map` reads it in one go for a whole ranking, and
+`emotion.feedback_bias` turns it into a bounded adjustment that counts each
+dimension in proportion to how much *this* brief is asking for it - which is
+what keeps a rejection in a joyful brief from sinking the same raaga in a
+grieving one.
+
+Signals are the pack's: accepted +1.0, auditioned +0.2, rejected -0.7, plus
+passed-over -0.25. `AppController.select_raaga` sends them when a creator
+chooses (and `require_raaga`'s automatic pick explicitly does not),
+`AppController.reject_raaga` sends a rejection and reads any comment through
+`emotion.read_correction`. `MusicAgent.selection_preferences` and
+`forget_selection_preferences` are the review and reset.
+
+The judgment calls are in `docs/DECISIONS.md` under "Stage 1 knowledge pack".
+
+What S4 inherits: `MusicAgent.audition_raaga` already exists and sends the
+pack's +0.2 signal; the audition control has only to call it after playing
+the arohanam and avarohanam (pack document 05 section 7 steps C to E, and
+document 06's test E).
