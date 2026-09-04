@@ -1,0 +1,101 @@
+KNOWLEDGE, MEMORY, AND REITERATION SPEC
+Version: 0.1
+
+1. KNOWLEDGE CLASSES
+
+A. HARD KNOWLEDGE
+Stable rules/facts/specifications.
+Example: formal grammar, protocol rule, verified domain fact.
+
+B. HEURISTIC KNOWLEDGE
+Useful but defeasible guidance.
+Example: preference mapping, likely pattern, emotional interpretation.
+
+C. EXPERIENCE
+Observed success/failure from performing tasks.
+
+D. PROCEDURE
+How to perform a task effectively.
+
+E. TEST KNOWLEDGE
+How to measure or challenge a capability.
+
+F. DISPUTE LESSON
+A reusable correction produced after disagreement.
+
+2. PERSISTENCE TARGETS
+
+SHARED KNOWLEDGE BASE
+Reusable facts, procedures, lessons, tests, best practices.
+
+AGENT MEMORY
+Agent-specific history, preferences, progress, weaknesses, current goals.
+
+TRAINING HISTORY
+Lessons attempted, tests, scores, remediation, promotions.
+
+DO NOT PERSIST BY DEFAULT
+- temporary Judge agent
+- duplicated derived summaries
+- raw transient reasoning
+- state that can be cheaply regenerated
+
+3. REITERATION PROTOCOL
+
+For every significant lesson, Student produces:
+
+R1. RESTATE
+"What did I learn?"
+
+R2. EXPLAIN
+"Why is it true/useful?"
+
+R3. CONNECT
+"What does it connect to?"
+
+R4. EXAMPLE
+"Show a correct example."
+
+R5. COUNTEREXAMPLE
+"Show what would be wrong."
+
+R6. APPLY
+"Use it in a practical task."
+
+R7. SELF-CHECK
+"What could I still be misunderstanding?"
+
+R8. RETEST
+Demonstrate it again later.
+
+4. DIGESTION TEST
+
+A lesson is not digested merely because the Student can repeat it.
+
+Evidence of digestion:
+- applies in new context
+- recognizes exceptions
+- detects related errors
+- explains tradeoffs
+- retrieves lesson after time delay
+- combines it with other lessons
+
+5. MEMORY PROMOTION
+
+A learning event may move:
+raw event -> candidate lesson -> validated lesson -> shared reusable knowledge
+
+Promotion requires validation.
+One accidental success must not automatically become a universal rule.
+
+6. FORGETTING / DEPRECATION
+
+Knowledge items should support:
+- confidence
+- source
+- version
+- last validated time
+- superseded_by
+- deprecated flag
+
+Incorrect lessons must be corrected, not silently accumulated.

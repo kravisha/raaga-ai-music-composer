@@ -1,0 +1,103 @@
+LEARNING + TESTING CO-EVOLUTION SPEC
+Version: 0.1
+
+1. CORE RULE
+Training and testing evolve together.
+
+A fixed test suite is insufficient because:
+- beginner tests become too easy
+- advanced weaknesses are student-specific
+- new lessons create new failure modes
+- real capability requires transfer, not memorization
+
+2. TEST LADDER
+
+T0 Recognition
+"Do you know what this is?"
+
+T1 Recall
+"Can you state the rule/fact?"
+
+T2 Explanation
+"Can you explain why?"
+
+T3 Controlled Application
+"Can you use it in a guided task?"
+
+T4 Independent Application
+"Can you use it without hints?"
+
+T5 Variation
+"Can you handle a changed example?"
+
+T6 Error Detection
+"Can you spot what is wrong?"
+
+T7 Correction
+"Can you fix it?"
+
+T8 Generalization
+"Can you solve a new but related case?"
+
+T9 Adversarial/Edge Case
+"Can you avoid plausible traps?"
+
+T10 Real-World Performance
+"Can you perform under realistic constraints?"
+
+3. ADAPTIVE TEST GENERATION
+
+The Trainer should increase difficulty when:
+- accuracy is high
+- confidence matches accuracy
+- response is fast enough
+- repeated tests show stability
+
+The Trainer should remediate when:
+- the same error repeats
+- confidence is high but answer is wrong
+- recall is good but application is poor
+- application succeeds only on memorized examples
+
+4. TEST QUALITY METRICS
+
+Each test can record:
+- difficulty
+- novelty
+- ambiguity
+- objective/subjective status
+- expected answer
+- acceptable answer range
+- failure mode targeted
+- time/effort
+- result
+- confidence
+- whether Judge was needed
+
+5. TEST EVOLUTION RULE
+
+When a student defeats a test reliably:
+- retire it from primary evaluation
+- keep it for regression
+- generate harder variants
+
+When a student fails:
+- classify the failure
+- generate targeted remediation
+- retest with both similar and novel examples
+
+6. ANTI-GAMING RULE
+Do not train only on the exact tests used for promotion.
+Maintain:
+- training set
+- validation set
+- hidden evaluation set
+- real-world trial set
+
+7. PROMOTION GATE
+Promotion requires:
+- minimum mastery threshold
+- no critical unresolved failures
+- success on unseen tests
+- stable performance across repeated trials
+- confidence calibrated to correctness

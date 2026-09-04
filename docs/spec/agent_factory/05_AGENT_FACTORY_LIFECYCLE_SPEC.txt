@@ -1,0 +1,111 @@
+AGENT FACTORY LIFECYCLE SPEC
+Version: 0.1
+
+1. FACTORY INPUT
+A new agent begins from a specification containing:
+
+- agent name/type
+- mission
+- domain
+- capabilities required
+- allowed actions
+- prohibited actions
+- tools
+- input/output contracts
+- success metrics
+- safety constraints
+- deployment environment
+
+2. BOOTSTRAP
+Create base agent from:
+- role specification
+- shared domain KB
+- reusable procedures
+- validated lessons from earlier agents
+- selected training curriculum
+- initial test suite
+
+Goal:
+The agent should be useful from the beginning, even if not yet excellent.
+
+3. INTERNAL TRAINING PHASE
+
+The agent remains inside the factory while:
+- Student learns
+- Trainer tests
+- both improve
+- Judge resolves hard disputes
+- lessons are reiterated
+- practical exercises are completed
+- hidden tests are passed
+- failures are remediated
+
+4. MATURITY PIPELINE
+
+Recommended stages:
+
+S0 CREATED
+Agent exists but unproven.
+
+S1 EFFECTIVE
+Can perform basic useful tasks.
+
+S2 WORKING
+Handles normal tasks end-to-end.
+
+S3 RELIABLE
+Repeats success consistently.
+
+S4 CORRECT
+Accuracy and judgment meet defined standards.
+
+S5 PROFICIENT
+Handles variation and difficult cases.
+
+S6 EXCELLENT
+High-quality performance with low supervision.
+
+S7 FIELD-TRUSTED
+Validated with real-world evidence.
+
+5. RELEASE GATE
+
+Before client deployment:
+- required capabilities pass hidden tests
+- no critical unresolved disputes
+- rollback exists
+- permissions are bounded
+- monitoring exists
+- escalation behavior is defined
+- knowledge version is recorded
+
+6. FIELD LEARNING
+
+After release:
+real-world experience -> sanitized lesson -> validation -> shared KB
+
+Do not allow a single deployed agent's bad experience to corrupt all future agents.
+
+7. FACTORY FEEDBACK
+
+The factory itself learns:
+- which curricula work
+- which tests predict real performance
+- which mistakes recur
+- which knowledge should be preloaded
+- which agent designs are efficient
+- when a Judge is useful
+- when human escalation is required
+
+Therefore the factory becomes better at producing agents over time.
+
+8. FIRST DOMAIN PILOT: MUSIC
+
+Recommended path:
+A. Raga agent
+B. Lyrics capability
+C. Instrument capability
+D. Prelude/interlude/ending capability
+E. Full composition capability
+
+Each successful subsystem teaches the factory how to build the next one.
