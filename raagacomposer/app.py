@@ -19,6 +19,7 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from .agent.knowledge import Lesson
 from .agent.music_agent import MusicAgent
 from .training.controller import TrainingController
 from .kb.context import KnowledgeContextBuilder
@@ -1061,6 +1062,13 @@ class AppController:
             expected_seconds=self.project.brief.duration_target,
             learned_phrases=self.agent.phrase_bank(raaga.name))
         self.last_evaluation = evaluation
+        try:
+            self.agent.record_lessons(
+                evaluation, raaga=raaga.name, task="composition",
+                method="critique", result=evaluation.overall(),
+                source_run=self.project.project_id)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("could not record lessons from this critique: %s", exc)
         return evaluation.report()
 
     def give_feedback(self, text: str) -> str:
@@ -1073,7 +1081,27 @@ class AppController:
         self.project.log_history("agent.feedback", text[:200])
         self._changed("", "", undoable=False)
         self.status(answer)
+        try:
+            self._record_feedback_lessons(text)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("could not record a lesson from this feedback: %s", exc)
         return answer
+
+    def _record_feedback_lessons(self, text: str) -> None:
+        """Negative feedback is high-weight evidence (spec section 26)."""
+        if self.agent.feedback_sentiment(text) != "negative":
+            return
+        raaga = self.project.raaga.selected or self.agent.curriculum.current_raaga()
+        self.agent.repo.add_lesson(Lesson(
+            raaga=raaga, kind="creator_feedback", dimension="creator",
+            failure_reason=text[:200], task="composition",
+            method="creator feedback", confidence=0.95,
+            source_run=self.project.project_id))
+        if self.last_evaluation is not None:
+            self.agent.record_lessons(
+                self.last_evaluation, raaga=raaga, task="composition",
+                method="creator feedback", result=self.last_evaluation.overall(),
+                source_run=self.project.project_id, confidence=0.95)
 
     def validation_report(self) -> str:
         melody = self.project.melody()

@@ -25,7 +25,7 @@ from ..music.theory import midi_to_freq
 from ..raaga.library import SWARA_SEMITONES, Raaga, RaagaLibrary, parse_swara
 from . import analysis
 from .curriculum import Unit
-from .evaluator import Evaluation, Evaluator
+from .evaluator import Evaluation, Evaluator, Finding
 from .knowledge import KnowledgeRepository
 from .learned import learned_phrase_bank, learned_raaga
 from .originality import PhraseIndex, check as check_originality
@@ -74,6 +74,9 @@ class PracticeReport:
     detail: str = ""
     artifacts: List[List[Note]] = field(default_factory=list)
     evaluation: Optional[Evaluation] = None
+    # Every exercise's findings, not only the last one's: an attempt with
+    # five exercises is marked on all five.
+    findings: List[Finding] = field(default_factory=list)
 
     def summary(self) -> str:
         got = sum(1 for e in self.exercises if e.passed)
@@ -499,6 +502,7 @@ class PracticeEngine:
             previous.append(tokens)
             report.artifacts.append(notes)
             report.evaluation = evaluation
+            report.findings.extend(evaluation.findings)
             report.exercises.append(ExerciseResult(
                 name=f"pattern {i + 1}", score=round(score, 3),
                 passed=score >= unit.minimum_pass_score,
@@ -538,6 +542,7 @@ class PracticeEngine:
             score = evaluation.overall()
             report.artifacts.append(notes)
             report.evaluation = evaluation
+            report.findings.extend(evaluation.findings)
             report.exercises.append(ExerciseResult(
                 name=f"{kind.value} {i + 1}", score=round(score, 3),
                 passed=score >= unit.minimum_pass_score,

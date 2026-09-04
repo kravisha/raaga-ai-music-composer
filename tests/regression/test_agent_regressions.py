@@ -13,11 +13,12 @@ import pytest
 
 from raagacomposer.agent import analysis
 from raagacomposer.agent.curriculum import CurriculumEngine
+from raagacomposer.agent.evaluator import Evaluation
 from raagacomposer.agent.knowledge import KnowledgeRepository
 from raagacomposer.agent import music_agent
 from raagacomposer.agent.music_agent import MusicAgent
-from raagacomposer.agent.practice import (PracticeEngine, PracticeReport,
-                                          practice_seed)
+from raagacomposer.agent.practice import (ExerciseResult, PracticeEngine,
+                                          PracticeReport, practice_seed)
 from raagacomposer.agent.research import (ReferenceProvider, ResearchAgent,
                                           _collapse_repeats)
 from raagacomposer.core.models import Note
@@ -274,5 +275,97 @@ def test_reg_100b_retries_within_one_second_are_not_the_same_exercise(
         assert len({seed for _, seed in seeds}) == 3, seeds
         assert [seed for _, seed in seeds] == \
             [practice_seed(seeds[0][0], i) for i in range(3)]
+    finally:
+        agent.close()
+
+
+# --------------------------------------------------------------------------
+# REG-101  a failed attempt becomes a lesson
+# --------------------------------------------------------------------------
+def test_reg_101_a_failed_attempt_becomes_a_lesson(
+        tmp_path, settings, raagas, monkeypatch):
+    """A failed practice attempt used to vanish - the next attempt at the
+    same unit was a fresh roll of the dice with no memory of what went wrong
+    (spec section 38).  Now every finding on a failed Evaluation becomes a
+    lesson, the same mistake recurring is counted rather than duplicated, and
+    a passing attempt writes nothing at all."""
+    settings.knowledge_db = str(tmp_path / "k.db")
+    agent = MusicAgent(settings, raagas)
+
+    def failing_run(unit, raaga_name="", seed=0):
+        evaluation = Evaluation()
+        evaluation.note("swara_correctness", "outside_swara",
+                        "1 note(s) outside Keeravani: G3", evidence="G3")
+        evaluation.note("structure", "no_cadence",
+                        "it does not come to rest on a resting note (S)",
+                        evidence="D1")
+        evaluation.confidence = 0.6
+        evaluation.recommendation = "stay inside Keeravani"
+        return PracticeReport(unit_id=unit.id, skill_type=unit.skill_type,
+                              score=0.2, passed=False, detail="failed",
+                              evaluation=evaluation)
+
+    try:
+        monkeypatch.setattr(agent.practice, "run", failing_run)
+        monkeypatch.setattr(music_agent.time, "time", lambda: 1_700_000_000.0)
+
+        step1 = agent.learn_step()
+        assert step1.action == "practice"
+        unit_id = step1.unit_id
+        first_lessons = agent.repo.lessons(unit_id=unit_id)
+        assert {l.kind for l in first_lessons} == {"outside_swara", "no_cadence"}
+        assert all(l.recurrences == 1 for l in first_lessons)
+
+        step2 = agent.learn_step()
+        assert step2.unit_id == unit_id
+        second_lessons = agent.repo.lessons(unit_id=unit_id)
+        assert len(second_lessons) == len(first_lessons)      # no duplicates
+        assert all(l.recurrences == 2 for l in second_lessons)
+        assert "again:" in step2.detail
+
+        before = agent.repo.stats()["lessons"]
+
+        def passing_run(unit, raaga_name="", seed=0):
+            return PracticeReport(unit_id=unit.id, skill_type=unit.skill_type,
+                                  score=0.95, passed=True, detail="passed")
+
+        monkeypatch.setattr(agent.practice, "run", passing_run)
+        agent.learn_step()
+        assert agent.repo.stats()["lessons"] == before
+    finally:
+        agent.close()
+
+
+def test_reg_101b_a_failed_listening_exercise_becomes_a_lesson(
+        tmp_path, settings, raagas, monkeypatch):
+    """A quiz-style unit has no Evaluation to raise findings from - its
+    failed exercises are the findings instead, and two attempts at the same
+    named exercise ("name the swara 1", "name the swara 2") are one lesson,
+    not two."""
+    settings.knowledge_db = str(tmp_path / "k.db")
+    agent = MusicAgent(settings, raagas)
+
+    def failing_exercise_run(unit, raaga_name="", seed=0):
+        exercises = [
+            ExerciseResult(name="name the swara 1", score=0.0, passed=False,
+                          expected="G2", heard="G3", detail="heard wrong"),
+            ExerciseResult(name="name the swara 2", score=0.0, passed=False,
+                          expected="R2", heard="R1", detail="heard wrong too"),
+        ]
+        return PracticeReport(unit_id=unit.id, skill_type=unit.skill_type,
+                              score=0.0, passed=False, detail="failed",
+                              exercises=exercises)
+
+    try:
+        monkeypatch.setattr(agent.practice, "run", failing_exercise_run)
+        monkeypatch.setattr(music_agent.time, "time", lambda: 1_700_000_000.0)
+
+        step = agent.learn_step()
+        assert step.action == "practice"
+        lessons = agent.repo.lessons(unit_id=step.unit_id)
+        assert len(lessons) == 1
+        assert lessons[0].kind == "exercise:name the swara"
+        assert "expected" in lessons[0].failure_reason
+        assert "heard" in lessons[0].failure_reason
     finally:
         agent.close()

@@ -20,6 +20,7 @@ where their pieces are drawn on screen changes.
 """
 from __future__ import annotations
 
+import time
 from typing import Any, Dict, List
 
 from PySide6.QtCore import Qt, QTimer, Signal
@@ -51,6 +52,8 @@ DASHBOARD_FIELDS = [
 ]
 
 EXERCISE_COLUMNS = ("Exercise", "Score", "Pass threshold", "Result", "Detail")
+LESSON_COLUMNS = ("Mistake", "Times", "Last seen", "Correction")
+FINDINGS_COLUMNS = ("When", "Unit / task", "Mistake", "Correction")
 
 
 def provider_summary_line(rows: List[Any]) -> str:
@@ -299,6 +302,19 @@ class LearnWorkspace(QWidget):
         self.exercise_table.setMinimumHeight(140)
         layout.addWidget(self.exercise_table, 1)
 
+        remediation_box = QGroupBox("Retry / remediation")
+        remediation_layout = QVBoxLayout(remediation_box)
+        self.lesson_table = QTableWidget(0, len(LESSON_COLUMNS))
+        self.lesson_table.setHorizontalHeaderLabels(list(LESSON_COLUMNS))
+        self.lesson_table.verticalHeader().setVisible(False)
+        self.lesson_table.setMinimumHeight(100)
+        remediation_layout.addWidget(self.lesson_table)
+        self.lesson_hint = QLabel("No lessons yet for this unit.")
+        self.lesson_hint.setWordWrap(True)
+        self.lesson_hint.setObjectName("hint")
+        remediation_layout.addWidget(self.lesson_hint)
+        layout.addWidget(remediation_box)
+
         layout.addWidget(self.agent_panel.critique_btn)
         layout.addWidget(_take_tab(self.agent_panel.tabs, "Its own critique"))
 
@@ -348,10 +364,40 @@ class LearnWorkspace(QWidget):
                 table.setItem(row, column, item)
         table.resizeColumnsToContents()
 
+    def _fill_lesson_table(self, lessons: List[Any]) -> None:
+        table = self.lesson_table
+        if not lessons:
+            table.hide()
+            self.lesson_hint.setText("No lessons yet for this unit.")
+            self.lesson_hint.show()
+            return
+        table.show()
+        self.lesson_hint.hide()
+        table.setRowCount(len(lessons))
+        for row, lesson in enumerate(lessons):
+            last_seen = time.strftime("%Y-%m-%d %H:%M",
+                                      time.localtime(lesson.last_at))
+            values = (f"{lesson.kind}: {lesson.failure_reason}",
+                     str(lesson.recurrences), last_seen, lesson.correction)
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(str(value))
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                table.setItem(row, column, item)
+        table.resizeColumnsToContents()
+
     def _refresh_practice(self) -> None:
         raaga = self.app.agent.curriculum.current_raaga()
         summary = self.app.agent.curriculum.stage_summary(raaga)
         mastered = summary["mastered_raagas"]
+        # The summary already asked the curriculum for the next unit; asking
+        # again from a timer would repeat next_unit's revisit bookkeeping.
+        next_unit_id = summary.get("next_unit", "")
+        if next_unit_id:
+            lessons = self.app.agent.repo.lessons(raaga=raaga,
+                                                  unit_id=next_unit_id)
+        else:
+            lessons = self.app.agent.repo.lessons(raaga=raaga, limit=8)
+        self._fill_lesson_table(lessons)
         cross_units = self.app.agent.curriculum.cross_units()
         required = 0
         if cross_units:
@@ -375,10 +421,30 @@ class LearnWorkspace(QWidget):
         layout = QVBoxLayout(page)
         layout.addWidget(_take_tab(self.agent_panel.tabs, "What it knows"))
         layout.addWidget(_take_tab(self.agent_panel.tabs, "Where it learned it"))
+
+        gaps_box = QGroupBox("Knowledge gaps")
+        gaps_layout = QVBoxLayout(gaps_box)
+        self.gaps_label = QLabel("No recurring mistakes recorded.")
+        self.gaps_label.setWordWrap(True)
+        self.gaps_label.setObjectName("hint")
+        gaps_layout.addWidget(self.gaps_label)
+        layout.addWidget(gaps_box)
+
         layout.addWidget(self.agent_panel.ask)
         layout.addWidget(self.agent_panel.answer)
         layout.addWidget(_take_tab(self.training_panel._tabs, "Knowledge base"), 1)
         return page
+
+    def _refresh_knowledge_gaps(self) -> None:
+        raaga = self.app.agent.curriculum.current_raaga()
+        counts = self.app.agent.repo.lesson_counts(raaga)
+        recurring = sorted(((kind, n) for kind, n in counts.items() if n >= 2),
+                           key=lambda kv: -kv[1])
+        if not recurring:
+            self.gaps_label.setText("No recurring mistakes recorded.")
+            return
+        self.gaps_label.setText(
+            ", ".join(f"{kind} (x{n})" for kind, n in recurring))
 
     # ==================================================================
     # F. History / Evaluation
@@ -388,13 +454,41 @@ class LearnWorkspace(QWidget):
         layout = QVBoxLayout(page)
         layout.addWidget(_take_tab(self.training_panel._tabs, "History"), 1)
         layout.addWidget(_take_tab(self.agent_panel.tabs, "Recent activity"), 1)
+
+        findings_box = QGroupBox("Evaluation findings")
+        findings_layout = QVBoxLayout(findings_box)
+        self.findings_table = QTableWidget(0, len(FINDINGS_COLUMNS))
+        self.findings_table.setHorizontalHeaderLabels(list(FINDINGS_COLUMNS))
+        self.findings_table.verticalHeader().setVisible(False)
+        self.findings_table.setMinimumHeight(120)
+        findings_layout.addWidget(self.findings_table)
+        layout.addWidget(findings_box)
         return page
+
+    def _refresh_findings(self) -> None:
+        raaga = self.app.agent.curriculum.current_raaga()
+        lessons = sorted(self.app.agent.repo.lessons(raaga=raaga, limit=30),
+                         key=lambda l: -l.last_at)
+        table = self.findings_table
+        table.setRowCount(len(lessons))
+        for row, lesson in enumerate(lessons):
+            when = time.strftime("%Y-%m-%d %H:%M", time.localtime(lesson.last_at))
+            unit_task = lesson.unit_id or lesson.task
+            values = (when, unit_task,
+                     f"{lesson.kind}: {lesson.failure_reason}", lesson.correction)
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(str(value))
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                table.setItem(row, column, item)
+        table.resizeColumnsToContents()
 
     # ==================================================================
     def refresh(self) -> None:
         self._refresh_dashboard()
         self._refresh_curriculum()
         self._refresh_practice()
+        self._refresh_knowledge_gaps()
+        self._refresh_findings()
         self.agent_panel.refresh()
         if (self.training_panel.training is not None
                 and not self.training_panel.training.store.closed):

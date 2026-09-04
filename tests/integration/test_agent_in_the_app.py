@@ -255,6 +255,23 @@ def test_the_whole_composing_workflow_still_runs(app, settle):
     settle()
     assert app.project.latest_mix("full") is not None
 
+
+# --------------------------------------------------------------------------
+# a creator's critique and feedback become lessons (spec section 26, 38)
+# --------------------------------------------------------------------------
+def test_negative_feedback_becomes_a_lesson(app, settle):
+    app.select_raaga("Keeravani")
+    teach(app)
+    app.generate_tune(seed=9)
+    settle()
+
+    app.critique_tune()
+    app.give_feedback("This does not sound like Keeravani, too mechanical.")
+
+    lessons = app.agent.repo.lessons(raaga="Keeravani", kind="creator_feedback")
+    assert lessons
+    assert lessons[0].confidence >= 0.9
+
     app.save()
     assert (app.project_dir / "project.json").exists()
 
