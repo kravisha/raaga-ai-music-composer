@@ -20,6 +20,7 @@ way the speech backends do.
 from __future__ import annotations
 
 import json
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -31,6 +32,38 @@ from . import prompts, tasks
 from .base import LLMProvider
 
 log = get_logger("providers.local_llm")
+
+
+def _same_model(have: str, wanted: str) -> bool:
+    """Is ``have`` the model ``wanted`` asks for?
+
+    A bare name means ``:latest`` on both sides, so "llama3" and
+    "llama3:latest" are one model.  The tag otherwise has to match: this used
+    to compare only the part before the colon, which was harmless while one
+    Ollama model was ever configured and wrong the moment two tags of one
+    family were - ``qwen3:8b`` reported itself ready because ``qwen3:4b`` had
+    been pulled, and then answered every request with a 404.
+    """
+    have_name, _, have_tag = (have or "").partition(":")
+    want_name, _, want_tag = (wanted or "").partition(":")
+    if not have_name or have_name != want_name:
+        return False
+    return (have_tag or "latest") == (want_tag or "latest")
+
+
+def _mean_logprob(entries: Any) -> Optional[float]:
+    """Mean token log-probability, or ``None`` if the runtime said nothing.
+
+    Ollama returns ``[{"token": ..., "logprob": ...}, ...]``.  A runtime
+    that omits the field is reporting that it cannot say, which the
+    routing judge treats differently from a low score.
+    """
+    if not entries:
+        return None
+    values = [float(e["logprob"]) for e in entries
+              if isinstance(e, dict) and isinstance(e.get("logprob"), (int, float))]
+    return sum(values) / len(values) if values else None
+
 
 DEFAULT_ENDPOINT = "http://127.0.0.1:11434"
 DEFAULT_OLLAMA_MODEL = "llama3.2:3b"
@@ -58,6 +91,12 @@ class SmallModelLLM(LLMProvider):
 
     _error = ""
     _ok = False
+
+    #: What the last call reported about itself, for the routing judge.
+    #: ``None`` for the mean means the runtime does not expose token
+    #: log-probabilities - which is not the same as reporting a bad one.
+    last_mean_logprob: Optional[float] = None
+    last_seconds: float = 0.0
 
     @property
     def available(self) -> bool:
@@ -125,9 +164,7 @@ class OllamaLLM(SmallModelLLM):
                            f"({exc.__class__.__name__})")
             return
         have = [str(m.get("name", "")) for m in data.get("models", [])]
-        # A tag-less name matches its :latest form and vice versa.
-        wanted = self.model.split(":")[0]
-        if any(h == self.model or h.split(":")[0] == wanted for h in have):
+        if any(_same_model(h, self.model) for h in have):
             self._ok = True
             return
         # Never quietly answer with a model the creator did not ask for.
@@ -150,12 +187,25 @@ class OllamaLLM(SmallModelLLM):
         }
         if task.wants_json:
             payload["format"] = "json"       # small models need the constraint
+        # Signal two of the routing judge.  Ollama returns a mean token
+        # log-probability when asked; a runtime that does not is treated as
+        # "cannot say" rather than "bad", so asking costs nothing where it is
+        # not supported.
+        payload["logprobs"] = True
+        # Qwen3 and its relatives think before answering, and the thinking
+        # comes out of the same token budget as the answer.  Asked for a
+        # short structured reply with thinking left on, the whole budget goes
+        # on deliberation and ``content`` arrives empty.
+        payload["think"] = False
         request = urllib.request.Request(
             f"{self.endpoint}/api/chat",
             data=json.dumps(payload).encode("utf-8"),
             headers={"Content-Type": "application/json"})
+        started = time.monotonic()
         with urllib.request.urlopen(request, timeout=self.timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
+        self.last_seconds = time.monotonic() - started
+        self.last_mean_logprob = _mean_logprob(data.get("logprobs"))
         return str(data.get("message", {}).get("content", "")).strip()
 
 class LlamaCppLLM(SmallModelLLM):

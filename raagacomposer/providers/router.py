@@ -27,10 +27,17 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from ..core.logging_setup import get_logger
 from ..core.settings import Settings
-from . import tasks
+from . import escalation, tasks
 from .base import LLMProvider
 
 log = get_logger("providers.router")
+
+
+def _short(value: Any, limit: int = 600) -> str:
+    """An answer as the routing log should keep it: readable, bounded."""
+    text = str(value)
+    return text if len(text) <= limit else text[:limit] + "..."
+
 
 Factory = Callable[[], LLMProvider]
 
@@ -50,16 +57,38 @@ class RoutedLLM(LLMProvider):
 
     def __init__(self, factories: Sequence[Factory], policy: str = "auto",
                  refresh_seconds: float = 30.0,
-                 quality_floor: int = MEDIUM_FLOOR) -> None:
+                 quality_floor: int = MEDIUM_FLOOR,
+                 thresholds: Optional[escalation.Thresholds] = None,
+                 attempt_log: Optional[escalation.AttemptLog] = None,
+                 tiers: Optional[Dict[str, str]] = None) -> None:
         self._factories = list(factories)
         self.policy = policy if policy in POLICIES else "auto"
         self.refresh_seconds = max(0.0, refresh_seconds)
         self.quality_floor = quality_floor
+        self.thresholds = thresholds or escalation.Thresholds()
+        self.attempt_log = attempt_log
+        #: model name -> tier name, so an attempt can say which rung it was.
+        self.tier_of = {model: tier for tier, model in (tiers or {}).items()}
         self._backends: List[LLMProvider] = []
         self._checked = 0.0
         self._key_seen = bool(Settings.secret("anthropic_api_key"))
         self.last_route: Dict[str, str] = {}
+        #: The mode and the model behind the most recent answer for each
+        #: task.  Recorded because a quality dip has to be attributable:
+        #: without it, runs made under different modes are not comparable
+        #: and a change we made ourselves looks like the model getting worse.
+        self.last_decision: Dict[str, escalation.Decision] = {}
         self.refresh()
+
+    @property
+    def judged(self) -> bool:
+        """Whether answers are judged and escalated rather than merely tried.
+
+        The judged loop is what makes "attempt local first" safe without a
+        strength floor, so the two go together: in the older modes there is
+        no judge, and the floor stays.
+        """
+        return self.policy in ("local_first", "local_only")
 
     # -- backends ----------------------------------------------------------
     def refresh(self) -> None:
@@ -153,7 +182,14 @@ class RoutedLLM(LLMProvider):
         # slow answer - it is a long wait for a worse one - so it is excluded
         # rather than merely ranked last.  Raise llm_local_strength when the
         # local model is genuinely bigger.
-        if spec.quality_critical:
+        # The strength floor used to exclude weak backends from the two
+        # quality-critical tasks outright, on a measurement taken once.  The
+        # standing policy is that nothing is excluded before it has been
+        # tried: a local model is attempted whatever its declared strength,
+        # and the judge decides afterwards on what it actually produced.  The
+        # floor stays for the older modes, where there is no judge to catch a
+        # bad answer and a strength number is all there is to go on.
+        if spec.quality_critical and not self.judged:
             ready = [b for b in ready if b.strength >= self.quality_floor]
             if not ready:
                 return []
@@ -184,25 +220,54 @@ class RoutedLLM(LLMProvider):
         return result is None or result == [] or result == {} or result == ""
 
     def _call(self, task_name: str, run: Callable[[LLMProvider], Any],
-              default: Any) -> Any:
+              default: Any, validate: Optional[Callable[[Any], bool]] = None,
+              prompt: str = "") -> Any:
+        """Ask the chain for an answer, judging each one before accepting it.
+
+        In the judged modes this is the standing policy's attempt-then-
+        escalate loop: try the cheapest local backend, judge what comes back
+        on schema, then log-probabilities, then a second sample, and move on
+        only when it has actually been found wanting.  In the older modes the
+        judge has no thresholds worth applying, so an answer is accepted if
+        it is not empty - exactly as before.
+        """
         self._ensure_fresh()
         chain = self.chain(task_name)
-        for backend in chain:
-            try:
-                result = run(backend)
-            except Exception as exc:                             # noqa: BLE001
-                # Offline, rate limited, refused, a model that went away: the
-                # task moves down the chain rather than being lost.
-                log.warning("%s failed on %s: %s", backend.name, task_name, exc)
-                continue
-            if self._empty(result):
-                log.info("%s returned nothing for %s", backend.name, task_name)
-                continue
-            self.last_route[task_name] = backend.name
-            return result
-        if chain:
-            log.info("no backend answered %s - using the built-in engine",
-                     task_name)
+        if not chain:
+            return default
+
+        # What each backend actually said, kept for the log: the policy wants
+        # the local output and the paid output side by side, or a threshold
+        # cannot be tuned against a real case.
+        outputs: Dict[str, Any] = {}
+
+        def ask(backend: LLMProvider) -> escalation.Sample:
+            value = run(backend)
+            outputs[backend.name] = _short(value)
+            return escalation.Sample(
+                value=value,
+                mean_logprob=getattr(backend, "last_mean_logprob", None),
+                seconds=float(getattr(backend, "last_seconds", 0.0) or 0.0))
+
+        decision = escalation.escalate(
+            chain, ask, self.thresholds, mode=self.policy,
+            validate=validate if self.judged else None,
+            name_of=lambda b: b.name,
+            tier_of=lambda b: self.tier_of.get(
+                getattr(b, "model", ""), "paid" if not b.is_local else ""),
+            is_paid=lambda b: not b.is_local,
+        )
+        self.last_decision[task_name] = decision
+        if self.attempt_log is not None and decision.attempts:
+            self.attempt_log.write(task_name, prompt, decision, outputs)
+
+        if decision.answered:
+            self.last_route[task_name] = decision.backend
+            log.info("%s answered %s %s", decision.backend, task_name,
+                     decision.summary())
+            return decision.value
+        log.info("no backend answered %s - using the built-in engine (%s)",
+                 task_name, decision.summary())
         return default
 
     def explain_routing(self) -> str:
@@ -217,25 +282,75 @@ class RoutedLLM(LLMProvider):
         return "\n".join(rows)
 
     # -- capabilities ------------------------------------------------------
+    # Each passes a validator: signal one of the judge, and the only one that
+    # is certain rather than a threshold.  It earns its place immediately -
+    # qwen3:4b answered a raaga request at a confident -0.53 mean logprob
+    # with one of its three entries keyed ``": "`` instead of ``"raaga"``.
+    # Nothing but a schema check catches that.
     def write_lyrics(self, slots: Sequence[Any], brief: Any) -> List[str]:
+        wanted = len(list(slots))
+
+        def valid(lines: Any) -> bool:
+            return (isinstance(lines, list) and bool(lines)
+                    and all(isinstance(line, str) and line.strip()
+                            for line in lines)
+                    and (not wanted or len(lines) == wanted))
+
         return self._call(tasks.WRITE_LYRICS,
-                          lambda b: b.write_lyrics(slots, brief), [])
+                          lambda b: b.write_lyrics(slots, brief), [],
+                          validate=valid, prompt=str(getattr(brief, "feel", "")))
 
     def classify_intent(self, text: str, intents: Sequence[str]) -> Dict[str, Any]:
+        allowed = set(intents)
+
+        def valid(answer: Any) -> bool:
+            return (isinstance(answer, dict)
+                    and bool(str(answer.get("intent", "")).strip())
+                    and (not allowed or answer.get("intent") in allowed
+                         or answer.get("intent") == "unknown"))
+
         return self._call(tasks.CLASSIFY_INTENT,
-                          lambda b: b.classify_intent(text, intents), {})
+                          lambda b: b.classify_intent(text, intents), {},
+                          validate=valid, prompt=text)
 
     def suggest_raagas(self, brief: Any, candidates: Sequence[str]
                        ) -> List[Dict[str, str]]:
+        known = {c.lower() for c in candidates}
+
+        def valid(rows: Any) -> bool:
+            if not isinstance(rows, list) or not rows:
+                return False
+            for row in rows:
+                if not isinstance(row, dict):
+                    return False
+                name = str(row.get("raaga", "")).strip().lower()
+                # Only from the supplied list, and every row has to name one.
+                if not name or (known and name not in known):
+                    return False
+            return True
+
         return self._call(tasks.SUGGEST_RAAGAS,
-                          lambda b: b.suggest_raagas(brief, candidates), [])
+                          lambda b: b.suggest_raagas(brief, candidates), [],
+                          validate=valid,
+                          prompt=f"{getattr(brief, 'mood', '')} / "
+                                 f"{getattr(brief, 'feel', '')}")
 
     def suggest_instruments(self, description: str,
                             catalog: Sequence[str]) -> List[str]:
+        known = {c.lower() for c in catalog}
+
+        def valid(picks: Any) -> bool:
+            return (isinstance(picks, list) and bool(picks)
+                    and all(isinstance(p, str) and (not known
+                                                    or p.lower() in known)
+                            for p in picks))
+
         return self._call(tasks.SUGGEST_INSTRUMENTS,
                           lambda b: b.suggest_instruments(description, catalog),
-                          [])
+                          [], validate=valid, prompt=description)
 
     def explain(self, question: str, context: str = "") -> str:
         return self._call(tasks.EXPLAIN,
-                          lambda b: b.explain(question, context), "")
+                          lambda b: b.explain(question, context), "",
+                          validate=lambda t: isinstance(t, str) and bool(t.strip()),
+                          prompt=question)

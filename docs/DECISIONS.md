@@ -888,6 +888,77 @@ be able to see which happened.
 (`docs/PLAN_stage1_knowledge.md` S4, with pack test E). `MusicAgent.audition_raaga`
 exists and sends the pack's +0.2, and nothing calls it yet.
 
+## Local-first routing
+
+Added 2026-09-04, replacing the complexity-tier routing above where the two
+disagree. The standing policy: attempt a local model first for every
+model-driven step, judge what it produced, and reach a paid model only on a
+judged failure.
+
+**The strength floor is gone from the judged modes.** It excluded weak
+backends from lyrics and raaga suggestion outright, on a measurement taken
+once - `llama3.2:3b`, 704 seconds, nothing usable. That froze a judgment that
+hardware and models both move past, and it meant "prefer local" was quietly
+not in force for exactly the two tasks where it mattered. Nothing is now
+excluded before it has been tried; the judge decides on what actually came
+back. The floor stays in `auto` and the `*_first` modes, where there is no
+judge and a strength number is all there is to go on.
+
+**Three signals, in order, stopping at the first verdict.** Schema validity
+first, because it is free and certain. Then the mean token log-probability
+where the runtime exposes one - Ollama does, llama.cpp here does not, and a
+runtime that cannot say is not failed for staying silent. Then, only when
+log-probabilities are missing or borderline, a second sample at non-zero
+temperature, because it costs a whole extra generation.
+
+**A deadline is a signal too.** The policy as stated judges quality, not
+time, and a local model that takes ten minutes to produce a good answer has
+still failed the creator. `routing_attempt_seconds` makes the 704-second case
+an escalation rather than a wait.
+
+**Numbers are compared as numbers.** The two-sample check first used text
+similarity, which is nearly blind to the disagreement that matters: two
+fourteen-dimension affect vectors contradicting each other on every value are
+textually almost identical, because the keys and the punctuation are most of
+the string. For a mapping of numbers the measure is now the mean absolute
+difference across the union of keys.
+
+**The judge earns its first signal immediately.** Asked for raaga
+suggestions, `qwen3:4b` answered at a confident -0.53 mean log-probability
+with one of its three entries keyed `": "` instead of `"raaga"`. Only a
+schema check catches that, which is why every capability now passes a
+validator and why schema is checked before anything else.
+
+**The whole policy is one config block**, so changing it needs no code edit
+and no redeploy: the mode (`llm_routing`), the models by tier
+(`routing_tiers`, named rather than ordered so the loop can ask for the one
+it wants), the two escalation orders - prose, and schema-constrained, which
+starts at the model chosen for structured output - and the thresholds.
+`claude_only` leaves the local candidates out of the chain rather than
+running them and discarding the result, so a rollback costs nothing in
+latency, and every mode returns the same shape so nothing downstream cares
+which model ran.
+
+**Every attempt is logged, and the mode and model are recorded with every
+result.** `routing_attempts.jsonl` gets the brief, each attempt's verdict and
+failing signal, what each backend actually said, and which one answered.
+Without it a threshold is a guess that cannot be improved, and a quality dip
+cannot be told apart from a change we made ourselves.
+
+**The thresholds are unvalidated.** The log exists precisely because they
+are: the first real measurement already contradicted one of them, since the
+affect vector under an enforced schema came back at a mean of -1.73 against a
+floor of -1.10, and that was a *good* answer. Numeric tokens are legitimately
+uncertain - choosing 0.8 over 0.9 is not a mistake - so the floor has to be
+calibrated against the log rather than reasoned about.
+
+**One tag of a family does not stand in for another.** The Ollama probe
+compared only the part before the colon, so `qwen3:8b` reported itself ready
+because `qwen3:4b` had been pulled, then answered every request with a 404.
+Harmless while one local model was ever configured; wrong the moment the
+tiers put two tags of one family side by side. A bare name still means
+`:latest` on both sides.
+
 ## Not built, deliberately
 
 * Video, dialogue, scene generation and lip sync - specification section 24

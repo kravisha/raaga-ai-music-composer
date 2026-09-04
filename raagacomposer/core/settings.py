@@ -59,9 +59,56 @@ class Settings:
     llm_claude_effort: str = "medium"              # low | medium | high | xhigh | max
     llm_claude_thinking: bool = True               # adaptive, on hard tasks only
     llm_local_endpoint: str = "http://127.0.0.1:11434"
-    llm_local_model: str = "llama3.2:3b"
+    llm_local_model: str = "qwen3:4b"
     llm_local_gguf: str = ""            # blank = first *.gguf in <config>/models/llm
     llm_local_strength: int = 40        # rough capability of the local model, 0-100
+
+    # --- local-first routing ------------------------------------------
+    # The whole policy in one block, so changing it needs no code edit and
+    # no redeploy.  ``llm_routing`` above is the mode:
+    #
+    #   local_first   attempt local, escalate to a paid model only on a
+    #                 judged failure (the standing default)
+    #   local_only    attempt local, never escalate
+    #   claude_only   skip the local attempt entirely rather than running
+    #                 it and discarding the result, so a rollback costs
+    #                 nothing in latency
+    #
+    # Every mode produces the same output shape, so nothing downstream
+    # cares which model ran - but the mode and the model are recorded with
+    # each result, because otherwise a quality dip cannot be told apart
+    # from a change we made ourselves.
+    #
+    # Tiers are named rather than ordered so the escalation loop can ask
+    # for the one it wants.  "json" is a specialist, not a rung: a task
+    # whose answer must validate against a schema - the fourteen-dimension
+    # affect vector of raaga/emotion.py - starts there instead of at the
+    # cheapest.
+    routing_tiers: Dict[str, str] = field(default_factory=lambda: {
+        "small": "qwen3:4b",       # 2.3 GB, the cheap first attempt
+        "mid": "qwen3:8b",         # 4.9 GB, the step up before anything paid
+        "json": "hermes3:8b",      # 4.3 GB, tuned for structured output
+    })
+    #: Escalation order for ordinary prose work, cheapest first.
+    routing_order: list = field(default_factory=lambda: ["small", "mid"])
+    #: Escalation order when the answer must validate against a schema.
+    #: A different family from the other two on purpose, so that the
+    #: two-sample divergence check below is a second opinion rather than
+    #: the same model agreeing with itself.
+    routing_order_json: list = field(default_factory=lambda: ["json", "mid"])
+
+    # The judge, in the order the policy applies it.  Schema validity is
+    # pass/fail and needs no threshold; these are the other two, plus a
+    # deadline, because a judge that tests only quality lets a local model
+    # spend ten minutes before escalating.
+    routing_logprob_floor: float = -1.10   # mean token logprob; below = low confidence
+    routing_divergence: float = 0.15       # two samples differing by more than this fail
+    routing_sample_temperature: float = 0.5
+    routing_attempt_seconds: float = 90.0  # exceeded = a failure, escalate
+    #: Every attempt is written here with the brief, the local output, the
+    #: failing signal and the paid output, so the thresholds above can be
+    #: tuned against real cases instead of guesses.
+    routing_log: str = ""                  # blank = <config>/routing_attempts.jsonl
     # A small model on a CPU is slow: writing a full lyric takes far longer
     # than any remote call. Too low a ceiling here does not fail the request,
     # it silently routes the work away from the local model.
