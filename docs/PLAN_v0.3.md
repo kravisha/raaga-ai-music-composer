@@ -118,9 +118,12 @@ in Windows Credential Manager with a real key (the file backend was forced),
 and any speech backend, since none is installed.
 
 One pre-existing test, `test_reg_095_research_does_not_spin_when_material_runs_out`,
-failed in three of five full-suite runs today and passed alone every time.
-It seeds a random generator from a Python string hash, which varies per
-process. It is flagged as separate work and was not touched here.
+failed in three of five full-suite runs on 2026-09-03 and passed alone every
+time. It was handled as separate work: the practice seed was the wall-clock
+second, so every retry made within one second replayed the failed attempt
+note for note until the twelve-attempt cap. Fixed on `main` in PR #3
+(seed from the unit id and attempt number, REG-100); this branch is rebased
+on that fix and the full suite passed 958 on 2026-09-04.
 
 ## Next milestone
 
