@@ -395,3 +395,10 @@ class GateReport:
 
     def failed_checks(self) -> List[str]:
         return [name for name, ok in self.checks.items() if not ok]
+
+
+# pytest collects any class whose name starts with "Test" that a test module
+# imports; these are data, not test cases.
+TestLevel.__test__ = False       # type: ignore[attr-defined]
+TestSpec.__test__ = False        # type: ignore[attr-defined]
+TestResult.__test__ = False      # type: ignore[attr-defined]
