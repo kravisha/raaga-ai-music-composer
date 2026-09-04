@@ -27,7 +27,7 @@ from ..raaga.selection import expand_feel_words
 from .curriculum import CurriculumEngine, Unit
 from .evaluator import Evaluation, Evaluator, Finding
 from .guidance import Guidance, build_guidance
-from .knowledge import KnowledgeRepository, Lesson, Phrase
+from .knowledge import (KnowledgeRepository, Lesson, Phrase, SelectionWeight)
 from .learned import (describe_knowledge, knowledge_confidence,
                       learned_phrase_bank, learned_raaga)
 from .originality import PhraseIndex, check as check_originality
@@ -376,12 +376,22 @@ class MusicAgent:
         # into the list by evidence alone, and the block reason stays the
         # argument (docs/PLAN_stage1_knowledge.md S2).
         target = emotion.target_vector(brief)
+        # What the creator's own choices have taught us about which raaga
+        # suits which feeling (Stage 1 pack document 05 section 6).  One read
+        # for the whole ranking; empty until they have chosen anything, in
+        # which case the ranking is exactly what S2 produced.
+        preferences = self.repo.selection_weight_map()
         graded: List[emotion.Scored] = []
         by_name: Dict[str, Tuple[List[str], float, bool]] = {}
 
         for raaga in self.library.all():
             evidence: List[str] = []
-            base = emotion.score_raaga(brief, raaga, target)
+            base = emotion.score_raaga(brief, raaga, target,
+                                       preferences.get(raaga.name))
+            if base.learned:
+                evidence.append(
+                    "you have chosen this before" if base.learned > 0
+                    else "you have passed this over before")
             score = base.score
             learned = raaga.name in studied
             bonus = 0.0
@@ -457,6 +467,75 @@ class MusicAgent:
             f"{', '.join(s.name for s in suggestions[:limit])} for "
             f"{brief.mood}/{brief.feel}"[:180])
         return suggestions[:limit]
+
+    # ==================================================================
+    # selection feedback (Stage 1 pack document 05 section 6)
+    # ==================================================================
+    #: The pack's own signal strengths, plus one it does not name.  Passing a
+    #: raaga over is weaker than rejecting it: choosing the third suggestion
+    #: says something about the first two, but not as much as saying no does.
+    ACCEPTED = 1.0
+    AUDITIONED = 0.2
+    REJECTED = -0.7
+    PASSED_OVER = -0.25
+
+    def record_raaga_choice(self, brief: CreativeBrief, chosen: str,
+                            passed_over: Sequence[str] = ()) -> None:
+        """The creator picked one of the suggestions.  Learn from that."""
+        target = emotion.target_vector(brief)
+        if target.empty:
+            # Nothing was asked for, so nothing was chosen *for* anything and
+            # there is no context to attach the preference to.
+            return
+        dimensions = target.weights
+        if chosen:
+            self.repo.record_selection_feedback(
+                chosen, self.ACCEPTED, dimensions, source="accepted")
+        for name in passed_over:
+            if name and name != chosen:
+                self.repo.record_selection_feedback(
+                    name, self.PASSED_OVER, dimensions, source="passed over")
+
+    def reject_raaga(self, brief: CreativeBrief, name: str,
+                     comment: str = "") -> Dict[str, float]:
+        """The creator said no, and possibly said why.
+
+        A bare rejection lowers this raaga for briefs like this one.  A
+        comment - "too sad", "warmer" - is read for the dimensions it names
+        and applied to this raaga only, so "Keeravani is too sad for this"
+        teaches something about Keeravani rather than about sadness.
+        """
+        target = emotion.target_vector(brief)
+        self.repo.record_selection_feedback(
+            name, self.REJECTED, target.weights, source="rejected")
+        correction = emotion.read_correction(comment)
+        if correction:
+            # A correction is already signed: "too sad" is negative on
+            # sadness, "warmer" positive on warmth.  Feed it as a unit
+            # signal so the sign comes from the words, not from the caller.
+            for dimension, delta in correction.items():
+                self.repo.record_selection_feedback(
+                    name, delta, {dimension: 1.0}, source=f"said: {comment[:40]}")
+        return correction
+
+    def audition_raaga(self, brief: CreativeBrief, name: str) -> None:
+        """Heard, not yet chosen (pack document 05 section 7 step C to E).
+
+        Defined here so the audition control of S4 has the signal it is
+        supposed to send; nothing calls it yet.
+        """
+        target = emotion.target_vector(brief)
+        if not target.empty:
+            self.repo.record_selection_feedback(
+                name, self.AUDITIONED, target.weights, source="auditioned")
+
+    def selection_preferences(self, raaga: str = "") -> List[SelectionWeight]:
+        """What has been learned about raaga selection, for review."""
+        return self.repo.selection_weights(raaga)
+
+    def forget_selection_preferences(self, raaga: str = "") -> int:
+        """Withdraw learned selection preferences, for one raaga or all."""
+        return self.repo.reset_selection_weights(raaga)
 
     @staticmethod
     def _reason(scored: emotion.Scored, explicit: bool, learned: bool) -> str:

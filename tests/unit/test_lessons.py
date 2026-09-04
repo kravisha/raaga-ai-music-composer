@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import pytest
 
-from raagacomposer.agent.knowledge import KnowledgeRepository, Lesson
+from raagacomposer.agent.knowledge import (SCHEMA_VERSION, KnowledgeRepository,
+                                           Lesson)
 
 pytestmark = pytest.mark.unit
 
@@ -142,15 +143,20 @@ def test_a_schema_version_1_database_migrates_and_gains_lessons(tmp_path):
 
     reopened = KnowledgeRepository(path)
     try:
-        assert reopened.schema_version == 2
-        row = reopened._conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND"
-            " name='lessons'").fetchone()
-        assert row is not None
-        # And the table actually works, not just exists.
+        # Whatever the current schema is, not the number it happened to be
+        # when this test was written: the point is that an old database is
+        # brought up to date and keeps what it had, and pinning the literal
+        # made every later schema change look like a regression.
+        assert reopened.schema_version == SCHEMA_VERSION
+        tables = {r["name"] for r in reopened._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        assert {"lessons", "selection_weights"} <= tables
+        # And the tables actually work, not just exist.
         reopened.add_lesson(Lesson(raaga="Keeravani", unit_id="a01.sound",
                                    kind="off_beat"))
         assert reopened.lessons(raaga="Keeravani")
+        reopened.record_selection_feedback("Keeravani", -0.7, {"sadness": 1.0})
+        assert reopened.selection_weights("Keeravani")
     finally:
         reopened.close()
 

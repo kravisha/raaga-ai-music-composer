@@ -816,9 +816,77 @@ against the map. Where a language-model adviser is configured it now appends
 an attributed sentence beside that derivation rather than overwriting it, so
 it stays visible which half of a claim came from where.
 
-**Still to come:** selection feedback as learned weights, and
-arohanam/avarohanam audition (`docs/PLAN_stage1_knowledge.md` S3 and S4, with
-pack test E).
+**A preference is learned for a feeling, not for a raaga.** S3, pack document
+05 section 6. The creator's choices are stored in `selection_weights` as
+`(raaga, dimension, weight)` - one row per emotion dimension the brief was
+asking for, plus a `"*"` row for the raaga however it was asked for. So
+rejecting Keeravani for a grieving brief lowers Keeravani *when something
+grieving is asked for* and leaves it exactly where it was for a wedding. A
+single scalar per raaga would have been simpler and would have taught the
+agent the wrong lesson.
+
+**Feedback is a table of its own, and that is the enforcement.** The pack
+says "save feedback separately from hard grammar; do not rewrite
+Arohanam/Avarohanam from preference feedback". `selection_weights` is a
+separate table written by one method that has no way to reach `raaga_facts`,
+`phrases` or the library, and read by nothing except the ranking. The rule is
+structural rather than remembered, and a test asserts it at the level a
+creator would notice.
+
+**The pack's own signal strengths, plus one it does not name.** Accepted
++1.0, auditioned +0.2, rejected -0.7, and *passed over* -0.25: choosing the
+third suggestion says something about the first two, but not as much as
+saying no does. Measured on the sad/romantic/lonely/warm brief, an explicit
+rejection moves a raaga about 8 points of 100 against a cap of 9.1, and being
+passed over about 2.
+
+**Evidence accumulates with diminishing returns.** The bias is
+`tanh` of the accumulated weight against the brief, so more evidence keeps
+moving the ranking but can never exceed `MAX_FEEDBACK`, and the stored weight
+saturates at `WEIGHT_LIMIT` besides. One explicit rejection already spends
+most of the budget, which is deliberate: a creator who says "no, too sad"
+should see the list change now, not after the third time they say it.
+
+**A correction is read through the same lexicon as everything else.** Rather
+than a table of the pack's five examples, the modifier is read and the word
+after it goes through the emotion lexicon, so "less tense" and "a bit more
+mysterious" work without being enumerated, and "not warm enough" is read as
+asking for more warmth rather than less. A comment that is not a correction
+at all - "I like it" - moves nothing, because understanding nothing is better
+than inventing a number.
+
+**The application choosing for itself is not a preference.** `select_raaga`
+takes `by_creator`, and `require_raaga`'s automatic pick passes `False`.
+Counting it would have the agent learning its own habits back from itself and
+calling the result the creator's taste.
+
+**Only a choice among the suggestions we offered is feedback about a
+feeling.** Found by running it: the first version attached a choice to
+whatever brief was in the panel at the time, so applying a second brief and
+then picking from the first list taught the agent that a raaga chosen for a
+grieving brief suits a wedding - the live pass printed "prefers
+Kharaharapriya for joy" after a choice made for "love failure". Attaching it
+to the brief the suggestions were made for is not enough either, because
+that has moved on too. The honest rule is narrower: learn only when the
+chosen raaga is in the current suggestion list, because that is the one case
+where the raaga and the brief are known to belong together. Naming a raaga
+that is not in the list is an override, and an override is not a preference -
+the selection still happens, only the learning stands down.
+
+**Saying no needed a control.** Acceptance was already wired to "Use this
+raaga"; without a matching one for rejection the creator could only ever
+teach the agent by agreeing with it. The raaga panel has "Not this one",
+which records the rejection and immediately re-ranks so the effect of what
+they just said is visible rather than waiting for the next Apply Brief.
+
+**Withdrawing a preference deprecates it rather than deleting it**
+(framework document 04 section 6). A preference held and withdrawn is not the
+same as one never held, and a creator looking at why a ranking changed should
+be able to see which happened.
+
+**Still to come:** arohanam/avarohanam audition
+(`docs/PLAN_stage1_knowledge.md` S4, with pack test E). `MusicAgent.audition_raaga`
+exists and sends the pack's +0.2, and nothing calls it yet.
 
 ## Not built, deliberately
 

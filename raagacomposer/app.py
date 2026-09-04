@@ -13,7 +13,7 @@ from __future__ import annotations
 import copy
 import queue
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -156,6 +156,9 @@ class AppController:
         self.actions: Dict[str, ActionStatus] = {}
         self._action_queue: "queue.Queue[ActionStatus]" = queue.Queue()
         self.last_suggestions: List = []
+        #: The brief ``last_suggestions`` were made for, so selection
+        #: feedback is attached to what was actually asked.
+        self.suggested_for: Optional[CreativeBrief] = None
 
         # UI callbacks
         self.on_project_changed: Optional[Callable[[], None]] = None
@@ -760,6 +763,13 @@ class AppController:
         thread only - see the threading rule in this module's docstring."""
         self.last_suggestions = suggestions
         self.project.raaga.alternatives = [s.name for s in suggestions]
+        # The brief these answer, kept as it was at the time.  Selection
+        # feedback has to be attached to the brief the suggestions were made
+        # for, not to whatever is in the panel when the creator gets round to
+        # choosing: apply a brief, apply a second one, then pick from the
+        # first list, and the agent would otherwise learn that the raaga
+        # suits a feeling nobody was asking about.
+        self.suggested_for = replace(self.project.brief)
 
     def _apply_brief_done(self, result: Tuple[ActionStatus, List]) -> None:
         status, suggestions = result
@@ -793,20 +803,82 @@ class AppController:
             self._store_brief_suggestions(suggestions)
         return suggestions
 
-    def select_raaga(self, name: str, rationale: str = "") -> Raaga:
+    def _feedback_brief(self, name: str) -> Optional[CreativeBrief]:
+        """The brief this raaga was suggested for, if we actually know.
+
+        Only a choice made *among the suggestions we offered* is feedback
+        about a feeling: that is the one case where the raaga and the brief
+        are known to belong together.  Naming a raaga that is not in the
+        current list is an override, not a preference - we do not know which
+        brief the creator had in mind, and guessing taught the agent that a
+        raaga picked for a grieving brief suits a wedding.
+        """
+        if self.suggested_for is None:
+            return None
+        if name not in (self.project.raaga.alternatives or []):
+            return None
+        return self.suggested_for
+
+    def select_raaga(self, name: str, rationale: str = "",
+                     by_creator: bool = True) -> Raaga:
+        """Choose the raaga to compose in.
+
+        ``by_creator`` is what separates a choice from a default.  A creator
+        picking one of the suggestions is a training signal the pack asks us
+        to learn from (document 05 section 6); the application picking one
+        for itself because nobody had, in ``require_raaga``, is not - and
+        counting it as one would have the agent learning its own habits back
+        from itself.
+        """
         raaga = self.raagas.get(name)
         if raaga is None:
             raise KeyError(f"Unknown raaga: {name}")
         if self.project.raaga.locked:
             raise LockedContentError(
                 f"The raaga is locked to {self.project.raaga.selected}. Unlock to change it.")
+        offered = list(self.project.raaga.alternatives)
         self.project.raaga.selected = raaga.name
         self.project.raaga.rationale = rationale
         self.project.raaga.state = ApprovalState.APPROVED
         self.project.raaga.version += 1
         self.project.current_stage = Stage.TUNE
         self._changed("raaga.select", f"Selected raaga {raaga.name}")
+        if by_creator and self.agent is not None:
+            # Anything ranked above what they actually took was offered and
+            # not taken; that is weaker evidence than a rejection and is
+            # weighted as such.
+            try:
+                answered = self._feedback_brief(raaga.name)
+                passed = offered[:offered.index(raaga.name)] \
+                    if raaga.name in offered else []
+                if answered is not None:
+                    self.agent.record_raaga_choice(answered, raaga.name, passed)
+            except Exception as exc:  # noqa: BLE001 - never block a selection
+                log.warning("could not record the raaga choice: %s", exc)
         return raaga
+
+    def reject_raaga(self, name: str, comment: str = "") -> Dict[str, float]:
+        """The creator turned a suggestion down, and possibly said why.
+
+        Returns the dimensions the comment moved, so a caller can show what
+        was understood rather than silently absorbing it.
+        """
+        if self.agent is None:
+            return {}
+        answered = self._feedback_brief(name)
+        if answered is None:
+            # Turning down a raaga we did not suggest for a brief we cannot
+            # identify is not something to learn from.
+            log.info("no suggestion context for %s; nothing learned", name)
+            return {}
+        correction = self.agent.reject_raaga(answered, name, comment)
+        detail = f"Noted: {name} is not right for this"
+        if correction:
+            detail += " (" + ", ".join(
+                f"{'less' if v < 0 else 'more'} {d}"
+                for d, v in sorted(correction.items())) + ")"
+        self._changed("raaga.reject", detail)
+        return correction
 
     def set_raaga_lock(self, locked: bool) -> None:
         self.project.raaga.state = ApprovalState.LOCKED if locked else ApprovalState.APPROVED
@@ -839,11 +911,15 @@ class AppController:
             return (0 if entry.name in studied else 1 if not entry.scale_only
                     else 2, 0)
 
+        # by_creator=False throughout: nobody chose this, the application did
+        # because a tune was about to be written, and learning a preference
+        # from it would be the agent learning its own habits back from itself.
         best = min(suggestions, key=playable) if suggestions else None
         if best is None:
             fallback = self.raagas.get("Mohanam") or self.raagas.all()[0]
-            return self.select_raaga(fallback.name, "a safe default")
-        return self.select_raaga(best.name, best.rationale)
+            return self.select_raaga(fallback.name, "a safe default",
+                                     by_creator=False)
+        return self.select_raaga(best.name, best.rationale, by_creator=False)
 
     def composing_raaga(self) -> Raaga:
         """The raaga as the agent knows it: learned phrases included."""

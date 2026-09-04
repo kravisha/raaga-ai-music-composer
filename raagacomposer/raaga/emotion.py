@@ -452,6 +452,10 @@ class Scored:
     penalties: List[str] = field(default_factory=list)
     role: str = ""                               # closest fit, warmer, ...
     confidence: float = 0.5
+    #: What the creator's past choices contributed, before scaling to 100.
+    #: Kept so a ranking can be explained and so S3's effect is measurable
+    #: rather than only visible in the order.
+    learned: float = 0.0
 
     @property
     def name(self) -> str:
@@ -535,6 +539,102 @@ def _adjustments(target: EmotionVector, raaga: Raaga
             bonuses, penalties)
 
 
+#: What the creator's past choices may move a score by, out of 100 once
+#: scaled.  The same argument as the block bonuses: preference tunes the
+#: ranking, it does not overrule what the brief asked for.  A creator who
+#: keeps rejecting a raaga is telling us something; they are not telling us
+#: that a warm raaga is now a grieving one.
+MAX_FEEDBACK = 0.12
+
+#: "too sad" reduces; "more devotional" increases; "warmer" increases.  The
+#: pack lists five examples (document 05 section 6); rather than a table of
+#: five, the modifier is read and the word after it goes through the same
+#: lexicon everything else does, so "less tense" and "more mysterious" work
+#: without being enumerated.
+_MORE = {"more", "warmer", "darker", "brighter", "sadder", "gentler",
+         "stronger", "heavier", "deeper"}
+_LESS = {"too", "less", "overly", "very"}
+#: Comparatives that are themselves the word: "warmer" means more warmth.
+_COMPARATIVE = {"warmer": "warm", "darker": "dark", "brighter": "bright",
+                "sadder": "sad", "gentler": "gentle", "stronger": "power",
+                "heavier": "gravity", "deeper": "gravity",
+                "calmer": "calm", "softer": "soft"}
+
+
+def read_correction(text: str) -> Dict[str, float]:
+    """A creator's complaint about a suggestion, as dimension deltas.
+
+    "too sad" -> sadness and gravity down; "warmer" -> tenderness and warmth
+    up; "more devotional" -> devotion up.  Returns an empty mapping when the
+    text is not a correction at all, so a comment that says nothing useful
+    changes nothing rather than being forced into a number.
+    """
+    low = (text or "").lower()
+    tokens = _WORD.findall(low)
+    deltas: Dict[str, float] = {}
+
+    def apply(word: str, sign: float) -> None:
+        target = _COMPARATIVE.get(word, word)
+        vector = LEXICON.get(target)
+        if vector is None:
+            for key, candidate in LEXICON.items():
+                if len(key) >= 4 and target.startswith(key):
+                    vector = candidate
+                    break
+        if target in DIMENSIONS:
+            vector = {target: 1.0}
+        if not vector:
+            return
+        for dimension, weight in vector.items():
+            deltas[dimension] = deltas.get(dimension, 0.0) + sign * weight
+
+    for index, token in enumerate(tokens):
+        # "not warm enough" asks for more warmth, not less: the negator and
+        # the "enough" together invert what "not" on its own would mean.
+        if token == "enough" and index >= 1:
+            window = tokens[max(0, index - 3):index]
+            if any(w in _NEGATORS for w in window):
+                for word in reversed(window):
+                    if word not in _NEGATORS:
+                        apply(word, 1.0)
+                        break
+            continue
+        if token in _COMPARATIVE:
+            apply(token, 1.0)
+            continue
+        if token in _MORE:
+            for following in tokens[index + 1:index + 3]:
+                if following not in _LESS and following not in _MORE:
+                    apply(following, 1.0)
+                    break
+        elif token in _LESS:
+            for following in tokens[index + 1:index + 3]:
+                if following not in _LESS and following not in _MORE:
+                    apply(following, -1.0)
+                    break
+    # Clamp: one sentence is one opinion, however emphatically put.
+    return {d: max(-1.0, min(1.0, v)) for d, v in deltas.items() if v}
+
+
+def feedback_bias(weights: Optional[Dict[str, float]],
+                  target: EmotionVector) -> float:
+    """What the creator's past choices are worth for *this* brief.
+
+    The overall weight always counts; a per-dimension weight counts in
+    proportion to how much the brief is asking for that dimension, which is
+    what keeps a rejection in a joyful brief from sinking the same raaga in a
+    grieving one.  ``tanh`` so that evidence accumulates with diminishing
+    returns and can never exceed the cap however much of it there is.
+    """
+    if not weights:
+        return 0.0
+    raw = weights.get("*", 0.0)
+    for dimension, weight in weights.items():
+        if dimension != "*":
+            raw += weight * target[dimension]
+    return MAX_FEEDBACK * math.tanh(raw / 2.0)
+
+
 def _tempo_fit(brief: CreativeBrief, raaga: Raaga) -> float:
     """The pack's 0.05 tie-break.  Silent when nothing is known either way."""
     if not brief.tempo_preference or not raaga.tempo_range:
@@ -572,24 +672,39 @@ def _reason(raaga: Raaga, tags: Sequence[str], bonuses: Sequence[str],
 
 
 def score_raaga(brief: CreativeBrief, raaga: Raaga,
-                target: Optional[EmotionVector] = None) -> Scored:
-    """One raaga against one brief, with its reasons."""
+                target: Optional[EmotionVector] = None,
+                weights: Optional[Dict[str, float]] = None) -> Scored:
+    """One raaga against one brief, with its reasons.
+
+    ``weights`` is what the creator's past choices taught us about this
+    raaga (``KnowledgeRepository.selection_weight_map``).  It is a plain
+    mapping so that this module stays free of any import from ``agent/``:
+    the pack's engine has no opinion about where preference is stored.
+    """
     target = target if target is not None else target_vector(brief)
     profile = profile_vector(raaga)
     fit = target.similarity(profile)
     adjustment, bonuses, penalties = _adjustments(target, raaga)
-    total = fit + adjustment + _tempo_fit(brief, raaga)
+    learned = feedback_bias(weights, target)
+    if learned >= 0.02:
+        bonuses = list(bonuses) + ["you have chosen this before for briefs "
+                                   "like this one"]
+    elif learned <= -0.02:
+        penalties = list(penalties) + ["you have passed this over before for "
+                                       "briefs like this one"]
+    total = fit + adjustment + learned + _tempo_fit(brief, raaga)
     tags = _fit_tags(target, profile)
     # Scaled by the best a raaga could possibly do rather than clamped at
     # 1.0.  Clamping put every good answer on 100 and threw away exactly the
     # differences the ranking exists to express - and with the scores flat,
     # the diversity step below had nothing to trade against.
-    ceiling = 1.0 + MAX_BONUS + 0.05
+    ceiling = 1.0 + MAX_BONUS + MAX_FEEDBACK + 0.05
     return Scored(
         raaga=raaga, fit=round(fit, 4),
         score=round(100.0 * max(0.0, total) / ceiling, 1),
         reason=_reason(raaga, tags, bonuses, penalties),
-        tags=tags, bonuses=bonuses, penalties=penalties)
+        tags=tags, bonuses=bonuses, penalties=penalties,
+        learned=round(learned, 4))
 
 
 # --------------------------------------------------------------------------
@@ -680,7 +795,8 @@ def spread(scored: Sequence[Scored], limit: int = 5,
 
 
 def rank(brief: CreativeBrief, raagas: Iterable[Raaga], limit: int = 5,
-         diversity: float = DIVERSITY) -> List[Scored]:
+         diversity: float = DIVERSITY,
+         weights: Optional[Dict[str, Dict[str, float]]] = None) -> List[Scored]:
     """The pack's engine end to end: brief in, a ranked spread out.
 
     Never returns an empty list for a brief with anything in it (pack
@@ -691,7 +807,9 @@ def rank(brief: CreativeBrief, raagas: Iterable[Raaga], limit: int = 5,
     target = target_vector(brief)
     if target.empty:
         return []
-    scored = [score_raaga(brief, raaga, target) for raaga in raagas]
+    weights = weights or {}
+    scored = [score_raaga(brief, raaga, target, weights.get(raaga.name))
+              for raaga in raagas]
     scored = [s for s in scored if s.fit > 0.0]
     if not scored:
         return []

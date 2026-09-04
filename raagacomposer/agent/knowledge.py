@@ -35,7 +35,10 @@ from ..core.settings import config_dir
 
 log = get_logger("agent.knowledge")
 
-SCHEMA_VERSION = 2
+#: 3 adds ``selection_weights`` (Stage 1 pack document 05 section 6).  The
+#: table is created by the same ``IF NOT EXISTS`` script an older database
+#: already ran, so an existing knowledge.db gains it and keeps everything.
+SCHEMA_VERSION = 3
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -164,6 +167,26 @@ CREATE TABLE IF NOT EXISTS lessons (
     recurrences INTEGER DEFAULT 1,
     applied INTEGER DEFAULT 0);
 CREATE INDEX IF NOT EXISTS lessons_by_unit ON lessons (raaga, unit_id, kind);
+
+-- What the creator's choices have taught us about which raaga suits which
+-- feeling (Stage 1 pack document 05 section 6).  Deliberately a table of its
+-- own and deliberately not touching raaga_facts: the pack's rule is "save
+-- feedback separately from hard grammar; do not rewrite Arohanam/Avarohanam
+-- from preference feedback", and nothing here can, because nothing here is
+-- read by anything but the ranking.  ``dimension`` is one of the fourteen
+-- emotion dimensions, or '*' for the raaga overall.
+CREATE TABLE IF NOT EXISTS selection_weights (
+    id TEXT PRIMARY KEY,
+    raaga TEXT NOT NULL,
+    dimension TEXT NOT NULL,
+    weight REAL DEFAULT 0.0,
+    observations INTEGER DEFAULT 0,
+    at REAL,
+    last_at REAL,
+    source TEXT DEFAULT '',
+    deprecated INTEGER DEFAULT 0);
+CREATE UNIQUE INDEX IF NOT EXISTS selection_weights_key
+    ON selection_weights (raaga, dimension);
 """
 
 
@@ -263,6 +286,41 @@ class Lesson:
     confidence: float = 0.5
     recurrences: int = 1
     applied: bool = False
+
+
+#: A single signal cannot swing a ranking, and no amount of them can turn a
+#: raaga into something it is not: the pack's own weights are +1.0 for an
+#: acceptance and -0.7 for a rejection, and this is where they saturate.
+WEIGHT_LIMIT = 3.0
+
+
+@dataclass
+class SelectionWeight:
+    """What the creator's choices taught us about one raaga and one feeling.
+
+    Stage 1 pack document 05 section 6.  Heuristic knowledge in the Agent
+    Factory's sense (framework document 04 section 1): defeasible, evidenced
+    by a count of observations, reviewable and resettable, and structurally
+    incapable of reaching a raaga's notes - the ranking is the only thing
+    that reads it.
+    """
+    id: str = field(default_factory=lambda: new_id("selw"))
+    raaga: str = ""
+    #: One of the fourteen emotion dimensions, or ``"*"`` for the raaga overall.
+    dimension: str = "*"
+    weight: float = 0.0
+    observations: int = 0
+    at: float = field(default_factory=time.time)
+    last_at: float = field(default_factory=time.time)
+    source: str = ""
+    deprecated: bool = False
+
+    def describe(self) -> str:
+        direction = "prefers" if self.weight > 0 else "avoids"
+        where = "generally" if self.dimension == "*" else f"for {self.dimension}"
+        return (f"{direction} {self.raaga} {where} "
+                f"({self.weight:+.2f} from {self.observations} "
+                f"observation{'s' if self.observations != 1 else ''})")
 
 
 @dataclass
@@ -747,6 +805,113 @@ class KnowledgeRepository:
                                    (feedback_id,))
 
     # -- lessons (section 38) ----------------------------------------------
+    # ==================================================================
+    # selection feedback (Stage 1 pack document 05 section 6)
+    # ==================================================================
+    def record_selection_feedback(self, raaga: str, signal: float,
+                                  dimensions: Optional[Dict[str, float]] = None,
+                                  source: str = "") -> List[SelectionWeight]:
+        """Fold one choice into what is known about this raaga's suitability.
+
+        ``signal`` is the pack's own number - +1.0 accepted, +0.2 auditioned,
+        -0.7 rejected - and ``dimensions`` is what the brief was actually
+        asking for, so the lesson is learned *in context*: rejecting a raaga
+        for a joyful brief must not sink it for a grieving one.  The overall
+        ``"*"`` weight carries the part of the signal that is about the raaga
+        however it was asked for.
+
+        Nothing here touches ``raaga_facts``, ``phrases`` or anything else
+        the library or the analysis pipeline writes.  That is the pack's rule
+        and it is enforced by this method having no way to reach them.
+        """
+        if not raaga or not signal:
+            return []
+        now = time.time()
+        shares: Dict[str, float] = {"*": signal * 0.4}
+        for dimension, strength in (dimensions or {}).items():
+            if strength >= 0.25:
+                shares[dimension] = signal * 0.6 * strength
+
+        stored: List[SelectionWeight] = []
+        with self._lock, self._conn:
+            for dimension, delta in shares.items():
+                row = self._conn.execute(
+                    "SELECT * FROM selection_weights WHERE raaga=? AND dimension=?",
+                    (raaga, dimension)).fetchone()
+                if row is None:
+                    weight = SelectionWeight(
+                        raaga=raaga, dimension=dimension,
+                        weight=max(-WEIGHT_LIMIT, min(WEIGHT_LIMIT, delta)),
+                        observations=1, at=now, last_at=now, source=source)
+                    self._conn.execute(
+                        "INSERT INTO selection_weights(id, raaga, dimension,"
+                        " weight, observations, at, last_at, source, deprecated)"
+                        " VALUES (?,?,?,?,?,?,?,?,0)",
+                        (weight.id, weight.raaga, weight.dimension,
+                         weight.weight, weight.observations, weight.at,
+                         weight.last_at, weight.source))
+                else:
+                    total = max(-WEIGHT_LIMIT,
+                                min(WEIGHT_LIMIT, row["weight"] + delta))
+                    self._conn.execute(
+                        "UPDATE selection_weights SET weight=?, observations=?,"
+                        " last_at=?, source=?, deprecated=0 WHERE id=?",
+                        (total, row["observations"] + 1, now, source, row["id"]))
+                    weight = SelectionWeight(
+                        id=row["id"], raaga=raaga, dimension=dimension,
+                        weight=total, observations=row["observations"] + 1,
+                        at=row["at"], last_at=now, source=source)
+                stored.append(weight)
+        self.log_event("selection.feedback",
+                       f"{source or 'feedback'} {signal:+.1f} for {raaga}",
+                       raaga=raaga)
+        return stored
+
+    def selection_weights(self, raaga: str = "") -> List[SelectionWeight]:
+        """Everything learned about raaga selection, most recent first."""
+        with self._lock:
+            if raaga:
+                rows = self._conn.execute(
+                    "SELECT * FROM selection_weights WHERE raaga=? AND"
+                    " deprecated=0 ORDER BY last_at DESC", (raaga,)).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT * FROM selection_weights WHERE deprecated=0"
+                    " ORDER BY last_at DESC").fetchall()
+        return [SelectionWeight(
+            id=r["id"], raaga=r["raaga"], dimension=r["dimension"],
+            weight=r["weight"], observations=r["observations"], at=r["at"],
+            last_at=r["last_at"], source=r["source"],
+            deprecated=bool(r["deprecated"])) for r in rows]
+
+    def selection_weight_map(self) -> Dict[str, Dict[str, float]]:
+        """``{raaga: {dimension: weight}}`` - one read for a whole ranking."""
+        out: Dict[str, Dict[str, float]] = {}
+        for weight in self.selection_weights():
+            out.setdefault(weight.raaga, {})[weight.dimension] = weight.weight
+        return out
+
+    def reset_selection_weights(self, raaga: str = "") -> int:
+        """Forget what was learned, for one raaga or for all of them.
+
+        Deprecation rather than deletion (framework document 04 section 6):
+        the row stays, so a creator can see that a preference was held and
+        withdrawn rather than finding a gap where an explanation used to be.
+        """
+        with self._lock, self._conn:
+            if raaga:
+                cursor = self._conn.execute(
+                    "UPDATE selection_weights SET deprecated=1 WHERE raaga=?"
+                    " AND deprecated=0", (raaga,))
+            else:
+                cursor = self._conn.execute(
+                    "UPDATE selection_weights SET deprecated=1 WHERE deprecated=0")
+            count = cursor.rowcount
+        self.log_event("selection.reset",
+                       f"{count} learned selection weight(s) withdrawn"
+                       + (f" for {raaga}" if raaga else ""), raaga=raaga)
+        return count
+
     def add_lesson(self, lesson: Lesson) -> Tuple[Lesson, bool]:
         """Store a lesson; the same mistake recurring strengthens it rather
         than duplicating it - that is what stops it being rediscovered."""

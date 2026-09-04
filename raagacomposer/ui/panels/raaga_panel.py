@@ -41,11 +41,20 @@ class RaagaPanel(QGroupBox):
         accept_btn.clicked.connect(self.accept_selected)
         compare_btn = QPushButton("Compare with selected")
         compare_btn.clicked.connect(self.compare_with_current)
+        # Saying no is a training signal the pack asks us to learn from
+        # (Stage 1 pack document 05 section 6); without a control for it the
+        # creator could only ever teach the agent by agreeing with it.
+        self.reject_btn = QPushButton("Not this one")
+        self.reject_btn.setToolTip(
+            "Rank this raaga lower for briefs like this one. "
+            "The raaga itself is unchanged.")
+        self.reject_btn.clicked.connect(self.reject_selected)
 
         row1 = QHBoxLayout()
         row1.addWidget(suggest_btn)
         row1.addWidget(accept_btn)
         row2 = QHBoxLayout()
+        row2.addWidget(self.reject_btn)
         row2.addWidget(compare_btn)
         row2.addWidget(self.lock_box)
 
@@ -110,6 +119,20 @@ class RaagaPanel(QGroupBox):
             return
         self.refresh()
         self.changed.emit()
+
+    def reject_selected(self) -> None:
+        """Turn a suggestion down, and re-rank with that taken into account."""
+        name = self._current_name()
+        if not name:
+            return
+        try:
+            self.app.reject_raaga(name)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, "Raaga", str(exc))
+            return
+        # Ask again straight away, so the creator sees the effect of what
+        # they just said rather than having to press Suggest themselves.
+        self.suggest()
 
     def compare_with_current(self) -> None:
         other = self.app.raagas.get(self._current_name())
