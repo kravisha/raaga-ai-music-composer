@@ -87,3 +87,29 @@ F1 and F2 run side by side: F2 codes against `models.py` and `protocols.py`, whi
 ## Evidence
 
 Every acceptance test in document 06 becomes a named pytest test (`test_af01_reiteration` to `test_af10_factory_release`). The measurement script from the learning-loop plan is re-run after F3. Live verification in F4 runs a training session in the app against a scratch configuration directory.
+
+## Status, 2026-09-04
+
+| Increment | Pull request | Outcome |
+|---|---|---|
+| F1, F2 | #9 (one branch, three commits) | Core and Raga pilot; a probe of real training cycles found four seam defects and one latent learned-view bug, fixed before the PR |
+| F3 | #10 | Item 4 folded in: the tune as the T10 test, the creator as external evidence |
+| F4 | this branch | Decisions recorded, plans cross-referenced, the Stage 1 knowledge pack kept and checked (`docs/PLAN_stage1_knowledge.md`), live pass with screenshots |
+
+Where each acceptance test lives:
+
+| Document 06 test | Domain-free (toy) | Raga agent |
+|---|---|---|
+| 1 reiteration | | `test_af01_reiteration` |
+| 2 adaptive testing | `test_af02_adaptive_testing` | `test_af02_adaptive_testing` |
+| 3 remediation | `test_af03_remediation` | `test_af03_remediation` |
+| 4 judge | `test_af04_judge` | `test_af04_judge`, `test_af04b_a_wrong_belief_is_corrected_through_a_training_cycle` |
+| 5 judge ephemerality | `test_af05_judge_ephemerality` | |
+| 6 knowledge reuse | `test_af06_knowledge_reuse` | |
+| 7 no false mastery | `test_af07_no_false_mastery` | |
+| 8 test evolution | `test_af08_test_evolution` | `test_af08_test_evolution` |
+| 9 hard vs heuristic | `test_af09_hard_vs_heuristic` | `tests/unit/test_rules.py` |
+| 10 factory release | `test_af10_factory_release` | |
+| field evidence | | `test_af_field_evidence_can_reach_l9` |
+
+Deferred, as the plan said: a second musical agent bootstrapped from the raga agent's reusable lessons, and a provider-backed Judge behind the escalation hook.

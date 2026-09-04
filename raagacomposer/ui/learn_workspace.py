@@ -662,9 +662,15 @@ class LearnWorkspace(QWidget):
             profile = self.app.agent.profile()
             results = store.results(profile.id, level=TestLevel.T10_REAL_WORLD,
                                     limit=12)
-            feedback_by_raaga: Dict[str, str] = {}
-            for row in self.app.agent.repo.feedback(limit=50):
-                feedback_by_raaga.setdefault(row.get("raaga", ""), row.get("text", ""))
+            # Feedback belongs to the tune it was given about: the comments
+            # made after this result and before the next one, not the
+            # latest comment on the raaga repeated against every row.
+            feedback_rows = sorted(self.app.agent.repo.feedback(limit=50),
+                                   key=lambda r: float(r.get("at", 0.0)))
+            ordered = sorted(results, key=lambda r: r.at)
+            next_at = {r.id: (ordered[i + 1].at if i + 1 < len(ordered)
+                              else float("inf"))
+                       for i, r in enumerate(ordered)}
             current_melody = self.app.project.melody()
             table = self.composition_table
             table.setRowCount(len(results))
@@ -681,8 +687,14 @@ class LearnWorkspace(QWidget):
                     rewrites = str(sum(1 for v in current_melody.validation
                                        if v.startswith("rewrite")))
                     quoted = str(len(current_melody.provenance))
+                said = [str(fb.get("text", ""))[:60] for fb in feedback_rows
+                        if result.at <= float(fb.get("at", 0.0)) < next_at[result.id]]
+                feedback = ("; ".join(s for s in said if s)
+                            or (str(test.payload.get("feedback", ""))
+                                if test else "")
+                            or "-")
                 values = (when, raaga, f"{result.score:.2f}", rewrites, quoted,
-                         feedback_by_raaga.get(raaga, "-"))
+                         feedback)
                 for column, value in enumerate(values):
                     item = QTableWidgetItem(str(value))
                     item.setFlags(item.flags() & ~Qt.ItemIsEditable)

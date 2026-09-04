@@ -1024,7 +1024,7 @@ class MusicAgent:
         from ..factory.mastery import apply_evidence
         from ..factory.models import (Dispute, KnowledgeClass, MasteryLevel,
                                       ReusableLesson, Ruling, Split, TestLevel,
-                                      TestResult, ValidationStatus)
+                                      TestResult, TestSpec, ValidationStatus)
 
         store = self.factory_store()
         profile = self.profile()
@@ -1084,9 +1084,19 @@ class MusicAgent:
                 else "T10")
         apply_evidence(record, kind, evidence_id, passed=True)
         store.save_mastery(record)
+        # Filed against a test of its own, so the History table can name the
+        # raaga and the tune the praise was about.
+        spec = TestSpec(
+            capability=concept, level=TestLevel.T10_REAL_WORLD,
+            split=Split.REAL_WORLD, novelty=1.0, difficulty=1.0, ambiguity=0.7,
+            objective=False, expected="the creator accepts the tune",
+            payload={"project_id": project_id, "feedback": text,
+                     "raaga": raaga})
+        store.save_test(spec)
         result = TestResult(
-            agent_id=profile.id, level=TestLevel.T10_REAL_WORLD, split=Split.REAL_WORLD,
-            score=overall, passed=True, student_claim=student_verdict,
+            test_id=spec.id, agent_id=profile.id, level=TestLevel.T10_REAL_WORLD,
+            split=Split.REAL_WORLD, score=overall, passed=True,
+            student_claim=student_verdict,
             student_confidence=evaluation.confidence, trainer_claim="acceptable",
             trainer_confidence=0.95, evidence=[text])
         store.save_result(result)

@@ -142,6 +142,14 @@ now holds an `RLock` for every statement, with a unit test
 (`test_reg_the_queue_worker_must_survive_the_ui_polling_the_store`) that
 both fail on the old store within two seconds.
 
+## Follow-on plans
+
+The learning loop (`docs/PLAN_learning_loop.md`, PRs #5 to #7 and #10), the
+Agent Factory pilot of the Universal Learning Framework
+(`docs/PLAN_agent_factory.md`, PRs #9 and #10) and the Stage 1 knowledge pack
+(`docs/PLAN_stage1_knowledge.md`) continue from this plan; section 64 steps
+16 and 17 are met by them.
+
 ## Next milestone
 
 Section 59 (WORKING): Apply Brief meaningfully ranks raagas from the Knowledge

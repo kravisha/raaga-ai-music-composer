@@ -218,3 +218,17 @@ claimed:
 The plan is done when the first two numbers move in the right direction with
 the suite green, and a creator can ask the agent why it played a phrase and
 get an answer that cites what it learned and what it was told.
+
+## Status, 2026-09-04
+
+| Item | Pull request | Outcome |
+|---|---|---|
+| 1 | #5 | Findings, lessons, LEARN remediation views; the repository lock |
+| 2 | #6 | Guidance in practice; 16 of 20 originality failures on the short-phrase unit fixed by a guided retry |
+| 3 | #7 | Fragment quoting, scale runs as facts, the idiom; measured neutral overall, originality up, authenticity down (`docs/DECISIONS.md`, "Known weakness, now measured") |
+| 4 | #10, as increment F3 of `docs/PLAN_agent_factory.md` | Guided regeneration, provenance, "why this phrase", the creator as field evidence |
+| 5 | open | Docs are done in F4; the calibration of authenticity against originality, and of interest, remains. The measurement script is `tools/measure_composer.py` |
+
+The second number, the share of retries that repeat a finding of the same
+kind, is now enforced rather than measured: a retry carries guidance built
+from the lesson, and a recurring kind is counted on the lesson row.
