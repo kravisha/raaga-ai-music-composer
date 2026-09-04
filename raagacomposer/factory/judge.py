@@ -81,8 +81,14 @@ def convene(dispute: Dispute, rules: Sequence[Rule],
 def should_convene(result: TestResult, hard_rule_settles: bool,
                    min_confidence: float = 0.5, max_gap: float = 0.25) -> bool:
     """Document 02 section 4: invoke only when both sides are plausible and
-    nothing settles it already."""
+    nothing settles it already.
+
+    A result the trainer passed is not a dispute, whatever the two claims
+    look like as text: the trainer accepted the work.  A dispute is the
+    student standing by work the trainer rejected."""
     if hard_rule_settles:
+        return False
+    if result.passed:
         return False
     if result.student_claim == result.trainer_claim:
         return False

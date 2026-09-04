@@ -297,6 +297,11 @@ class RagaTrainer:
         if skill_type in ("classify.valid", "correct.phrase"):
             params["exercises"] = 1
             payload["question"] = f"is the phrase valid in {raaga_name}?"
+        elif skill_type.startswith("generate."):
+            # Both sides state a grammar verdict on what was generated (see
+            # grade() and RagaStudent._generation_claim), so the same
+            # question fits and a hard rule can settle it.
+            payload["question"] = f"is the phrase valid in {raaga_name}?"
         elif skill_type in ("explain", "recall.fact"):
             keys = list(params.get("facts", []))
             if len(keys) == 1:
@@ -332,6 +337,30 @@ class RagaTrainer:
         # consumed once, after the whole batch, so a harder variant is asked
         # for exactly by the next ``build_tests`` call and no other.
 
+        # Tests at the level the student has earned, and one rung above it:
+        # the adaptive trainer promotes to the higher rung only after a
+        # calibrated streak, and it can only promote to a test that exists.
+        tests: List[TestSpec] = self._tests_at(level, lesson, unit, raaga_name,
+                                               history, attempt)
+        if level < TestLevel.T10_REAL_WORLD:
+            # T0 and T1 are one rung (recognition and recall are built
+            # together), so the rung above either is explanation.
+            higher = (TestLevel.T2_EXPLANATION if level <= TestLevel.T1_RECALL
+                      else TestLevel(int(level) + 1))
+            tests.extend(self._tests_at(higher, lesson, unit, raaga_name,
+                                        history, attempt, offset=len(tests)))
+        while len(tests) < 2:
+            tests.append(self._test(
+                lesson, history, level, "recall.fact",
+                {"facts": self._fact_keys(unit, raaga_name)}, raaga_name,
+                attempt, len(tests)))
+        self._harder_wanted.pop(lesson.concept, None)
+        return tests[:4]
+
+    def _tests_at(self, level: TestLevel, lesson: Lesson, unit: Optional[Unit],
+                  raaga_name: str, history: Sequence[TestResult], attempt: int,
+                  offset: int = 0) -> List[TestSpec]:
+        """The ladder rung as exercises the practice engine can run."""
         tests: List[TestSpec] = []
         if level in (TestLevel.T0_RECOGNITION, TestLevel.T1_RECALL):
             tests.append(self._test(lesson, history, TestLevel.T0_RECOGNITION,
@@ -355,10 +384,24 @@ class RagaTrainer:
                 lesson, unit, history, TestLevel.T4_INDEPENDENT_APPLICATION,
                 raaga_name, attempt, guided=False))
         elif level == TestLevel.T5_VARIATION:
-            tests.append(self._test(
-                lesson, history, TestLevel.T5_VARIATION, "generate.pattern",
-                {"variations": 3, "length": 5, "use_learned_phrases": True},
-                raaga_name, attempt, 0))
+            # A changed example of the unit's own skill: variations for a
+            # generative unit, tighter tolerances for a listening one.
+            if unit is not None and unit.skill_type != "generate.pattern":
+                params = dict(unit.params)
+                for key in ("tolerance_semitones", "tolerance_ratio"):
+                    if key in params:
+                        params[key] = round(float(params[key]) * 0.7, 3)
+                params["variant"] = True
+                tests.append(self._test(
+                    lesson, history, TestLevel.T5_VARIATION, unit.skill_type,
+                    params, raaga_name, attempt, 0, guided=False))
+            else:
+                params = dict(unit.params) if unit is not None else {"length": 5}
+                params.update({"variations": 3, "use_learned_phrases": True})
+                params.setdefault("length", 5)
+                tests.append(self._test(
+                    lesson, history, TestLevel.T5_VARIATION, "generate.pattern",
+                    params, raaga_name, attempt, 0))
         elif level == TestLevel.T6_ERROR_DETECTION:
             tests.append(self._test(
                 lesson, history, TestLevel.T6_ERROR_DETECTION, "classify.valid",
@@ -381,14 +424,16 @@ class RagaTrainer:
                 lesson, history, TestLevel.T10_REAL_WORLD, "generate.section",
                 {"section": "pallavi", "seconds": 20}, raaga_name, attempt, 0,
                 objective=False))
-
-        while len(tests) < 2:
-            tests.append(self._test(
-                lesson, history, level, "recall.fact",
-                {"facts": self._fact_keys(unit, raaga_name)}, raaga_name,
-                attempt, len(tests)))
-        self._harder_wanted.pop(lesson.concept, None)
-        return tests[:3]
+        # Index the batch so splits and seeds differ from the lower rung's.
+        if offset:
+            for i, test in enumerate(tests):
+                split = self._split_for(attempt + offset + i + 1)
+                test.split = split
+                salt = {Split.TRAINING: "test", Split.VALIDATION: "validation",
+                        Split.HIDDEN: "hidden"}.get(split, "test")
+                test.seed = practice_seed(lesson.origin or lesson.concept,
+                                          attempt + offset + i, salt=salt)
+        return tests
 
     # ------------------------------------------------------------------
     # grade
@@ -415,19 +460,34 @@ class RagaTrainer:
             if report.evaluation is not None:
                 trainer_confidence = report.evaluation.confidence
                 if raaga_obj is not None and report.artifacts:
-                    evaluator = Evaluator(self.agent.library,
-                                          self.agent.phrase_index(raaga_name))
-                    last_eval = evaluator.evaluate(
-                        report.artifacts[-1], raaga_obj, tonic_midi=TONIC,
-                        learned_phrases=self.agent.phrase_bank(raaga_name))
-                    trainer_claim = "valid" if last_eval.passed(threshold) \
-                        else "invalid"
-                evidence = [f.text for f in report.findings]
+                    # The trainer's claim is a grammar verdict on what was
+                    # generated, judged against the LIBRARY (hard knowledge):
+                    # the student states the same kind of verdict from its
+                    # learned view, so a disagreement is about one phrase
+                    # and a hard rule can settle it.  The score stays the
+                    # report's; the claim is not the score.
+                    contested = None
+                    for notes in report.artifacts:
+                        tokens = [n.swara for n in notes]
+                        if not self.agent.practice._judge_valid(raaga_obj, tokens):
+                            contested = tokens
+                            break
+                    trainer_claim = "invalid" if contested else "valid"
+                    shown = contested or [n.swara for n in report.artifacts[0]]
+                    evidence.append("phrase: " + " ".join(shown))
+                    evidence.append(f"raaga: {raaga_name}")
+                evidence.extend(f.text for f in report.findings)
                 if report.findings:
                     failure_mode = report.findings[0].kind
             else:
+                # An objective exercise: the trainer's claim is what it
+                # expected, in the same form as the student's answers, so
+                # the two are comparable and a wrong answer is visibly a
+                # wrong answer rather than a dispute.
                 failed = [e for e in report.exercises if not e.passed]
-                trainer_claim = "valid" if not failed else "invalid"
+                trainer_claim = "; ".join(e.expected for e in report.exercises
+                                          if e.expected) or (
+                    "valid" if not failed else "invalid")
                 evidence = [e.detail for e in report.exercises if e.detail]
                 if failed:
                     failure_mode = _exercise_family(failed[0].name)

@@ -589,6 +589,49 @@ class KnowledgeRepository:
             found = self.facts(raaga, key)
             return found[0] if found else None
 
+    def overrule_facts(self, raaga: str, key: str, keep_value: str,
+                       confidence: float = 0.3, note: str = "") -> int:
+        """A ruling settled a disputed key: every other claim for it drops
+        to ``confidence`` so it stops being used, but stays on record with
+        the reason (document 04 section 6: corrected, not silently
+        accumulated).  Returns how many claims were overruled."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, value, confidence, notes FROM raaga_facts"
+                " WHERE raaga=? AND key=? AND value<>?",
+                (raaga, key, keep_value)).fetchall()
+            for row in rows:
+                with self._conn:
+                    self._conn.execute(
+                        "UPDATE raaga_facts SET confidence=?, notes=? WHERE id=?",
+                        (min(row["confidence"], confidence),
+                         (f"{row['notes']}; " if row["notes"] else "")
+                         + (note or "overruled"), row["id"]))
+            if rows:
+                self.log_event("fact.overruled",
+                               f"{key}: {len(rows)} claim(s) give way to "
+                               f"{keep_value[:40]}", raaga=raaga)
+            return len(rows)
+
+    def overrule_fact(self, raaga: str, key: str, value: str,
+                      confidence: float = 0.3, note: str = "") -> bool:
+        """Overrule one specific claim (see ``overrule_facts``)."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id, confidence, notes FROM raaga_facts"
+                " WHERE raaga=? AND key=? AND value=?",
+                (raaga, key, value)).fetchone()
+            if row is None:
+                return False
+            with self._conn:
+                self._conn.execute(
+                    "UPDATE raaga_facts SET confidence=?, notes=? WHERE id=?",
+                    (min(row["confidence"], confidence),
+                     (f"{row['notes']}; " if row["notes"] else "")
+                     + (note or "overruled"), row["id"]))
+            self.log_event("fact.overruled", f"{key}={value[:40]}", raaga=raaga)
+            return True
+
     def known_raagas(self) -> List[str]:
         with self._lock:
             rows = self._conn.execute(

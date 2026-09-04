@@ -19,7 +19,7 @@ import re
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from ..factory.models import Dispute, KnowledgeClass, Ruling
-from ..raaga.library import Raaga, RaagaLibrary, parse_swara
+from ..raaga.library import SWARA_SEMITONES, Raaga, RaagaLibrary, parse_swara
 from .originality import PhraseIndex, check as check_originality
 
 TONIC = 60
@@ -36,7 +36,9 @@ def _evidence_value(evidence: Sequence[str], prefix: str) -> str:
 
 def _phrase_and_raaga(dispute: Dispute, library: RaagaLibrary
                       ) -> Optional[Tuple[List[str], Raaga]]:
-    lines = list(dispute.evidence_student) + list(dispute.evidence_trainer) \
+    # The trainer's evidence first: when it claims a violation it names the
+    # phrase it objects to, and that is the phrase the ruling is about.
+    lines = list(dispute.evidence_trainer) + list(dispute.evidence_student) \
         + list(dispute.shared_knowledge)
     phrase_text = _evidence_value(lines, "phrase:")
     raaga_name = _evidence_value(lines, "raaga:")
@@ -46,7 +48,10 @@ def _phrase_and_raaga(dispute: Dispute, library: RaagaLibrary
     if raaga is None:
         return None
     tokens = phrase_text.split()
-    if not tokens:
+    # A line that is not made of swaras is not a phrase; a rule that
+    # judged a stray word would be ruling on nothing.
+    if not tokens or any(parse_swara(t)[0] not in SWARA_SEMITONES
+                         for t in tokens):
         return None
     return tokens, raaga
 
@@ -88,9 +93,16 @@ def _direction_valid(raaga: Raaga, tokens: Sequence[str]) -> bool:
 
 
 def _ruling_from_verdict(dispute: Dispute, verdict: str, rationale: str,
-                         rule_name: str, confidence: float = 1.0) -> Ruling:
+                         rule_name: str, confidence: float = 1.0,
+                         correction: str = "") -> Ruling:
     """Build a ``Ruling`` that accepts whichever side's claim matches the
-    hard verdict, or "neither" when both agree or both are wrong."""
+    hard verdict, or "neither" when both agree or both are wrong.
+
+    ``correction`` is what the losing side is told; when it names a fact
+    ("<raaga>'s <key> is <value> by the library (hard knowledge)") the
+    student stores it and the contradicting claim is overruled.  It
+    defaults to the rationale."""
+    correction = correction or rationale
     student_ok = _normalise(dispute.student_claim) == _normalise(verdict)
     trainer_ok = _normalise(dispute.trainer_claim) == _normalise(verdict)
     if student_ok and not trainer_ok:
@@ -102,8 +114,8 @@ def _ruling_from_verdict(dispute: Dispute, verdict: str, rationale: str,
     return Ruling(
         dispute_id=dispute.id, ruling=verdict, accepted_claim=accepted,
         rejected_claim=rejected, rationale=rationale, confidence=confidence,
-        correction_student="" if student_ok else rationale,
-        correction_trainer="" if trainer_ok else rationale,
+        correction_student="" if student_ok else correction,
+        correction_trainer="" if trainer_ok else correction,
         decided_by=rule_name)
 
 
@@ -140,7 +152,12 @@ class AllowedSwarasRule:
         rationale = (f"{', '.join(outside)} not in {raaga.name}'s allowed "
                      f"swaras ({', '.join(raaga.allowed)})" if outside else
                      f"every swara in the phrase belongs to {raaga.name}")
-        return _ruling_from_verdict(dispute, verdict, rationale, self.name)
+        # The durable lesson is the swara inventory itself, so a student
+        # that believed in a wrong note stores the right set.
+        correction = (f"{raaga.name}'s swaras is {' '.join(raaga.allowed)} "
+                      f"by the library (hard knowledge)")
+        return _ruling_from_verdict(dispute, verdict, rationale, self.name,
+                                    correction=correction)
 
 
 class DirectionRule:
