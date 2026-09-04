@@ -19,6 +19,7 @@ pytest.importorskip("PySide6")
 
 from PySide6.QtWidgets import QApplication            # noqa: E402
 
+from raagacomposer.agent.knowledge import Lesson       # noqa: E402
 from raagacomposer.app import AppController           # noqa: E402
 from raagacomposer.ui import theme                    # noqa: E402
 from raagacomposer.ui.main_window import MainWindow    # noqa: E402
@@ -145,6 +146,28 @@ def test_running_one_exercise_lists_a_scored_row(window, qt_app):
     score_text = practice.exercise_table.item(0, 1).text()
     assert float(score_text) >= 0.0
     _shot(window, "10-learn-practice")
+
+
+def test_practice_area_lists_lessons_for_the_current_unit(window, qt_app):
+    app = window.app
+    raaga = app.agent.curriculum.current_raaga()
+    next_unit = app.agent.curriculum.next_unit(raaga)
+    assert next_unit is not None
+    app.agent.repo.add_lesson(Lesson(
+        raaga=raaga, unit_id=next_unit.id, kind="outside_swara",
+        dimension="swara_correctness",
+        failure_reason="1 note(s) outside Keeravani: G3", evidence="G3",
+        correction=f"stay inside {raaga}"))
+
+    window.learn_workspace.show_area("Practice / Quiz")
+    window.learn_workspace.refresh()
+    _pump(qt_app, 0.2)
+
+    assert window.learn_workspace.lesson_table.rowCount() >= 1
+
+    window.learn_workspace.show_area("History / Evaluation")
+    _pump(qt_app, 0.1)
+    assert window.learn_workspace.findings_table.rowCount() >= 1
 
 
 # --------------------------------------------------------------------------

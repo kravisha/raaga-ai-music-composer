@@ -24,8 +24,8 @@ from ..core.settings import Settings
 from ..raaga.library import Raaga, RaagaLibrary, library as default_library
 from ..raaga.selection import expand_feel_words
 from .curriculum import CurriculumEngine, Unit
-from .evaluator import Evaluation, Evaluator
-from .knowledge import KnowledgeRepository, Phrase
+from .evaluator import Evaluation, Evaluator, Finding
+from .knowledge import KnowledgeRepository, Lesson, Phrase
 from .learned import (describe_knowledge, knowledge_confidence,
                       learned_phrase_bank, learned_raaga)
 from .originality import PhraseIndex, check as check_originality
@@ -151,6 +151,50 @@ class MusicAgent:
 
     def knowledge_confidence(self, name: str) -> Dict[str, float]:
         return knowledge_confidence(self.repo, name)
+
+    # ==================================================================
+    # a failed attempt becomes a lesson (section 38)
+    # ==================================================================
+    def record_lessons(self, evaluation: Evaluation, *, raaga: str,
+                       unit_id: str = "", attempt: int = 0, task: str = "",
+                       method: str = "", result: float = 0.0,
+                       source_run: str = "",
+                       confidence: Optional[float] = None,
+                       findings: Optional[Sequence[Finding]] = None
+                       ) -> List[Lesson]:
+        """Turn every finding on a failed evaluation into stored knowledge.
+
+        Each kind of finding becomes one lesson; a finding of a kind already
+        on record for this raaga and unit strengthens it instead of piling
+        up a duplicate (``KnowledgeRepository.add_lesson``).  Within one
+        attempt the same kind counts once, however many exercises raised it,
+        so recurrences count attempts, not exercises.  No findings means
+        nothing is written.  ``findings`` overrides the evaluation's own
+        list when an attempt was marked on several evaluations.
+        """
+        stored: List[Lesson] = []
+        seen: set = set()
+        for finding in (findings if findings is not None
+                        else evaluation.findings):
+            if finding.kind in seen:
+                continue
+            seen.add(finding.kind)
+            related: List[str] = []
+            if (finding.kind == "not_original" and evaluation.originality
+                    and evaluation.originality.matched_phrase_id):
+                related = [evaluation.originality.matched_phrase_id]
+            base_confidence = (confidence if confidence is not None
+                              else evaluation.confidence)
+            lesson = Lesson(
+                raaga=raaga, unit_id=unit_id, attempt=attempt, task=task,
+                method=method, result=result, kind=finding.kind,
+                dimension=finding.dimension, failure_reason=finding.text,
+                evidence=finding.evidence, correction=evaluation.recommendation,
+                related=related, source_run=source_run,
+                confidence=min(1.0, base_confidence * finding.weight))
+            recorded, _ = self.repo.add_lesson(lesson)
+            stored.append(recorded)
+        return stored
 
     # ==================================================================
     # Apply Brief: knowledge-driven raaga suggestion (section 10)
@@ -318,8 +362,8 @@ class MusicAgent:
         # same ones in every run.  Seeding from the clock replayed one failed
         # attempt identically for as long as the second lasted (REG-100).
         attempt = self.repo.progress(unit.id).attempts
-        report = self.practice.run(unit, raaga,
-                                   seed=practice_seed(unit.id, attempt))
+        seed = practice_seed(unit.id, attempt)
+        report = self.practice.run(unit, raaga, seed=seed)
         progress = self.curriculum.record_attempt(
             unit, report.score, report.passed, report.detail)
         step.score = report.score
@@ -332,7 +376,59 @@ class MusicAgent:
             self._keep_best_artifact(unit, raaga, report)
         if progress.status == "failed":
             step.detail += " - giving this unit a rest after repeated failures"
+        if not report.passed:
+            method = f"{unit.skill_type} seed {seed}"
+            source_run = f"practice:{unit.id}:{attempt}"
+            if report.evaluation is not None:
+                lessons = self.record_lessons(
+                    report.evaluation, raaga=raaga, unit_id=unit.id,
+                    attempt=attempt, task=unit.learning_goal, method=method,
+                    result=report.score, source_run=source_run,
+                    findings=report.findings or None)
+            else:
+                lessons = self._record_exercise_lessons(
+                    unit, raaga, attempt, method, source_run, report)
+            self._note_recurrence(step, lessons)
         return step
+
+    @staticmethod
+    def _exercise_base_name(name: str) -> str:
+        """"name the swara 3" -> "name the swara": the same exercise, retried."""
+        return re.sub(r"\s+\d+$", "", name).strip()
+
+    def _record_exercise_lessons(self, unit: Unit, raaga: str, attempt: int,
+                                 method: str, source_run: str,
+                                 report: PracticeReport) -> List[Lesson]:
+        """A quiz-style attempt has no Evaluation; its failed exercises are
+        the findings instead, grouped so a retried exercise makes one lesson."""
+        groups: Dict[str, Any] = {}
+        for exercise in report.exercises:
+            if exercise.passed:
+                continue
+            base = self._exercise_base_name(exercise.name)
+            groups.setdefault(base, exercise)
+        stored: List[Lesson] = []
+        for base, exercise in groups.items():
+            lesson = Lesson(
+                raaga=raaga, unit_id=unit.id, attempt=attempt,
+                task=unit.learning_goal, method=method, result=report.score,
+                kind=f"exercise:{base}", dimension=unit.skill_type,
+                failure_reason=f"expected {exercise.expected}, "
+                              f"heard {exercise.heard}",
+                evidence=exercise.detail, correction="",
+                source_run=source_run, confidence=0.6)
+            recorded, _ = self.repo.add_lesson(lesson)
+            stored.append(recorded)
+        return stored
+
+    @staticmethod
+    def _note_recurrence(step: LearningStep, lessons: Sequence[Lesson]) -> None:
+        """Make section 38's "no rediscovery" visible: say so when it fires."""
+        recurring = [l for l in lessons if l.recurrences > 1]
+        if not recurring:
+            return
+        worst = max(recurring, key=lambda l: l.recurrences)
+        step.detail += f"; again: {worst.kind} (x{worst.recurrences})"
 
     def _keep_best_artifact(self, unit: Unit, raaga: str,
                             report: PracticeReport) -> None:
@@ -464,13 +560,21 @@ class MusicAgent:
     # ==================================================================
     # feedback and explanation (sections 14, 3.1)
     # ==================================================================
+    @staticmethod
+    def feedback_sentiment(text: str) -> str:
+        """"negative" / "positive" / "neutral", by the same rules everywhere."""
+        if NEGATIVE.search(text or ""):
+            return "negative"
+        if POSITIVE.search(text or ""):
+            return "positive"
+        return "neutral"
+
     def record_feedback(self, text: str, raaga: str = "",
                         swaras: Optional[Sequence[str]] = None,
                         target_kind: str = "composition",
                         target_id: str = "") -> str:
         """Take a correction seriously: store it and act on it."""
-        sentiment = "negative" if NEGATIVE.search(text or "") else (
-            "positive" if POSITIVE.search(text or "") else "neutral")
+        sentiment = self.feedback_sentiment(text)
         named = self.library.find_in_text(text or "")
         raaga = raaga or (named.name if named else self.curriculum.current_raaga())
         feedback_id = self.repo.add_feedback(

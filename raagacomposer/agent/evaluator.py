@@ -55,14 +55,33 @@ WEIGHTS = {
 
 
 @dataclass
+class Finding:
+    """One detected mistake, with the tokens or transition that caused it, so
+    a lesson can be made of it (spec section 26 "detected mistakes")."""
+    dimension: str
+    kind: str
+    text: str
+    evidence: str = ""
+    weight: float = 1.0
+
+
+@dataclass
 class Evaluation:
     scores: Dict[str, float] = field(default_factory=dict)
     mistakes: List[str] = field(default_factory=list)
+    findings: List[Finding] = field(default_factory=list)
     strengths: List[str] = field(default_factory=list)
     confidence: float = 0.5
     recommendation: str = ""
     originality: Optional[OriginalityReport] = None
     notes_examined: int = 0
+
+    def note(self, dimension: str, kind: str, text: str, evidence: str = "",
+             weight: float = 1.0) -> None:
+        """Record a mistake as both a prose string and a structured Finding."""
+        self.mistakes.append(text)
+        self.findings.append(Finding(dimension=dimension, kind=kind, text=text,
+                                     evidence=evidence, weight=weight))
 
     def overall(self, weights: Optional[Dict[str, float]] = None) -> float:
         weights = weights or WEIGHTS
@@ -108,7 +127,7 @@ class Evaluator:
         evaluation = Evaluation(notes_examined=len(notes))
         if not notes:
             evaluation.scores = {d: 0.0 for d in DIMENSIONS}
-            evaluation.mistakes.append("nothing was produced")
+            evaluation.note("structure", "nothing_produced", "nothing was produced")
             evaluation.recommendation = "generate at least a few notes"
             evaluation.confidence = 1.0
             return evaluation
@@ -141,7 +160,9 @@ class Evaluator:
         evaluation.originality = report
         evaluation.scores["originality"] = report.score
         if not report.is_original:
-            evaluation.mistakes.append(report.summary())
+            evaluation.note("originality", "not_original", report.summary(),
+                            evidence=f"{report.matched_phrase_id} run "
+                                     f"{report.longest_match}", weight=1.5)
 
         evaluation.confidence = round(
             0.5 + 0.4 * min(1.0, len(notes) / 12.0)
@@ -155,9 +176,11 @@ class Evaluator:
         allowed = set(raaga.allowed)
         wrong = [b for b in bases if b not in allowed]
         if wrong:
-            evaluation.mistakes.append(
+            evaluation.note(
+                "swara_correctness", "outside_swara",
                 f"{len(wrong)} note(s) outside {raaga.name}: "
-                f"{', '.join(sorted(set(wrong)))}")
+                f"{', '.join(sorted(set(wrong)))}",
+                evidence=" ".join(sorted(set(wrong))))
         return round(1.0 - len(wrong) / len(bases), 3)
 
     def _raaga_correctness(self, notes: Sequence[Note], bases: Sequence[str],
@@ -165,20 +188,27 @@ class Evaluator:
         ascending_ok = set(raaga.ascending)
         descending_ok = set(raaga.descending)
         breaks = 0
+        offending_transitions: List[str] = []
         for i in range(1, len(notes)):
             if notes[i].midi > notes[i - 1].midi and bases[i] not in ascending_ok:
                 breaks += 1
+                offending_transitions.append(f"{bases[i - 1]}>{bases[i]}")
             elif notes[i].midi < notes[i - 1].midi and bases[i] not in descending_ok:
                 breaks += 1
+                offending_transitions.append(f"{bases[i - 1]}>{bases[i]}")
         if breaks:
-            evaluation.mistakes.append(
+            evaluation.note(
+                "raaga_correctness", "wrong_direction",
                 f"{breaks} move(s) use a note the arohanam or avarohanam does "
-                f"not allow in that direction")
+                f"not allow in that direction",
+                evidence=" ".join(offending_transitions) or str(breaks))
         forbidden = set(raaga.forbidden_swaras)
         used_forbidden = forbidden & set(bases)
         if used_forbidden:
-            evaluation.mistakes.append(
-                f"{raaga.name} does not use {', '.join(sorted(used_forbidden))}")
+            evaluation.note(
+                "raaga_correctness", "forbidden_swara",
+                f"{raaga.name} does not use {', '.join(sorted(used_forbidden))}",
+                evidence=" ".join(sorted(used_forbidden)))
         penalty = breaks / max(1, len(notes) - 1) + 0.3 * len(used_forbidden)
         return round(max(0.0, 1.0 - penalty), 3)
 
@@ -208,7 +238,8 @@ class Evaluator:
         coverage = pair_hits / max(1, len(bases) - 1)
         score = min(1.0, 0.55 * coverage + 0.45 * min(1.0, hits / 2.0))
         if score < 0.3:
-            evaluation.mistakes.append(
+            evaluation.note(
+                "phrase_authenticity", "no_idiom",
                 "it is in the scale but does not use the raaga's own phrases")
         elif score > 0.7:
             evaluation.strengths.append("uses characteristic phrases")
@@ -229,16 +260,20 @@ class Evaluator:
                                     and len(other.allowed) < len(raaga.allowed)):
                 best_other, best_name = fit, other.name
         if best_other > target:
-            evaluation.mistakes.append(
-                f"this sounds more like {best_name} than {raaga.name}")
+            evaluation.note(
+                "raaga_drift", "neighbour_drift",
+                f"this sounds more like {best_name} than {raaga.name}",
+                evidence=best_name)
             return round(max(0.0, 1.0 - (best_other - target) * 2.0), 3)
         jeeva = set(raaga.jeeva)
         if jeeva:
             presence = sum(1 for b in bases if b in jeeva) / len(bases)
             if presence < 0.08:
-                evaluation.mistakes.append(
+                evaluation.note(
+                    "raaga_drift", "neighbour_drift",
                     f"the life-giving notes of {raaga.name} "
-                    f"({', '.join(raaga.jeeva)}) barely appear")
+                    f"({', '.join(raaga.jeeva)}) barely appear",
+                    evidence=" ".join(raaga.jeeva))
                 return 0.6
         return 1.0
 
@@ -248,7 +283,8 @@ class Evaluator:
             return 0.5
         durations = np.array([n.duration for n in notes], dtype=np.float32)
         if np.any(durations <= 0):
-            evaluation.mistakes.append("some notes have no length")
+            evaluation.note("rhythm", "off_beat", "some notes have no length",
+                            evidence=str(int(np.sum(durations <= 0))))
             return 0.0
         if free_rhythm:
             # Alapana: reward long, varied, unhurried notes instead of a grid.
@@ -261,7 +297,9 @@ class Evaluator:
         offsets = np.abs(ratios - np.round(ratios * 2) / 2)   # half-beat grid
         score = float(np.clip(1.0 - offsets.mean() * 3.0, 0.0, 1.0))
         if score < 0.5:
-            evaluation.mistakes.append("the note lengths do not sit on the beat")
+            evaluation.note("rhythm", "off_beat",
+                            "the note lengths do not sit on the beat",
+                            evidence=f"{float(offsets.mean()):.3f}")
         return round(score, 3)
 
     def _coherence(self, midi: Sequence[float], evaluation: Evaluation) -> float:
@@ -272,7 +310,9 @@ class Evaluator:
         stepwise = float(np.mean(steps <= 2))
         score = 0.6 * stepwise + 0.4 * (1.0 - leaps)
         if leaps > 0.3:
-            evaluation.mistakes.append("too many large jumps; the line is disjointed")
+            evaluation.note("coherence", "too_many_leaps",
+                            "too many large jumps; the line is disjointed",
+                            evidence=str(int(np.sum(steps > 7))))
         elif stepwise > 0.55:
             evaluation.strengths.append("the line moves smoothly")
         return round(float(np.clip(score, 0.0, 1.0)), 3)
@@ -285,9 +325,11 @@ class Evaluator:
         if raaga.nyasa and bases[-1] in set(raaga.nyasa):
             score += 0.35
         else:
-            evaluation.mistakes.append(
+            evaluation.note(
+                "structure", "no_cadence",
                 f"it does not come to rest on a resting note "
-                f"({', '.join(raaga.nyasa) or 'none defined'})")
+                f"({', '.join(raaga.nyasa) or 'none defined'})",
+                evidence=bases[-1])
         if raaga.graha and bases[0] in set(raaga.graha):
             score += 0.1
         midi = [n.midi for n in notes]
@@ -307,7 +349,7 @@ class Evaluator:
         span = (max(midi) - min(midi)) / 12.0
         score = 0.4 * distinct + 0.3 * rhythmic_variety + 0.3 * min(1.0, span)
         if distinct < 0.3:
-            evaluation.mistakes.append("it repeats the same few notes")
+            evaluation.note("interest", "repetitive", "it repeats the same few notes")
         return round(float(np.clip(score, 0.0, 1.0)), 3)
 
     def _expressiveness(self, notes: Sequence[Note],
@@ -319,7 +361,8 @@ class Evaluator:
         score = 0.45 * min(1.0, gamaka * 3.0) + 0.3 * min(1.0, dynamic) \
             + 0.25 * min(1.0, long_notes * 3.0)
         if gamaka == 0:
-            evaluation.mistakes.append("no ornamentation at all; it sounds flat")
+            evaluation.note("expressiveness", "no_gamaka",
+                            "no ornamentation at all; it sounds flat")
         return round(float(np.clip(score, 0.0, 1.0)), 3)
 
     def _mood_match(self, raaga: Raaga, brief, tempo_bpm: float,
@@ -337,13 +380,17 @@ class Evaluator:
             low, high = raaga.tempo_range[0], raaga.tempo_range[-1]
             if not (low - 10 <= tempo_bpm <= high + 10):
                 score *= 0.8
-                evaluation.mistakes.append(
+                evaluation.note(
+                    "mood_match", "mood_mismatch",
                     f"{tempo_bpm:.0f} bpm sits outside the comfortable range for "
-                    f"{raaga.name} ({low}-{high})")
+                    f"{raaga.name} ({low}-{high})",
+                    evidence=f"{tempo_bpm:.0f}")
         if score < 0.4:
-            evaluation.mistakes.append(
+            evaluation.note(
+                "mood_match", "mood_mismatch",
                 f"{raaga.name} does not obviously carry "
-                f"{', '.join(sorted(set(words))[:3])}")
+                f"{', '.join(sorted(set(words))[:3])}",
+                evidence=" ".join(sorted(set(words))[:3]))
         return round(score, 3)
 
     def _brief_match(self, notes: Sequence[Note], brief, tempo_bpm: float,
@@ -355,15 +402,18 @@ class Evaluator:
             if 0.75 <= ratio <= 1.3:
                 score += 0.3
             else:
-                evaluation.mistakes.append(
+                evaluation.note(
+                    "brief_match", "brief_mismatch",
                     f"asked for about {expected_seconds:.0f}s, produced "
-                    f"{actual:.0f}s")
+                    f"{actual:.0f}s", evidence="length")
                 score -= 0.3
         if brief is not None:
             wanted = getattr(brief, "tempo_preference", None)
             if wanted and tempo_bpm and abs(wanted - tempo_bpm) > 12:
-                evaluation.mistakes.append(
-                    f"asked for {wanted} bpm, produced {tempo_bpm:.0f}")
+                evaluation.note(
+                    "brief_match", "brief_mismatch",
+                    f"asked for {wanted} bpm, produced {tempo_bpm:.0f}",
+                    evidence="tempo")
                 score -= 0.2
         return round(float(np.clip(score, 0.0, 1.0)), 3)
 
