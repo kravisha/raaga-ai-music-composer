@@ -13,7 +13,16 @@ touching what the agent learned from their own recordings.  The link between
 them is the knowledge entry's provenance, which names the source and the run.
 
 Written with WAL, opened without a thread check, and every write wrapped in a
-transaction, so the queue worker and the UI thread can both touch it.
+transaction, so the queue worker and the UI thread can both touch it.  The
+connection is one object shared by those threads, and the sqlite3 module does
+not make that safe on its own: two threads running statements on it at the
+same time corrupt its state rather than wait for each other - one sees
+``InterfaceError: bad parameter or other API misuse``, or a cursor that
+another thread reset, or in the worst case a worker that never comes back.
+``TrainingStore._lock`` serialises every method that touches the connection,
+reads included, for its whole body, so rows are always materialised before
+the lock is released.  The lock is re-entrant because methods call each
+other (``add_run`` audits, ``report`` reads the run and its objectives).
 """
 from __future__ import annotations
 
@@ -21,6 +30,7 @@ import hashlib
 import json
 import re
 import sqlite3
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -195,11 +205,17 @@ def _loads(text: str, fallback: Any) -> Any:
 
 
 class TrainingStore:
-    """Everything the Training tab needs to survive a restart."""
+    """Everything the Training tab needs to survive a restart.
+
+    Every method that touches ``self._conn`` holds ``self._lock`` for its whole
+    body, so the queue worker and the UI thread never run a statement on the
+    shared connection at the same time.
+    """
 
     def __init__(self, path: Optional[Path] = None) -> None:
         self.path = Path(path) if path else config_dir() / "training.db"
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.RLock()
         self._conn = sqlite3.connect(str(self.path), check_same_thread=False,
                                      timeout=10.0)
         self._conn.row_factory = sqlite3.Row
@@ -233,23 +249,25 @@ class TrainingStore:
 
     @property
     def schema_version(self) -> int:
-        row = self._conn.execute(
-            "SELECT value FROM meta WHERE key='schema_version'").fetchone()
-        return int(row["value"]) if row else 0
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT value FROM meta WHERE key='schema_version'").fetchone()
+            return int(row["value"]) if row else 0
 
     @property
     def closed(self) -> bool:
         return self._closed
 
     def close(self) -> None:
-        if not self._closed:
-            self._closed = True
-            self._conn.close()
+        with self._lock:
+            if not self._closed:
+                self._closed = True
+                self._conn.close()
 
     # -- audit (section 16) ------------------------------------------------
     def audit(self, kind: str, detail: str = "", *, run_id: str = "",
               source_id: str = "", knowledge_id: str = "") -> None:
-        with self._conn:
+        with self._lock, self._conn:
             self._conn.execute(
                 "INSERT INTO audit(at, kind, detail, run_id, source_id, "
                 "knowledge_id) VALUES (?,?,?,?,?,?)",
@@ -257,39 +275,42 @@ class TrainingStore:
 
     def audit_trail(self, *, run_id: str = "", knowledge_id: str = "",
                     limit: int = 200) -> List[Dict[str, Any]]:
-        clauses, params = [], []
-        if run_id:
-            clauses.append("run_id=?")
-            params.append(run_id)
-        if knowledge_id:
-            clauses.append("knowledge_id=?")
-            params.append(knowledge_id)
-        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        rows = self._conn.execute(
-            f"SELECT * FROM audit {where} ORDER BY id DESC LIMIT ?",
-            params + [limit]).fetchall()
-        return [dict(r) for r in rows]
+        with self._lock:
+            clauses, params = [], []
+            if run_id:
+                clauses.append("run_id=?")
+                params.append(run_id)
+            if knowledge_id:
+                clauses.append("knowledge_id=?")
+                params.append(knowledge_id)
+            where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+            rows = self._conn.execute(
+                f"SELECT * FROM audit {where} ORDER BY id DESC LIMIT ?",
+                params + [limit]).fetchall()
+            return [dict(r) for r in rows]
 
     # -- searches ----------------------------------------------------------
     def record_search(self, query: SearchQuery, result_count: int) -> str:
-        search_id = new_id("sch")
-        with self._conn:
-            self._conn.execute(
-                "INSERT INTO searches(id, at, phrase, query, result_count) "
-                "VALUES (?,?,?,?,?)",
-                (search_id, time.time(), query.phrase, _json(query.as_dict()),
-                 result_count))
-        return search_id
+        with self._lock:
+            search_id = new_id("sch")
+            with self._conn:
+                self._conn.execute(
+                    "INSERT INTO searches(id, at, phrase, query, "
+                    "result_count) VALUES (?,?,?,?,?)",
+                    (search_id, time.time(), query.phrase,
+                     _json(query.as_dict()), result_count))
+            return search_id
 
     def searches(self, limit: int = 50) -> List[Dict[str, Any]]:
-        rows = self._conn.execute(
-            "SELECT * FROM searches ORDER BY at DESC LIMIT ?",
-            (limit,)).fetchall()
-        return [{**dict(r), "query": _loads(r["query"], {})} for r in rows]
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM searches ORDER BY at DESC LIMIT ?",
+                (limit,)).fetchall()
+            return [{**dict(r), "query": _loads(r["query"], {})} for r in rows]
 
     # -- candidates --------------------------------------------------------
     def save_candidate(self, source: LearningSource) -> LearningSource:
-        with self._conn:
+        with self._lock, self._conn:
             self._conn.execute(
                 "INSERT OR REPLACE INTO candidates(source_id, search_id, "
                 "source_type, title, url, author, description, duration, "
@@ -305,37 +326,41 @@ class TrainingStore:
                  int(source.previously_learned), source.provider,
                  _json(source.metadata), source.local_path, source.found_at,
                  identity_of(source.url, source.title)))
-        return source
+            return source
 
     def candidate(self, source_id: str) -> Optional[LearningSource]:
-        row = self._conn.execute(
-            "SELECT * FROM candidates WHERE source_id=?",
-            (source_id,)).fetchone()
-        return self._row_to_source(row) if row else None
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM candidates WHERE source_id=?",
+                (source_id,)).fetchone()
+            return self._row_to_source(row) if row else None
 
     def candidates_for_search(self, search_id: str) -> List[LearningSource]:
-        rows = self._conn.execute(
-            "SELECT * FROM candidates WHERE search_id=? "
-            "ORDER BY relevance_score DESC", (search_id,)).fetchall()
-        return [self._row_to_source(r) for r in rows]
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM candidates WHERE search_id=? "
+                "ORDER BY relevance_score DESC", (search_id,)).fetchall()
+            return [self._row_to_source(r) for r in rows]
 
     def update_candidate(self, source_id: str, **fields) -> None:
-        allowed = {"accessibility_status", "transcript_available",
-                   "previously_learned", "local_path", "duration", "language",
-                   "description", "title", "author", "metadata"}
-        sets = {k: v for k, v in fields.items() if k in allowed}
-        if not sets:
-            return
-        if "metadata" in sets and not isinstance(sets["metadata"], str):
-            sets["metadata"] = _json(sets["metadata"])
-        for flag in ("transcript_available", "previously_learned"):
-            if flag in sets:
-                sets[flag] = int(bool(sets[flag]))
-        assignments = ", ".join(f"{k}=?" for k in sets)
-        with self._conn:
-            self._conn.execute(
-                f"UPDATE candidates SET {assignments} WHERE source_id=?",
-                list(sets.values()) + [source_id])
+        with self._lock:
+            allowed = {"accessibility_status", "transcript_available",
+                       "previously_learned", "local_path", "duration",
+                       "language", "description", "title", "author",
+                       "metadata"}
+            sets = {k: v for k, v in fields.items() if k in allowed}
+            if not sets:
+                return
+            if "metadata" in sets and not isinstance(sets["metadata"], str):
+                sets["metadata"] = _json(sets["metadata"])
+            for flag in ("transcript_available", "previously_learned"):
+                if flag in sets:
+                    sets[flag] = int(bool(sets[flag]))
+            assignments = ", ".join(f"{k}=?" for k in sets)
+            with self._conn:
+                self._conn.execute(
+                    f"UPDATE candidates SET {assignments} WHERE source_id=?",
+                    list(sets.values()) + [source_id])
 
     @staticmethod
     def _row_to_source(row: sqlite3.Row) -> LearningSource:
@@ -357,74 +382,85 @@ class TrainingStore:
             found_at=float(row["found_at"] or 0.0))
 
     # -- duplicate detection (section 10) ---------------------------------
-    def completed_run_for(self, source: LearningSource) -> Optional[LearningRun]:
+    def completed_run_for(self, source: LearningSource
+                          ) -> Optional[LearningRun]:
         """Has this lesson already been learned, by any URL that names it?"""
-        identity = identity_of(source.url, source.title)
-        row = self._conn.execute(
-            "SELECT r.* FROM runs r JOIN candidates c "
-            "ON c.source_id = r.source_id "
-            "WHERE c.identity=? AND r.status=? "
-            "ORDER BY r.completed_at DESC LIMIT 1",
-            (identity, RunStatus.COMPLETED)).fetchone()
-        return self._row_to_run(row) if row else None
+        with self._lock:
+            identity = identity_of(source.url, source.title)
+            row = self._conn.execute(
+                "SELECT r.* FROM runs r JOIN candidates c "
+                "ON c.source_id = r.source_id "
+                "WHERE c.identity=? AND r.status=? "
+                "ORDER BY r.completed_at DESC LIMIT 1",
+                (identity, RunStatus.COMPLETED)).fetchone()
+            return self._row_to_run(row) if row else None
 
     # -- runs --------------------------------------------------------------
     def add_run(self, run: LearningRun) -> LearningRun:
-        if not run.position:
-            row = self._conn.execute(
-                "SELECT COALESCE(MAX(position), 0) AS p FROM runs").fetchone()
-            run.position = int(row["p"]) + 1
-        with self._conn:
-            self._conn.execute(
-                "INSERT INTO runs(run_id, source_id, search_phrase, position, "
-                "status, progress, detail, result, error, attempts, queued_at,"
-                " started_at, completed_at, supersedes) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (run.run_id, run.source_id, run.search_phrase, run.position,
-                 run.status, run.progress, run.detail, run.result, run.error,
-                 run.attempts, run.queued_at, run.started_at,
-                 run.completed_at, run.supersedes))
-        self.audit("run.queued", f"queued {run.source_id}", run_id=run.run_id,
-                   source_id=run.source_id)
-        return run
+        with self._lock:
+            if not run.position:
+                row = self._conn.execute(
+                    "SELECT COALESCE(MAX(position), 0) AS p FROM runs"
+                ).fetchone()
+                run.position = int(row["p"]) + 1
+            with self._conn:
+                self._conn.execute(
+                    "INSERT INTO runs(run_id, source_id, search_phrase, "
+                    "position, status, progress, detail, result, error, "
+                    "attempts, queued_at, started_at, completed_at, "
+                    "supersedes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (run.run_id, run.source_id, run.search_phrase,
+                     run.position, run.status, run.progress, run.detail,
+                     run.result, run.error, run.attempts, run.queued_at,
+                     run.started_at, run.completed_at, run.supersedes))
+            self.audit("run.queued", f"queued {run.source_id}",
+                       run_id=run.run_id, source_id=run.source_id)
+            return run
 
     def update_run(self, run_id: str, **fields) -> None:
-        allowed = {"status", "progress", "detail", "result", "error",
-                   "attempts", "started_at", "completed_at", "position"}
-        sets = {k: v for k, v in fields.items() if k in allowed}
-        if not sets:
-            return
-        assignments = ", ".join(f"{k}=?" for k in sets)
-        with self._conn:
-            self._conn.execute(f"UPDATE runs SET {assignments} WHERE run_id=?",
-                               list(sets.values()) + [run_id])
+        with self._lock:
+            allowed = {"status", "progress", "detail", "result", "error",
+                       "attempts", "started_at", "completed_at", "position"}
+            sets = {k: v for k, v in fields.items() if k in allowed}
+            if not sets:
+                return
+            assignments = ", ".join(f"{k}=?" for k in sets)
+            with self._conn:
+                self._conn.execute(
+                    f"UPDATE runs SET {assignments} WHERE run_id=?",
+                    list(sets.values()) + [run_id])
 
     def run(self, run_id: str) -> Optional[LearningRun]:
-        row = self._conn.execute("SELECT * FROM runs WHERE run_id=?",
-                                 (run_id,)).fetchone()
-        return self._row_to_run(row) if row else None
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM runs WHERE run_id=?",
+                                     (run_id,)).fetchone()
+            return self._row_to_run(row) if row else None
 
     def runs(self, statuses: Sequence[str] = (), limit: int = 200
              ) -> List[LearningRun]:
-        if statuses:
-            marks = ",".join("?" for _ in statuses)
-            rows = self._conn.execute(
-                f"SELECT * FROM runs WHERE status IN ({marks}) "
-                f"ORDER BY position LIMIT ?",
-                list(statuses) + [limit]).fetchall()
-        else:
-            rows = self._conn.execute(
-                "SELECT * FROM runs ORDER BY position LIMIT ?",
-                (limit,)).fetchall()
-        return [self._row_to_run(r) for r in rows]
+        with self._lock:
+            if statuses:
+                marks = ",".join("?" for _ in statuses)
+                rows = self._conn.execute(
+                    f"SELECT * FROM runs WHERE status IN ({marks}) "
+                    f"ORDER BY position LIMIT ?",
+                    list(statuses) + [limit]).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT * FROM runs ORDER BY position LIMIT ?",
+                    (limit,)).fetchall()
+            return [self._row_to_run(r) for r in rows]
 
     def delete_run(self, run_id: str) -> None:
-        with self._conn:
-            self._conn.execute("DELETE FROM objectives WHERE run_id=?",
-                               (run_id,))
-            self._conn.execute("DELETE FROM reports WHERE run_id=?", (run_id,))
-            self._conn.execute("DELETE FROM runs WHERE run_id=?", (run_id,))
-        self.audit("run.deleted", "removed from the queue", run_id=run_id)
+        with self._lock:
+            with self._conn:
+                self._conn.execute("DELETE FROM objectives WHERE run_id=?",
+                                   (run_id,))
+                self._conn.execute("DELETE FROM reports WHERE run_id=?",
+                                   (run_id,))
+                self._conn.execute("DELETE FROM runs WHERE run_id=?",
+                                   (run_id,))
+            self.audit("run.deleted", "removed from the queue", run_id=run_id)
 
     @staticmethod
     def _row_to_run(row: sqlite3.Row) -> LearningRun:
@@ -443,7 +479,7 @@ class TrainingStore:
     # -- objectives --------------------------------------------------------
     def save_objectives(self, run_id: str,
                         objectives: Sequence[Objective]) -> None:
-        with self._conn:
+        with self._lock, self._conn:
             self._conn.execute("DELETE FROM objectives WHERE run_id=?",
                                (run_id,))
             for position, objective in enumerate(objectives):
@@ -460,132 +496,143 @@ class TrainingStore:
                      objective.outcome, int(objective.user_defined), position))
 
     def objectives(self, run_id: str) -> List[Objective]:
-        rows = self._conn.execute(
-            "SELECT * FROM objectives WHERE run_id=? ORDER BY position",
-            (run_id,)).fetchall()
-        return [Objective(
-            objective_id=r["objective_id"], run_id=r["run_id"],
-            description=r["description"] or "", category=r["category"] or "",
-            priority=int(r["priority"] or 2), status=r["status"] or "",
-            confidence=float(r["confidence"] or 0.0),
-            evidence=r["evidence"] or "", outcome=r["outcome"] or "",
-            user_defined=bool(r["user_defined"]),
-            position=int(r["position"] or 0)) for r in rows]
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM objectives WHERE run_id=? ORDER BY position",
+                (run_id,)).fetchall()
+            return [Objective(
+                objective_id=r["objective_id"], run_id=r["run_id"],
+                description=r["description"] or "",
+                category=r["category"] or "",
+                priority=int(r["priority"] or 2), status=r["status"] or "",
+                confidence=float(r["confidence"] or 0.0),
+                evidence=r["evidence"] or "", outcome=r["outcome"] or "",
+                user_defined=bool(r["user_defined"]),
+                position=int(r["position"] or 0)) for r in rows]
 
     # -- reports -----------------------------------------------------------
     def save_report(self, report: LearningReport) -> None:
-        payload = {
-            "summary": report.summary,
-            "understood": report.understood,
-            "learned": report.learned,
-            "confirmed": report.confirmed,
-            "practical_application": report.practical_application,
-            "confidence": report.confidence,
-            "next_learning": report.next_learning,
-            "knowledge_ids": report.knowledge_ids,
-            "analysed_representation": report.analysed_representation,
-            "honest_limits": report.honest_limits,
-            "conflict_ids": [c.conflict_id for c in report.conflicts],
-        }
-        with self._conn:
-            self._conn.execute(
-                "INSERT OR REPLACE INTO reports(run_id, generated_at, payload)"
-                " VALUES (?,?,?)",
-                (report.run_id, report.generated_at, _json(payload)))
-        self.audit("report.saved", f"{len(report.learned)} item(s) learned",
-                   run_id=report.run_id)
+        with self._lock:
+            payload = {
+                "summary": report.summary,
+                "understood": report.understood,
+                "learned": report.learned,
+                "confirmed": report.confirmed,
+                "practical_application": report.practical_application,
+                "confidence": report.confidence,
+                "next_learning": report.next_learning,
+                "knowledge_ids": report.knowledge_ids,
+                "analysed_representation": report.analysed_representation,
+                "honest_limits": report.honest_limits,
+                "conflict_ids": [c.conflict_id for c in report.conflicts],
+            }
+            with self._conn:
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO reports(run_id, generated_at, "
+                    "payload) VALUES (?,?,?)",
+                    (report.run_id, report.generated_at, _json(payload)))
+            self.audit("report.saved",
+                       f"{len(report.learned)} item(s) learned",
+                       run_id=report.run_id)
 
     def report(self, run_id: str) -> Optional[LearningReport]:
-        row = self._conn.execute("SELECT * FROM reports WHERE run_id=?",
-                                 (run_id,)).fetchone()
-        if row is None:
-            return None
-        payload = _loads(row["payload"], {})
-        run = self.run(run_id)
-        report = LearningReport(
-            run_id=run_id, generated_at=float(row["generated_at"] or 0.0),
-            objectives=self.objectives(run_id),
-            summary=payload.get("summary", ""),
-            understood=payload.get("understood", ""),
-            learned=payload.get("learned", []),
-            confirmed=payload.get("confirmed", []),
-            practical_application=payload.get("practical_application", []),
-            confidence=float(payload.get("confidence", 0.0)),
-            next_learning=payload.get("next_learning", []),
-            knowledge_ids=payload.get("knowledge_ids", []),
-            analysed_representation=payload.get("analysed_representation", ""),
-            honest_limits=payload.get("honest_limits", []))
-        if run is not None:
-            report.source = self.candidate(run.source_id)
-        report.conflicts = [c for c in self.conflicts(run_id=run_id)]
-        return report
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM reports WHERE run_id=?",
+                                     (run_id,)).fetchone()
+            if row is None:
+                return None
+            payload = _loads(row["payload"], {})
+            run = self.run(run_id)
+            report = LearningReport(
+                run_id=run_id, generated_at=float(row["generated_at"] or 0.0),
+                objectives=self.objectives(run_id),
+                summary=payload.get("summary", ""),
+                understood=payload.get("understood", ""),
+                learned=payload.get("learned", []),
+                confirmed=payload.get("confirmed", []),
+                practical_application=payload.get("practical_application", []),
+                confidence=float(payload.get("confidence", 0.0)),
+                next_learning=payload.get("next_learning", []),
+                knowledge_ids=payload.get("knowledge_ids", []),
+                analysed_representation=payload.get(
+                    "analysed_representation", ""),
+                honest_limits=payload.get("honest_limits", []))
+            if run is not None:
+                report.source = self.candidate(run.source_id)
+            report.conflicts = [c for c in self.conflicts(run_id=run_id)]
+            return report
 
     # -- knowledge base (section 9) ---------------------------------------
     def existing_knowledge(self, entry: KnowledgeEntry
                            ) -> Optional[KnowledgeEntry]:
         """The active entry this one would collide with, if any."""
-        identity = hashlib.sha1(
-            "|".join(entry.fingerprint_values()[:3]).encode("utf-8")
-        ).hexdigest()[:20]
-        row = self._conn.execute(
-            "SELECT * FROM knowledge WHERE identity=? AND status=? "
-            "ORDER BY version DESC LIMIT 1",
-            (identity, KnowledgeStatus.ACTIVE)).fetchone()
-        return self._row_to_knowledge(row) if row else None
+        with self._lock:
+            identity = hashlib.sha1(
+                "|".join(entry.fingerprint_values()[:3]).encode("utf-8")
+            ).hexdigest()[:20]
+            row = self._conn.execute(
+                "SELECT * FROM knowledge WHERE identity=? AND status=? "
+                "ORDER BY version DESC LIMIT 1",
+                (identity, KnowledgeStatus.ACTIVE)).fetchone()
+            return self._row_to_knowledge(row) if row else None
 
     def add_knowledge(self, entry: KnowledgeEntry) -> KnowledgeEntry:
-        # Identity is subject+category+raga: the same claim about the same
-        # thing, whatever words a particular teacher used for it.
-        identity = hashlib.sha1(
-            "|".join(entry.fingerprint_values()[:3]).encode("utf-8")
-        ).hexdigest()[:20]
-        with self._conn:
-            self._conn.execute(
-                "INSERT OR REPLACE INTO knowledge(knowledge_id, subject, "
-                "concept, normalized_statement, category, raga, tala, "
-                "difficulty, source_id, source_url, source_title, "
-                "source_timestamp, evidence, confidence, date_learned, "
-                "related_knowledge, tags, version, status, run_id, "
-                "objective_id, user_approved, contradicted, identity) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (entry.knowledge_id, entry.subject, entry.concept,
-                 entry.normalized_statement, entry.category, entry.raga,
-                 entry.tala, entry.difficulty, entry.source_id,
-                 entry.source_url, entry.source_title, entry.source_timestamp,
-                 entry.evidence, entry.confidence, entry.date_learned,
-                 _json(entry.related_knowledge), _json(entry.tags),
-                 entry.version, entry.status, entry.run_id,
-                 entry.objective_id, int(entry.user_approved),
-                 int(entry.contradicted), identity))
-        self.audit("knowledge.added", entry.normalized_statement[:200],
-                   run_id=entry.run_id, source_id=entry.source_id,
-                   knowledge_id=entry.knowledge_id)
-        return entry
+        with self._lock:
+            # Identity is subject+category+raga: the same claim about the same
+            # thing, whatever words a particular teacher used for it.
+            identity = hashlib.sha1(
+                "|".join(entry.fingerprint_values()[:3]).encode("utf-8")
+            ).hexdigest()[:20]
+            with self._conn:
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO knowledge(knowledge_id, subject, "
+                    "concept, normalized_statement, category, raga, tala, "
+                    "difficulty, source_id, source_url, source_title, "
+                    "source_timestamp, evidence, confidence, date_learned, "
+                    "related_knowledge, tags, version, status, run_id, "
+                    "objective_id, user_approved, contradicted, identity) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (entry.knowledge_id, entry.subject, entry.concept,
+                     entry.normalized_statement, entry.category, entry.raga,
+                     entry.tala, entry.difficulty, entry.source_id,
+                     entry.source_url, entry.source_title,
+                     entry.source_timestamp,
+                     entry.evidence, entry.confidence, entry.date_learned,
+                     _json(entry.related_knowledge), _json(entry.tags),
+                     entry.version, entry.status, entry.run_id,
+                     entry.objective_id, int(entry.user_approved),
+                     int(entry.contradicted), identity))
+            self.audit("knowledge.added", entry.normalized_statement[:200],
+                       run_id=entry.run_id, source_id=entry.source_id,
+                       knowledge_id=entry.knowledge_id)
+            return entry
 
     def update_knowledge(self, knowledge_id: str, **fields) -> None:
-        allowed = {"status", "confidence", "user_approved", "contradicted",
-                   "version", "normalized_statement", "evidence", "tags"}
-        sets = {k: v for k, v in fields.items() if k in allowed}
-        if not sets:
-            return
-        if "tags" in sets and not isinstance(sets["tags"], str):
-            sets["tags"] = _json(sets["tags"])
-        for flag in ("user_approved", "contradicted"):
-            if flag in sets:
-                sets[flag] = int(bool(sets[flag]))
-        assignments = ", ".join(f"{k}=?" for k in sets)
-        with self._conn:
-            self._conn.execute(
-                f"UPDATE knowledge SET {assignments} WHERE knowledge_id=?",
-                list(sets.values()) + [knowledge_id])
-        self.audit("knowledge.updated", _json(sets)[:200],
-                   knowledge_id=knowledge_id)
+        with self._lock:
+            allowed = {"status", "confidence", "user_approved", "contradicted",
+                       "version", "normalized_statement", "evidence", "tags"}
+            sets = {k: v for k, v in fields.items() if k in allowed}
+            if not sets:
+                return
+            if "tags" in sets and not isinstance(sets["tags"], str):
+                sets["tags"] = _json(sets["tags"])
+            for flag in ("user_approved", "contradicted"):
+                if flag in sets:
+                    sets[flag] = int(bool(sets[flag]))
+            assignments = ", ".join(f"{k}=?" for k in sets)
+            with self._conn:
+                self._conn.execute(
+                    f"UPDATE knowledge SET {assignments} WHERE knowledge_id=?",
+                    list(sets.values()) + [knowledge_id])
+            self.audit("knowledge.updated", _json(sets)[:200],
+                       knowledge_id=knowledge_id)
 
     def knowledge(self, knowledge_id: str) -> Optional[KnowledgeEntry]:
-        row = self._conn.execute(
-            "SELECT * FROM knowledge WHERE knowledge_id=?",
-            (knowledge_id,)).fetchone()
-        return self._row_to_knowledge(row) if row else None
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM knowledge WHERE knowledge_id=?",
+                (knowledge_id,)).fetchone()
+            return self._row_to_knowledge(row) if row else None
 
     def search_knowledge(self, *, keyword: str = "", raga: str = "",
                          tala: str = "", category: str = "",
@@ -594,33 +641,38 @@ class TrainingStore:
                          status: str = "", limit: int = 200
                          ) -> List[KnowledgeEntry]:
         """Section 9's required search axes, all optional and combinable."""
-        clauses: List[str] = []
-        params: List[Any] = []
-        if keyword:
-            clauses.append("(subject LIKE ? OR concept LIKE ? OR "
-                           "normalized_statement LIKE ? OR evidence LIKE ?)")
-            params.extend([f"%{keyword}%"] * 4)
-        for column, value in (("raga", raga), ("tala", tala),
-                              ("category", category), ("source_id", source_id),
-                              ("objective_id", objective_id),
-                              ("difficulty", difficulty), ("status", status)):
-            if value:
-                clauses.append(f"{column}=?")
-                params.append(value)
-        if tag:
-            clauses.append("tags LIKE ?")
-            params.append(f"%{tag}%")
-        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        rows = self._conn.execute(
-            f"SELECT * FROM knowledge {where} ORDER BY date_learned DESC "
-            f"LIMIT ?", params + [limit]).fetchall()
-        return [self._row_to_knowledge(r) for r in rows]
+        with self._lock:
+            clauses: List[str] = []
+            params: List[Any] = []
+            if keyword:
+                clauses.append("(subject LIKE ? OR concept LIKE ? OR "
+                               "normalized_statement LIKE ? OR "
+                               "evidence LIKE ?)")
+                params.extend([f"%{keyword}%"] * 4)
+            for column, value in (("raga", raga), ("tala", tala),
+                                  ("category", category),
+                                  ("source_id", source_id),
+                                  ("objective_id", objective_id),
+                                  ("difficulty", difficulty),
+                                  ("status", status)):
+                if value:
+                    clauses.append(f"{column}=?")
+                    params.append(value)
+            if tag:
+                clauses.append("tags LIKE ?")
+                params.append(f"%{tag}%")
+            where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+            rows = self._conn.execute(
+                f"SELECT * FROM knowledge {where} ORDER BY date_learned DESC "
+                f"LIMIT ?", params + [limit]).fetchall()
+            return [self._row_to_knowledge(r) for r in rows]
 
     def knowledge_count(self) -> int:
-        row = self._conn.execute(
-            "SELECT COUNT(*) AS n FROM knowledge WHERE status=?",
-            (KnowledgeStatus.ACTIVE,)).fetchone()
-        return int(row["n"]) if row else 0
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) AS n FROM knowledge WHERE status=?",
+                (KnowledgeStatus.ACTIVE,)).fetchone()
+            return int(row["n"]) if row else 0
 
     @staticmethod
     def _row_to_knowledge(row: sqlite3.Row) -> KnowledgeEntry:
@@ -646,100 +698,107 @@ class TrainingStore:
 
     # -- conflicts (section 8.7) ------------------------------------------
     def add_conflict(self, conflict: Conflict) -> Conflict:
-        with self._conn:
-            self._conn.execute(
-                "INSERT OR REPLACE INTO conflicts(conflict_id, run_id, "
-                "knowledge_id, existing_claim, new_claim, source_evidence, "
-                "existing_confidence, new_confidence, recommendation, "
-                "resolved, resolution, at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-                (conflict.conflict_id, conflict.run_id, conflict.knowledge_id,
-                 conflict.existing_claim, conflict.new_claim,
-                 conflict.source_evidence, conflict.existing_confidence,
-                 conflict.new_confidence, conflict.recommendation,
-                 int(conflict.resolved), conflict.resolution, conflict.at))
-        self.audit("conflict.recorded", conflict.new_claim[:200],
-                   run_id=conflict.run_id, knowledge_id=conflict.knowledge_id)
-        return conflict
+        with self._lock:
+            with self._conn:
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO conflicts(conflict_id, run_id, "
+                    "knowledge_id, existing_claim, new_claim, "
+                    "source_evidence, existing_confidence, new_confidence, "
+                    "recommendation, resolved, resolution, at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (conflict.conflict_id, conflict.run_id,
+                     conflict.knowledge_id, conflict.existing_claim,
+                     conflict.new_claim, conflict.source_evidence,
+                     conflict.existing_confidence, conflict.new_confidence,
+                     conflict.recommendation, int(conflict.resolved),
+                     conflict.resolution, conflict.at))
+            self.audit("conflict.recorded", conflict.new_claim[:200],
+                       run_id=conflict.run_id,
+                       knowledge_id=conflict.knowledge_id)
+            return conflict
 
     def conflicts(self, *, run_id: str = "", unresolved_only: bool = False,
                   limit: int = 200) -> List[Conflict]:
-        clauses, params = [], []
-        if run_id:
-            clauses.append("run_id=?")
-            params.append(run_id)
-        if unresolved_only:
-            clauses.append("resolved=0")
-        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        rows = self._conn.execute(
-            f"SELECT * FROM conflicts {where} ORDER BY at DESC LIMIT ?",
-            params + [limit]).fetchall()
-        return [Conflict(
-            conflict_id=r["conflict_id"], run_id=r["run_id"] or "",
-            knowledge_id=r["knowledge_id"] or "",
-            existing_claim=r["existing_claim"] or "",
-            new_claim=r["new_claim"] or "",
-            source_evidence=r["source_evidence"] or "",
-            existing_confidence=float(r["existing_confidence"] or 0.0),
-            new_confidence=float(r["new_confidence"] or 0.0),
-            recommendation=r["recommendation"] or "",
-            resolved=bool(r["resolved"]), resolution=r["resolution"] or "",
-            at=float(r["at"] or 0.0)) for r in rows]
+        with self._lock:
+            clauses, params = [], []
+            if run_id:
+                clauses.append("run_id=?")
+                params.append(run_id)
+            if unresolved_only:
+                clauses.append("resolved=0")
+            where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+            rows = self._conn.execute(
+                f"SELECT * FROM conflicts {where} ORDER BY at DESC LIMIT ?",
+                params + [limit]).fetchall()
+            return [Conflict(
+                conflict_id=r["conflict_id"], run_id=r["run_id"] or "",
+                knowledge_id=r["knowledge_id"] or "",
+                existing_claim=r["existing_claim"] or "",
+                new_claim=r["new_claim"] or "",
+                source_evidence=r["source_evidence"] or "",
+                existing_confidence=float(r["existing_confidence"] or 0.0),
+                new_confidence=float(r["new_confidence"] or 0.0),
+                recommendation=r["recommendation"] or "",
+                resolved=bool(r["resolved"]), resolution=r["resolution"] or "",
+                at=float(r["at"] or 0.0)) for r in rows]
 
     def resolve_conflict(self, conflict_id: str, resolution: str) -> None:
-        with self._conn:
-            self._conn.execute(
-                "UPDATE conflicts SET resolved=1, resolution=? "
-                "WHERE conflict_id=?", (resolution, conflict_id))
-        self.audit("conflict.resolved", resolution[:200])
+        with self._lock:
+            with self._conn:
+                self._conn.execute(
+                    "UPDATE conflicts SET resolved=1, resolution=? "
+                    "WHERE conflict_id=?", (resolution, conflict_id))
+            self.audit("conflict.resolved", resolution[:200])
 
     # -- history (section 12) ---------------------------------------------
     def history(self, *, raga: str = "", status: str = "",
                 min_confidence: float = 0.0, since: float = 0.0,
                 phrase: str = "", limit: int = 200) -> List[Dict[str, Any]]:
-        clauses = ["r.status NOT IN ('queued')"]
-        params: List[Any] = []
-        if status:
-            clauses = ["r.status=?"]
-            params.append(status)
-        if since:
-            clauses.append("r.completed_at >= ?")
-            params.append(since)
-        if phrase:
-            clauses.append("r.search_phrase LIKE ?")
-            params.append(f"%{phrase}%")
-        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        rows = self._conn.execute(
-            f"SELECT r.*, c.title, c.url, c.author FROM runs r "
-            f"LEFT JOIN candidates c ON c.source_id = r.source_id "
-            f"{where} ORDER BY r.completed_at DESC, r.position LIMIT ?",
-            params + [limit]).fetchall()
+        with self._lock:
+            clauses = ["r.status NOT IN ('queued')"]
+            params: List[Any] = []
+            if status:
+                clauses = ["r.status=?"]
+                params.append(status)
+            if since:
+                clauses.append("r.completed_at >= ?")
+                params.append(since)
+            if phrase:
+                clauses.append("r.search_phrase LIKE ?")
+                params.append(f"%{phrase}%")
+            where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+            rows = self._conn.execute(
+                f"SELECT r.*, c.title, c.url, c.author FROM runs r "
+                f"LEFT JOIN candidates c ON c.source_id = r.source_id "
+                f"{where} ORDER BY r.completed_at DESC, r.position LIMIT ?",
+                params + [limit]).fetchall()
 
-        out: List[Dict[str, Any]] = []
-        for row in rows:
-            entries = self.search_knowledge(source_id=row["source_id"],
-                                            limit=500)
-            if raga and not any(e.raga.lower() == raga.lower()
-                                for e in entries):
-                continue
-            confidence = (sum(e.confidence for e in entries) / len(entries)
-                          if entries else 0.0)
-            if confidence < min_confidence:
-                continue
-            objectives = self.objectives(row["run_id"])
-            out.append({
-                "run_id": row["run_id"],
-                "source_id": row["source_id"],
-                "title": row["title"] or "(unknown source)",
-                "url": row["url"] or "",
-                "author": row["author"] or "",
-                "search_phrase": row["search_phrase"] or "",
-                "status": row["status"],
-                "result": row["result"] or "",
-                "completed_at": float(row["completed_at"] or 0.0),
-                "objectives": len(objectives),
-                "objectives_met": sum(1 for o in objectives if o.met),
-                "knowledge_added": len(entries),
-                "conflicts": len(self.conflicts(run_id=row["run_id"])),
-                "confidence": round(confidence, 3),
-            })
-        return out
+            out: List[Dict[str, Any]] = []
+            for row in rows:
+                entries = self.search_knowledge(source_id=row["source_id"],
+                                                limit=500)
+                if raga and not any(e.raga.lower() == raga.lower()
+                                    for e in entries):
+                    continue
+                confidence = (sum(e.confidence for e in entries) / len(entries)
+                              if entries else 0.0)
+                if confidence < min_confidence:
+                    continue
+                objectives = self.objectives(row["run_id"])
+                out.append({
+                    "run_id": row["run_id"],
+                    "source_id": row["source_id"],
+                    "title": row["title"] or "(unknown source)",
+                    "url": row["url"] or "",
+                    "author": row["author"] or "",
+                    "search_phrase": row["search_phrase"] or "",
+                    "status": row["status"],
+                    "result": row["result"] or "",
+                    "completed_at": float(row["completed_at"] or 0.0),
+                    "objectives": len(objectives),
+                    "objectives_met": sum(1 for o in objectives if o.met),
+                    "knowledge_added": len(entries),
+                    "conflicts": len(self.conflicts(run_id=row["run_id"])),
+                    "confidence": round(confidence, 3),
+                })
+            return out
