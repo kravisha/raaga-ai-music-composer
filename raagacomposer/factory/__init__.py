@@ -15,6 +15,13 @@ from .models import (AgentProfile, AgentSpec, Dispute, DisputeStatus,
                      ReusableLesson, Ruling, Split, TestLevel, TestResult,
                      TestSpec, ValidationStatus)
 from .protocols import Rule, Student, Trainer
+from .store import FactoryStore
+from .mastery import apply_evidence, next_test_level
+from .trainer import AdaptiveTrainer, TrainerPolicy
+from .judge import convene, should_convene
+from .cycle import CycleOutcome, LearningCycle
+from .gates import GateThresholds, promotion_gate, release_gate
+from .factory import AgentFactory
 
 __all__ = [
     "AgentProfile", "AgentSpec", "Dispute", "DisputeStatus", "GateReport",
@@ -22,4 +29,8 @@ __all__ = [
     "Performance", "Promotion", "Reiteration", "ReiterationCheck",
     "Remediation", "ReusableLesson", "Ruling", "Split", "TestLevel",
     "TestResult", "TestSpec", "ValidationStatus", "Rule", "Student", "Trainer",
+    "FactoryStore", "apply_evidence", "next_test_level", "AdaptiveTrainer",
+    "TrainerPolicy", "convene", "should_convene", "CycleOutcome",
+    "LearningCycle", "GateThresholds", "promotion_gate", "release_gate",
+    "AgentFactory",
 ]

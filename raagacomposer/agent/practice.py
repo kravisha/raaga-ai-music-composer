@@ -40,7 +40,7 @@ VARIANT_NAMES = {1: "R1", 2: "R2", 3: "R3", 4: "G3", 5: "M1", 6: "M2",
                  8: "D1", 9: "D2", 10: "N2", 11: "N3"}
 
 
-def practice_seed(unit_id: str, attempt: int = 0) -> int:
+def practice_seed(unit_id: str, attempt: int = 0, salt: str = "") -> int:
     """The seed for one attempt at one unit.
 
     Derived from the unit id and the attempt number, never from the clock or
@@ -50,8 +50,15 @@ def practice_seed(unit_id: str, attempt: int = 0) -> int:
     just failed is not a retry - with a clock-based seed every attempt made
     within the same second was identical, so a lesson that failed once failed
     the same way until the curriculum gave up on it.
+
+    ``salt`` mixes in a third component (the agent factory's trainer uses
+    "test" / "validation" / "hidden" so a test never reuses a practice seed);
+    an empty salt (the default) reproduces the exact seed string used before
+    this parameter existed, so REG-100's pinned values are unchanged.
     """
-    seed = zlib.crc32(f"{unit_id}#{int(attempt)}".encode("utf-8")) & 0x7FFFFFFF
+    text = (f"{unit_id}#{int(attempt)}#{salt}" if salt
+            else f"{unit_id}#{int(attempt)}")
+    seed = zlib.crc32(text.encode("utf-8")) & 0x7FFFFFFF
     return seed or 1
 
 
@@ -117,6 +124,7 @@ class PracticeEngine:
             "recall.fact": self._recall_fact,
             "recall.phrases": self._recall_phrases,
             "classify.valid": self._classify_valid,
+            "correct.phrase": self._correct_phrase,
         }.get(unit.skill_type)
 
         report = PracticeReport(unit_id=unit.id, skill_type=unit.skill_type,
@@ -765,13 +773,104 @@ class PracticeEngine:
                 return False
         return True
 
-    def _corrupt(self, raaga: Raaga, rng: random.Random) -> List[str]:
-        """A phrase with a note this raaga does not have."""
-        tokens = self._motif(raaga, rng, 5)
+    def _corrupt_tokens(self, raaga: Raaga, tokens: Sequence[str],
+                        rng: random.Random) -> List[str]:
+        """*tokens* with one note replaced by one this raaga does not have."""
+        tokens = list(tokens)
         outside = [s for s in SWARA_SEMITONES if s not in set(raaga.allowed)]
         if outside:
             tokens[rng.randrange(len(tokens))] = rng.choice(outside)
         return tokens
+
+    def _corrupt(self, raaga: Raaga, rng: random.Random) -> List[str]:
+        """A phrase with a note this raaga does not have."""
+        return self._corrupt_tokens(raaga, self._motif(raaga, rng, 5), rng)
+
+    def _corrupt_direction(self, raaga: Raaga, tokens: Sequence[str],
+                           rng: random.Random) -> List[str]:
+        """*tokens* with one step made in a direction the raaga forbids."""
+        tokens = list(tokens)
+        if len(tokens) < 2:
+            return tokens
+        ascending_ok = set(raaga.ascending)
+        descending_ok = set(raaga.descending)
+        i = rng.randrange(1, len(tokens))
+        prev_midi = raaga.midi(tokens[i - 1], TONIC)
+        candidates = [s for s in raaga.allowed
+                     if (raaga.midi(s, TONIC) > prev_midi and s not in ascending_ok)
+                     or (raaga.midi(s, TONIC) < prev_midi and s not in descending_ok)]
+        if candidates:
+            tokens[i] = rng.choice(candidates)
+        return tokens
+
+    def _repair(self, raaga: Raaga, tokens: Sequence[str]) -> List[str]:
+        """The engine's own correction: replace every offending token with
+        the nearest allowed swara that keeps the move in a permitted
+        direction (T7, the correction exercise)."""
+        tokens = list(tokens)
+        allowed = set(raaga.allowed)
+        ascending_ok = set(raaga.ascending)
+        descending_ok = set(raaga.descending)
+        for i, token in enumerate(tokens):
+            base = parse_swara(token)[0]
+            offending = base not in allowed
+            direction_set: Optional[set] = None
+            if i > 0:
+                prev_midi = raaga.midi(tokens[i - 1], TONIC)
+                midi = raaga.midi(token, TONIC)
+                if midi > prev_midi:
+                    direction_set = ascending_ok
+                elif midi < prev_midi:
+                    direction_set = descending_ok
+                if direction_set is not None and base not in direction_set \
+                        and not offending:
+                    offending = True
+            if not offending:
+                continue
+            candidates = [s for s in (direction_set or allowed) if s in allowed]
+            if not candidates:
+                candidates = list(allowed)
+            target_midi = raaga.midi(token, TONIC)
+            best = min(candidates,
+                      key=lambda s: abs(raaga.midi(s, TONIC) - target_midi))
+            tokens[i] = best
+        return tokens
+
+    def _correct_phrase(self, unit: Unit, raaga: Optional[Raaga],
+                        rng: random.Random, report: PracticeReport) -> None:
+        """T7: given a corrupted phrase, repair it and mark how close the
+        repair and the repaired line's grammar are to the original."""
+        raaga = raaga or self.library.require("Shankarabharanam")
+        bank = learned_phrase_bank(self.repo, raaga.name) or \
+            [list(p) for p in raaga.prayogas]
+        index = PhraseIndex.from_repository(self.repo, raaga.name)
+        evaluator = Evaluator(self.library, index)
+
+        for i in range(unit.exercises):
+            original = list(rng.choice(bank)) if bank else \
+                self._motif(raaga, rng, 5)
+            if len(original) < 3:
+                original = self._motif(raaga, rng, 5)
+            if rng.random() < 0.5:
+                corrupted = self._corrupt_tokens(raaga, original, rng)
+            else:
+                corrupted = self._corrupt_direction(raaga, original, rng)
+            repaired = self._repair(raaga, corrupted)
+
+            notes = self._notes_from_tokens(raaga, repaired, rng)
+            evaluation = evaluator.evaluate(notes, raaga, tonic_midi=TONIC,
+                                            learned_phrases=bank)
+            match = _sequence_match(original, repaired)
+            score = round((evaluation.scores.get("swara_correctness", 0.0)
+                          + evaluation.scores.get("raaga_correctness", 0.0)
+                          + match) / 3.0, 3)
+            report.evaluation = evaluation
+            report.findings.extend(evaluation.findings)
+            report.exercises.append(ExerciseResult(
+                name=f"correct {i + 1}", score=score,
+                passed=score >= unit.minimum_pass_score,
+                expected=" ".join(original), heard=" ".join(repaired),
+                detail=f"given {' '.join(corrupted)}"))
 
     def _drifted(self, raaga: Raaga, neighbour: Raaga,
                  rng: random.Random) -> List[str]:

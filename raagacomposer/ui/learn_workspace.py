@@ -25,9 +25,9 @@ from typing import Any, Dict, List
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (QGridLayout, QGroupBox, QHBoxLayout, QLabel,
-                               QListWidget, QPushButton, QStackedWidget,
-                               QTableWidget, QTableWidgetItem, QVBoxLayout,
-                               QWidget)
+                               QListWidget, QPushButton, QScrollArea,
+                               QStackedWidget, QTableWidget, QTableWidgetItem,
+                               QVBoxLayout, QWidget)
 
 from .panels.agent_panel import AgentPanel
 from .panels.training_panel import TrainingPanel
@@ -54,6 +54,8 @@ DASHBOARD_FIELDS = [
 EXERCISE_COLUMNS = ("Exercise", "Score", "Pass threshold", "Result", "Detail")
 LESSON_COLUMNS = ("Mistake", "Times", "Last seen", "Correction")
 FINDINGS_COLUMNS = ("When", "Unit / task", "Mistake", "Correction")
+MASTERY_COLUMNS = ("Concept", "Level", "Evidence", "Next test")
+TESTS_COLUMNS = ("When", "Level", "Split", "Novelty", "Result", "Failure mode")
 
 
 def provider_summary_line(rows: List[Any]) -> str:
@@ -279,8 +281,13 @@ class LearnWorkspace(QWidget):
     # D. Practice / Quiz (new widget - spec 4.2D, 25)
     # ==================================================================
     def _build_practice_page(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
+        # The Trainer group box (below) added enough content that the page
+        # no longer fit an ordinary screen's height as plain, unscrolled
+        # widgets; wrapped in a QScrollArea (the same idiom as AgentPanel),
+        # exactly as before, so the window's minimum size hint stays small.
+        inner = QWidget()
+        layout = QVBoxLayout(inner)
+        layout.setContentsMargins(0, 0, 0, 0)
 
         run_row = QHBoxLayout()
         self.run_exercise_btn = QPushButton("Run one exercise")
@@ -315,6 +322,46 @@ class LearnWorkspace(QWidget):
         remediation_layout.addWidget(self.lesson_hint)
         layout.addWidget(remediation_box)
 
+        trainer_box = QGroupBox("Trainer")
+        trainer_layout = QVBoxLayout(trainer_box)
+        train_row = QHBoxLayout()
+        self.train_step_btn = QPushButton("Run one training cycle")
+        self.train_step_btn.clicked.connect(self._run_train_step)
+        train_row.addWidget(self.train_step_btn)
+        train_row.addStretch(1)
+        trainer_layout.addLayout(train_row)
+
+        self.trainer_status = QLabel(
+            "Press “Run one training cycle” to run the Agent "
+            "Factory learning loop once (docs/PLAN_agent_factory.md).")
+        self.trainer_status.setWordWrap(True)
+        self.trainer_status.setObjectName("hint")
+        trainer_layout.addWidget(self.trainer_status)
+
+        self.mastery_table = QTableWidget(0, len(MASTERY_COLUMNS))
+        self.mastery_table.setHorizontalHeaderLabels(list(MASTERY_COLUMNS))
+        self.mastery_table.verticalHeader().setVisible(False)
+        self.mastery_table.setMinimumHeight(100)
+        trainer_layout.addWidget(self.mastery_table)
+
+        self.tests_table = QTableWidget(0, len(TESTS_COLUMNS))
+        self.tests_table.setHorizontalHeaderLabels(list(TESTS_COLUMNS))
+        self.tests_table.verticalHeader().setVisible(False)
+        self.tests_table.setMinimumHeight(120)
+        trainer_layout.addWidget(self.tests_table)
+
+        self.dispute_label = QLabel("No open disputes.")
+        self.dispute_label.setWordWrap(True)
+        self.dispute_label.setObjectName("hint")
+        trainer_layout.addWidget(self.dispute_label)
+
+        self.maturity_label = QLabel("-")
+        self.maturity_label.setWordWrap(True)
+        self.maturity_label.setObjectName("hint")
+        trainer_layout.addWidget(self.maturity_label)
+
+        layout.addWidget(trainer_box)
+
         layout.addWidget(self.agent_panel.critique_btn)
         layout.addWidget(_take_tab(self.agent_panel.tabs, "Its own critique"))
 
@@ -322,6 +369,16 @@ class LearnWorkspace(QWidget):
         self.readiness_label.setWordWrap(True)
         self.readiness_label.setObjectName("hint")
         layout.addWidget(self.readiness_label)
+
+        scroll = QScrollArea()
+        scroll.setWidget(inner)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
+
+        page = QWidget()
+        page_layout = QVBoxLayout(page)
+        page_layout.setContentsMargins(0, 0, 0, 0)
+        page_layout.addWidget(scroll)
         return page
 
     def _run_exercise(self) -> None:
@@ -384,6 +441,106 @@ class LearnWorkspace(QWidget):
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)
                 table.setItem(row, column, item)
         table.resizeColumnsToContents()
+
+    def _run_train_step(self) -> None:
+        self.trainer_status.setText("Running one training cycle...")
+        self.train_step_btn.setEnabled(False)
+
+        def work(ctx):
+            return self.app.agent.train_step()
+
+        def done(outcome) -> None:
+            self.train_step_btn.setEnabled(True)
+            if outcome is None:
+                self.trainer_status.setText(
+                    "Curriculum complete for this raaga - nothing left to train.")
+            else:
+                self.trainer_status.setText(
+                    f"{outcome.lesson_id}: {outcome.mastery_before.label} -> "
+                    f"{outcome.mastery_after.label}"
+                    f"{' (advanced)' if outcome.advanced else ''}")
+            self.refresh()
+            self.changed.emit()
+
+        def failed(exc: BaseException) -> None:
+            self.train_step_btn.setEnabled(True)
+            self.trainer_status.setText(f"Training cycle failed: {exc}")
+
+        self.app.jobs.submit("factory.train_step", "practice", work,
+                             on_done=done, on_error=failed,
+                             description="Training cycle")
+
+    def _refresh_trainer(self) -> None:
+        """The ladder view: mastery per concept, recent tests, open
+        disputes, maturity and the promotion gate.  Every call the factory
+        core might not answer (module not built yet, an older schema, no
+        agent profile trained yet) is swallowed - an app without a factory
+        database still opens and the Practice page still renders."""
+        try:
+            store = self.app.agent.factory_store()
+            profile = self.app.agent.profile()
+
+            from raagacomposer.factory.mastery import next_test_level
+            table = store.mastery_table(profile.id)
+            self.mastery_table.setRowCount(len(table))
+            for row, concept in enumerate(sorted(table)):
+                record = table[concept]
+                values = (concept, record.level.label, str(len(record.evidence)),
+                         next_test_level(record).label)
+                for column, value in enumerate(values):
+                    item = QTableWidgetItem(str(value))
+                    item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                    self.mastery_table.setItem(row, column, item)
+            self.mastery_table.resizeColumnsToContents()
+
+            results = store.results(profile.id, limit=12)
+            self.tests_table.setRowCount(len(results))
+            for row, result in enumerate(results):
+                when = time.strftime("%Y-%m-%d %H:%M", time.localtime(result.at))
+                test = store.test(result.test_id)
+                values = (when, result.level.label, result.split.value,
+                         f"{test.novelty:.2f}" if test else "-",
+                         "pass" if result.passed else "retry",
+                         result.failure_mode)
+                for column, value in enumerate(values):
+                    item = QTableWidgetItem(str(value))
+                    item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                    self.tests_table.setItem(row, column, item)
+            self.tests_table.resizeColumnsToContents()
+
+            disputes = store.disputes(profile.id)
+            open_disputes = [d for d in disputes if d.status.value == "open"]
+            if open_disputes:
+                self.dispute_label.setText(
+                    f"{len(open_disputes)} open dispute(s): "
+                    f"{open_disputes[0].question}")
+            else:
+                ruled = [d for d in disputes if d.ruling_id]
+                if ruled:
+                    ruling = store.ruling(ruled[-1].ruling_id)
+                    self.dispute_label.setText(
+                        f"No open disputes. Last ruling: {ruling.ruling} "
+                        f"({ruling.decided_by})" if ruling else
+                        "No open disputes.")
+                else:
+                    self.dispute_label.setText("No open disputes.")
+
+            from raagacomposer.factory.gates import promotion_gate
+            raaga = self.app.agent.curriculum.current_raaga()
+            unit = self.app.agent.curriculum.next_unit(raaga)
+            concept = "" if unit is None else (
+                f"{unit.curriculum_unit_id}:{unit.raaga_name}"
+                if unit.raaga_name else unit.curriculum_unit_id)
+            maturity_text = f"Maturity: {profile.maturity.label}."
+            if concept:
+                report = promotion_gate(store, profile, concept)
+                failed_checks = report.failed_checks()
+                maturity_text += (f" Promotion gate for {concept}: "
+                                 + (", ".join(failed_checks) + " not yet met"
+                                   if failed_checks else "met"))
+            self.maturity_label.setText(maturity_text)
+        except Exception:  # noqa: BLE001
+            pass
 
     def _refresh_practice(self) -> None:
         raaga = self.app.agent.curriculum.current_raaga()
@@ -487,6 +644,7 @@ class LearnWorkspace(QWidget):
         self._refresh_dashboard()
         self._refresh_curriculum()
         self._refresh_practice()
+        self._refresh_trainer()
         self._refresh_knowledge_gaps()
         self._refresh_findings()
         self.agent_panel.refresh()

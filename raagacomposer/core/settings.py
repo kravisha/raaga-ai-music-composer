@@ -82,6 +82,7 @@ class Settings:
     # --- learning agent -------------------------------------------------
     pilot_raaga: str = "Keeravani"
     knowledge_db: str = ""                 # blank = <config>/knowledge.db
+    factory_db: str = ""                   # blank = <config>/factory.db
     learning_corpus_dir: str = ""          # your own audio to learn from
     learning_allow_web: bool = False       # record leads only; never fetches
     learning_autostart: bool = False

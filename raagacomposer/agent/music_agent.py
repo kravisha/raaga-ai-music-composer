@@ -101,6 +101,11 @@ class MusicAgent:
         self.history: List[LearningStep] = []
         self.errors: List[str] = []
 
+        # Agent Factory (docs/PLAN_agent_factory.md, increment F2): opened
+        # lazily on first use so an app or test that never trains never
+        # touches factory.db.
+        self._factory_store = None
+
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
         self._pause = threading.Event()
@@ -152,6 +157,86 @@ class MusicAgent:
 
     def knowledge_confidence(self, name: str) -> Dict[str, float]:
         return knowledge_confidence(self.repo, name)
+
+    # ==================================================================
+    # Agent Factory (docs/PLAN_agent_factory.md, increment F2)
+    # ==================================================================
+    def factory_store(self):
+        """The shared factory store, opened on first use.
+
+        ``raagacomposer.factory.store`` is imported here, not at module
+        scope: the core package may still be under construction while this
+        adapter is built, and a module-level import would break every test
+        that only exercises ``learn_step``.
+        """
+        if self._factory_store is None:
+            from ..factory.store import FactoryStore
+            path = getattr(self.settings, "factory_db", "")
+            self._factory_store = FactoryStore(Path(path) if path else None)
+        return self._factory_store
+
+    def profile(self):
+        """The agent's ``AgentProfile``: created once, then loaded and kept
+        current (capabilities, current raaga, knowledge version) on every
+        call."""
+        from ..factory.models import AgentProfile
+
+        store = self.factory_store()
+        existing = next((p for p in store.profiles(domain="carnatic-music")
+                         if p.name == "raga-agent"), None)
+        raaga = self.curriculum.current_raaga()
+        capabilities = sorted({
+            (f"{u.curriculum_unit_id}:{u.raaga_name}" if u.raaga_name
+             else u.curriculum_unit_id)
+            for u in (self.curriculum.universal_units()
+                     + self.curriculum.raaga_units(raaga))})
+        knowledge_version = (f"schema{self.repo.schema_version}-"
+                             f"curriculum{self.curriculum.version}")
+        if existing is not None:
+            existing.capabilities = capabilities
+            existing.current_curriculum = raaga
+            existing.knowledge_version = knowledge_version
+            store.save_profile(existing)
+            return existing
+        profile = AgentProfile(
+            name="raga-agent", role="student musician", domain="carnatic-music",
+            capabilities=capabilities, current_curriculum=raaga,
+            knowledge_version=knowledge_version)
+        store.save_profile(profile)
+        return profile
+
+    def train_step(self, raaga: Optional[str] = None):
+        """One turn of the Agent Factory learning cycle (document 01's ten
+        steps), on top of the same curriculum, knowledge and engines
+        ``learn_step`` uses.  Returns ``None`` when the curriculum is
+        complete for the current raaga, exactly like ``learn_step`` does for
+        its own loop."""
+        from ..factory.cycle import LearningCycle
+        from .rules import hard_rules
+        from .student import RagaStudent
+        from .trainer import RagaTrainer
+
+        with self._lock:
+            if raaga:
+                self.curriculum.set_current_raaga(raaga)
+            active = self.curriculum.current_raaga()
+            store = self.factory_store()
+            profile = self.profile()
+            trainer = RagaTrainer(self, store)
+            lesson = trainer.next_lesson(profile, store.results(profile.id))
+            if lesson is None:
+                return None
+            student = RagaStudent(self, profile)
+            rules = hard_rules(self.library, self.phrase_index(active))
+            cycle = LearningCycle(store, student, trainer, rules=rules)
+            outcome = cycle.run(lesson)
+            self.repo.log_event(
+                "factory.cycle",
+                f"{lesson.concept}: {outcome.mastery_before.label} -> "
+                f"{outcome.mastery_after.label}"
+                f"{' (advanced)' if outcome.advanced else ''}",
+                raaga=active)
+            return outcome
 
     # ==================================================================
     # a failed attempt becomes a lesson (section 38)
@@ -794,6 +879,11 @@ class MusicAgent:
         # The learner must be stopped and joined *before* memory is closed:
         # a query running against a closed connection takes the process down.
         self.stop_learning(wait=True)
+        if self._factory_store is not None and not self._factory_store.closed:
+            try:
+                self._factory_store.close()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("could not close the factory store: %s", exc)
         if self.repo.closed:
             return
         try:

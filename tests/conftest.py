@@ -218,6 +218,7 @@ def settings(tmp_path: Path) -> Settings:
     s.stt_provider = "none"
     # Each test gets its own memory: learning must never leak between tests.
     s.knowledge_db = str(tmp_path / "knowledge.db")
+    s.factory_db = str(tmp_path / "factory.db")
     s.learning_corpus_dir = ""
     s.learning_allow_web = False
     s.learning_autostart = False
