@@ -62,6 +62,29 @@ def practice_seed(unit_id: str, attempt: int = 0, salt: str = "") -> int:
     return seed or 1
 
 
+def drift_neighbours(library: RaagaLibrary, raaga: Raaga,
+                     limit: int = 4) -> List[Raaga]:
+    """The raagas this one is most likely to be confused with.
+
+    Most swaras in common first.  On a tie, a raaga somebody curated comes
+    ahead of a bare parent scale, and then the name, so the answer does not
+    depend on what order the library happened to load.
+
+    That tie-break earns its place since the Stage 1 pack put all 72
+    melakartas in the library: dozens of raagas now tie on overlap, and
+    ordered only by overlap the confusable neighbours a student actually
+    needs - Shankarabharanam and Kambhoji against Kalyani - were pushed out
+    by whichever scales sorted first.  A melakarta that genuinely shares more
+    swaras is still the nearer neighbour and still wins; this only settles
+    the ties.
+    """
+    allowed = set(raaga.allowed)
+    others = [r for r in library.all() if r.name != raaga.name]
+    return sorted(others,
+                  key=lambda r: (-len(set(r.allowed) & allowed),
+                                 r.scale_only, r.name))[:limit]
+
+
 @dataclass
 class ExerciseResult:
     name: str
@@ -728,10 +751,7 @@ class PracticeEngine:
         if not bank:
             bank = [self._motif(raaga, rng, 5) for _ in range(4)]
 
-        others = [r for r in self.library.all() if r.name != raaga.name]
-        neighbours = sorted(
-            others,
-            key=lambda r: -len(set(r.allowed) & set(raaga.allowed)))[:4]
+        neighbours = drift_neighbours(self.library, raaga)
 
         for i in range(unit.exercises):
             wants_valid = rng.random() < 0.5
