@@ -749,10 +749,76 @@ drift score is unchanged to three decimals across five raagas and twelve
 seeds each, because nothing can explain those notes better than the raaga
 itself.
 
-**Still to come:** the block-character emotion vector with the pack's
-weights, contradiction penalties and diversity rule; selection feedback as
-learned weights; and arohanam/avarohanam audition
-(`docs/PLAN_stage1_knowledge.md` S2 to S4, with pack tests D and E).
+**The brief becomes fourteen numbers, and the raaga is scored against them.**
+S2, `raaga/emotion.py`. The brief's fields are read into the pack's fourteen
+emotion dimensions and blended by the pack's own field weights (mood and feel
+0.30 each, situation 0.25, title 0.10, notes 0.05, renormalised over the
+fields that actually say something); every raaga gets a profile built from
+its block characters, its starter tags and any curated moods; the two are
+compared by cosine similarity, which measures the *shape* of what was asked
+for rather than how loudly it was said. The pack's contradiction penalties
+and block bonuses then adjust that, and the result is a score out of 100.
+
+**One vocabulary for both sides.** A creator's "lonely" and the pack's
+"plaintive" have to land in the same space or there is nothing to compare, so
+one lexicon covers three vocabularies at once: the words creators type, the
+block characters in pack documents 01 and 02 to 04, and the "good for" uses
+those files list. A test asserts every block character in the pack is
+readable by it, because a block nobody can read is a melakarta profiled from
+silence.
+
+**Negation suppresses; it does not invert.** "not sad, just tired" removes
+sadness from the target and asserts nothing in its place. Guessing which of
+the other thirteen dimensions the creator meant would be answering a brief
+they did not write.
+
+**The fit decides; the pack's rules tune.** Bonuses are capped at 0.15 and
+penalties at 0.25 against a cosine of at most 1.0, so a raaga the brief does
+not resemble cannot be carried into the list by block rules alone. The same
+argument caps what the agent's own study can add (`LEARNED_BONUS_CAP`, ten
+points out of a hundred): studying a raaga should move it up the list, not
+carry one the brief does not resemble to the top of it. The creator asked for
+a feeling, and "I happen to know this one well" is not an answer to that.
+
+**Scores are scaled by the best a raaga could do, not clamped at it.**
+Clamping the total into 0..1 put every good answer on 100 and threw away
+exactly the differences the ranking exists to express - and with the scores
+flat, the diversity step had nothing to trade against.
+
+**Diversity chooses which five, not what order they come in.** Each place
+after the first goes to the raaga with the best score once its likeness to
+what is already chosen is discounted, so the list becomes the pack's spread -
+the closest fit, then a warmer, darker, brighter or stranger alternative, or
+the other madhyama - without any of those roles being hard-coded as a slot to
+fill. The order stays by score: a list numbered one to five whose scores do
+not descend reads as a defect, and the agent's own acceptance test requires
+descending scores.
+
+**Score says how well it fits; confidence says how much is known.** A
+melakarta the pack supplied and nobody curated can fit a brief perfectly and
+is ranked accordingly, but it is offered at lower confidence
+(`SCALE_ONLY_CONFIDENCE`), because all there is behind it is a parent scale
+and a starter tag.
+
+**Ranking a raaga and choosing one to compose in are different questions.**
+Apply Brief ranks by emotional fit and says so. `require_raaga` - which picks
+only when the creator has not, with a tune about to be written - prefers,
+among the raagas that fit, one there is something to compose *with*: one the
+agent has studied, else one somebody curated prayogas, resting notes and
+gamaka for, and a bare parent scale last. Without that split the application
+answered a default brief by picking a raaga it knew nothing about and
+composing in it, over one it had studied for thirty units.
+
+**A model may gloss the reason; it may never replace it.** The score and the
+sentence that explains it are derived from the block map, which is the whole
+reason the pack's block model exists - a creator can check the derivation
+against the map. Where a language-model adviser is configured it now appends
+an attributed sentence beside that derivation rather than overwriting it, so
+it stays visible which half of a claim came from where.
+
+**Still to come:** selection feedback as learned weights, and
+arohanam/avarohanam audition (`docs/PLAN_stage1_knowledge.md` S3 and S4, with
+pack test E).
 
 ## Not built, deliberately
 

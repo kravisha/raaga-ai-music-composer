@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence
 
 from ..core.models import CreativeBrief
+from . import emotion
 from .library import Raaga, RaagaLibrary, library
 
 # Free-text feel word -> mood tokens used by the raaga data.
@@ -148,51 +149,53 @@ def suggest(brief: CreativeBrief, lib: Optional[RaagaLibrary] = None,
         explicit = lib.get(brief.raaga_preference)
     if explicit is None:
         explicit = lib.find_in_text(" ".join((brief.feel, brief.notes, brief.situation)))
-    words = expand_feel_words(brief.mood, brief.feel, brief.situation,
-                              brief.notes, brief.song_type, brief.vocal_feel)
 
-    scored: List[RaagaSuggestion] = []
-    for raaga in lib.all():
-        matched = [m for m in raaga.moods if m in words]
-        score = len(matched) * 1.0
-        if not words and raaga.moods:
-            # A thin brief is answered by raagas that have something curated
-            # to say.  A melakarta the Stage 1 pack supplies and nobody
-            # curated has no mood evidence at all, so it does not get to
-            # crowd the list on a shrug; the block-character scorer of
-            # docs/PLAN_stage1_knowledge.md S2 is what will speak for it.
-            score += 0.25
-        # Prefer raagas whose comfortable tempo matches the requested one.
-        if brief.tempo_preference and raaga.tempo_range:
-            lo, hi = raaga.tempo_range[0], raaga.tempo_range[-1]
-            if lo <= brief.tempo_preference <= hi:
-                score += 0.6
-            else:
-                score -= 0.3
-        if raaga is explicit:
-            score += 10.0
-        if score <= 0:
-            continue
-        scored.append(RaagaSuggestion(
-            name=raaga.name, score=score, raaga=raaga, matched_moods=matched,
-            rationale=_rationale(raaga, matched, raaga is explicit)))
+    # The Stage 1 pack's engine (raaga/emotion.py) does the ranking: the
+    # brief becomes a fourteen-dimension emotion target, every raaga is
+    # scored on how its blocks and curated character match it, the pack's
+    # contradiction penalties and block bonuses adjust that, and the five
+    # returned are a spread rather than five variations on one profile.
+    graded = emotion.rank(brief, lib.all(), limit=limit)
+    scored = [
+        RaagaSuggestion(name=item.name, score=item.score, raaga=item.raaga,
+                        matched_moods=list(item.tags),
+                        rationale=_rationale(item, item.raaga is explicit))
+        for item in graded
+    ]
+
+    if explicit is not None and not any(s.raaga is explicit for s in scored):
+        # Being asked for by name outranks anything the engine has to say,
+        # and the list is still a list, so it goes at the front rather than
+        # replacing what was suggested.
+        scored.insert(0, RaagaSuggestion(
+            name=explicit.name, score=100.0, raaga=explicit,
+            rationale=_rationale(None, True, explicit)))
+        scored = scored[:limit]
+    elif explicit is not None:
+        scored.sort(key=lambda s: (s.raaga is not explicit, -s.score, s.name))
 
     if not scored:
-        fallback = lib.get("Mohanam") or lib.all()[0]
+        # A brief that says nothing at all: answer with something curated
+        # rather than a parent scale nobody could give a reason for.
+        fallback = lib.get("Mohanam") or next(
+            (r for r in lib.all() if r.moods), lib.all()[0])
         scored = [RaagaSuggestion(
-            name=fallback.name, score=0.1, raaga=fallback,
+            name=fallback.name, score=10.0, raaga=fallback,
             rationale="A safe, open-sounding default while the brief is still thin.")]
 
-    scored.sort(key=lambda s: (-s.score, s.name))
     return scored[:limit]
 
 
-def _rationale(raaga: Raaga, matched: Sequence[str], explicit: bool) -> str:
+def _rationale(scored: Optional["emotion.Scored"], explicit: bool,
+               raaga: Optional[Raaga] = None) -> str:
+    """One sentence, from the block logic (pack document 05 section 4)."""
+    raaga = raaga or (scored.raaga if scored else None)
     if explicit:
         return f"You asked for {raaga.name}. {raaga.character()}".strip()
-    if matched:
-        return f"Carries {', '.join(matched[:3])}. {raaga.character()}".strip()
-    return raaga.character() or f"{raaga.name} fits the general shape of the brief."
+    if scored is None:
+        return (raaga.character() if raaga else "") or "Fits the general shape."
+    head = f"{emotion.sentence_case(scored.role)}: " if scored.role else ""
+    return (head + scored.reason).strip()
 
 
 def compare(a: Raaga, b: Raaga) -> str:

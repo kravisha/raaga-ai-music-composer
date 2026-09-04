@@ -13,7 +13,7 @@ the queue for using it.
 | 01 A | Swarasthana dictionary, 16 names on 12 pitch positions, overlaps kept as labels | `raaga/library.py` `SWARA_SEMITONES` agrees with the pack's pitch classes (tested) |
 | 02 to 04 | 72 melakarta records, validated at startup | All 72 are in the library, generated from the pack and validated when generated and again by test (S1) |
 | 01 B to E, 05 section 2 | Block-character profiles: R-G block + M + D-N block, explainable | Every melakarta carries its blocks and their character, rendered by `block_summary()` and used in the reason a suggestion gives (S1); no scoring from them yet |
-| 05 sections 1, 3, 5 | Brief to emotion vector; weighted scoring with contradiction penalties; diversity in the top five | `agent.suggest_raagas` ranks from the knowledge base and the library's moods with a deterministic fallback (v0.3 section 6, PR #4); no emotion vector, no penalties, no diversity rule |
+| 05 sections 1, 3, 5 | Brief to emotion vector; weighted scoring with contradiction penalties; diversity in the top five | Built (S2): `raaga/emotion.py`, used by both ranking paths. A semantic classifier for the target vector is still to come; the deterministic reader is the fallback it will fall back to |
 | 05 section 6 | Selection feedback as learned weights, separate from grammar | Feedback lowers or raises phrase confidence and writes lessons (PRs #5, #10); no selection weights |
 | 05 section 7, 06 E | Audition: play arohanam then avarohanam, eight events each, changing pitch | The practice engine renders scales for itself; no audition control in MAIN |
 | 06 | Startup validation; mandatory tests A to E | A to C run against the pack files, C also against the live library; D and E await the engine and the audition |
@@ -46,7 +46,7 @@ the queue for using it.
 | # | Task | Proves | Status |
 |---|---|---|---|
 | S1 | Load and validate the 72 records; library precedence; a melakarta-only raaga composes from its scale | pack validation at startup; test C on live data | done |
-| S2 | Block profiles and the emotion-vector scorer; explainable reasons; diversity | pack test D on the sad, romantic, lonely, warm brief; no single default raaga | open |
+| S2 | Block profiles and the emotion-vector scorer; explainable reasons; diversity | pack test D on the sad, romantic, lonely, warm brief; no single default raaga | done |
 | S3 | Selection feedback as learned weights | a rejected suggestion ranks lower next time; grammar unchanged | open |
 | S4 | Audition control and playback test | pack test E | open |
 
@@ -63,9 +63,28 @@ three blocks, the block characters and the starter tags) plus 64 melakartas
 that arrive as a scale and its character and say so. The judgment calls are
 in `docs/DECISIONS.md` under "Stage 1 knowledge pack".
 
-What S2 inherits: `Raaga.rg`, `Raaga.madhyama`, `Raaga.dn`,
+What S2 inherited: `Raaga.rg`, `Raaga.madhyama`, `Raaga.dn`,
 `Raaga.block_character`, `Raaga.tags` and `Raaga.good_for` on all 72, with
-`block_summary()` already rendering the explainable sentence. The scorer
-replaces the ranking inside `suggest` and `suggest_raagas`, and the one line
-that keeps scale-only raagas out of a thin brief's answer (`raaga.moods` in
-`raaga/selection.py`) is where it takes over.
+`block_summary()` already rendering the explainable sentence.
+
+## S2, as built
+
+`raagacomposer/raaga/emotion.py` is the pack's engine: `target_vector` reads
+the brief into the fourteen dimensions, `profile_vector` reads a raaga out of
+its blocks and its curation, `score_raaga` compares them by cosine and
+applies the pack's contradiction penalties and block bonuses, and `spread`
+picks a diverse five without reordering them. It replaces the ranking inside
+both `raaga/selection.suggest` and `MusicAgent.suggest_raagas`, which keep
+their shapes, their status contract and their never-empty guarantee.
+
+Pack test D is
+`tests/unit/test_emotion_selection.py::test_d_brief_selection_smoke_test`.
+The judgment calls are in `docs/DECISIONS.md` under "Stage 1 knowledge pack".
+
+What S3 inherits: scoring is one function of a target vector and a profile
+vector, so a learned weight is a multiplier on a dimension or on a block's
+contribution and never touches `arohanam`, `avarohanam` or anything else the
+pack marks `[GRAMMAR]` - which is what pack document 05 section 6 and
+framework document 04 section 6 both require. `Scored` already carries the
+fit, the bonuses and the penalties a feedback signal would adjust, and
+`Raaga.tags` is the per-raaga heuristic the weights would attach to.
