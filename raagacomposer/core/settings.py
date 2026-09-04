@@ -53,7 +53,17 @@ class Settings:
     llm_provider: str = "auto"
     # How the router chooses between the backends that are up:
     # auto | local_first | claude_first | local_only | claude_only | off.
-    llm_routing: str = "auto"
+    #
+    # local_first is the standing policy and the default: attempt a local
+    # model for every task, judge what it produced, and reach a paid model
+    # only when the local answer has actually been found wanting.  It is the
+    # default rather than merely available because the point of the policy is
+    # that local is tried by default, not on request - and it is safe to
+    # default to only because the judge exists to catch a bad local answer
+    # (providers/escalation.py).  "auto" keeps the older behaviour, where
+    # complexity and cost order the backends and a strength floor stands in
+    # for a judge.
+    llm_routing: str = "local_first"
     llm_claude_model: str = "claude-opus-5"        # quality-critical work
     llm_claude_light_model: str = "claude-haiku-4-5"   # cheap, high-volume work
     llm_claude_effort: str = "medium"              # low | medium | high | xhigh | max

@@ -728,3 +728,55 @@ def test_an_unjudged_mode_keeps_the_old_accept_anything_behaviour():
     bad.suggest_raagas = lambda brief, candidates: [{": ": "raaga"}]
     r = RoutedLLM([lambda: bad], policy="auto", refresh_seconds=0)
     assert r.suggest_raagas(CreativeBrief(), ["K"]) == [{": ": "raaga"}]
+
+
+def test_the_configured_order_decides_the_local_chain_not_strength():
+    """Every local model costs nothing, so the cost key cannot separate them
+    and ordering by strength put the largest and slowest first - the opposite
+    of "a cheap first attempt", and it made the configured order decorative."""
+    small = FakeBackend("ollama:small", 40, 0.0, local=True)
+    small.model = "small:1b"
+    mid = FakeBackend("ollama:mid", 55, 0.0, local=True)
+    mid.model = "mid:8b"
+    r = RoutedLLM([lambda: mid, lambda: small], policy="local_first",
+                  refresh_seconds=0,
+                  tiers={"small": "small:1b", "mid": "mid:8b"},
+                  order=["small", "mid"])
+    assert [b.name for b in r.chain(tasks.WRITE_LYRICS)] == ["ollama:small",
+                                                             "ollama:mid"]
+
+
+def test_a_paid_backend_stays_behind_every_local_rung():
+    small = FakeBackend("ollama:small", 40, 0.0, local=True)
+    small.model = "small:1b"
+    opus = FakeBackend("opus", 90, 15.0, local=False)
+    r = RoutedLLM([lambda: opus, lambda: small], policy="local_first",
+                  refresh_seconds=0, tiers={"small": "small:1b"},
+                  order=["small"])
+    assert [b.name for b in r.chain(tasks.WRITE_LYRICS)] == ["ollama:small",
+                                                             "opus"]
+
+
+def test_a_local_backend_the_config_does_not_name_goes_after_the_ones_it_does():
+    named = FakeBackend("ollama:named", 40, 0.0, local=True)
+    named.model = "small:1b"
+    stray = FakeBackend("ollama:stray", 80, 0.0, local=True)
+    stray.model = "unlisted:70b"
+    r = RoutedLLM([lambda: stray, lambda: named], policy="local_first",
+                  refresh_seconds=0, tiers={"small": "small:1b"},
+                  order=["small"])
+    assert [b.name for b in r.chain(tasks.WRITE_LYRICS)] == ["ollama:named",
+                                                             "ollama:stray"]
+
+
+def test_an_unjudged_mode_keeps_the_strength_ordering():
+    small = FakeBackend("ollama:small", 40, 0.0, local=True)
+    small.model = "small:1b"
+    mid = FakeBackend("ollama:mid", 55, 0.0, local=True)
+    mid.model = "mid:8b"
+    r = RoutedLLM([lambda: small, lambda: mid], policy="auto",
+                  refresh_seconds=0,
+                  tiers={"small": "small:1b", "mid": "mid:8b"},
+                  order=["small", "mid"])
+    # auto has no judge, so the strongest backend still leads a hard task.
+    assert r.chain(tasks.WRITE_LYRICS)[0].name == "ollama:mid"
