@@ -1,0 +1,103 @@
+UNIVERSAL LEARNING FRAMEWORK - ENGINEERING SPECIFICATION
+Version: 0.1
+
+1. PURPOSE
+Create a domain-independent method by which an agent can learn progressively,
+prove what it has learned, apply it, receive correction, and improve.
+
+2. FUNDAMENTAL PRINCIPLES
+
+P1. Learning and testing are inseparable.
+Learning must not progress indefinitely without evidence of understanding.
+
+P2. Testing is itself a learning process.
+The testing system must improve as the student improves.
+
+P3. Training is student-specific.
+The next lesson and next test depend on the current student's demonstrated strengths,
+weaknesses, errors, confidence, and history.
+
+P4. Knowledge must be reiterated.
+Every important lesson must be:
+heard/read -> restated -> expressed -> understood -> digested -> applied -> tested.
+
+P5. Knowledge must become action.
+A lesson that cannot be used in practice is not considered fully learned.
+
+P6. Correction must be reusable.
+When an error is resolved, the useful lesson should become available to future agents.
+
+P7. Progress is evidence-based.
+Do not promote an agent because it has consumed content.
+Promote it because it can demonstrate capability.
+
+3. LEARNING UNIT
+
+Each lesson should contain:
+- lesson_id
+- domain
+- concept
+- objective
+- prerequisites
+- source knowledge
+- explanation
+- examples
+- counterexamples
+- practice tasks
+- test tasks
+- expected behavior
+- common errors
+- remediation
+- confidence
+- mastery status
+
+4. LEARNING CYCLE
+
+STEP 1 - ACQUIRE
+Receive or retrieve the lesson.
+
+STEP 2 - REITERATE
+Student restates the lesson in its own words.
+
+STEP 3 - EXPLAIN
+Student explains the concept and why it matters.
+
+STEP 4 - CONNECT
+Student links the concept to prior knowledge.
+
+STEP 5 - APPLY
+Student performs a practical task using the lesson.
+
+STEP 6 - TEST
+Trainer evaluates understanding and execution.
+
+STEP 7 - DISPUTE IF NEEDED
+If Trainer and Student disagree materially, invoke Judge.
+
+STEP 8 - RESOLVE
+Accept, reject, refine, or defer the conclusion.
+
+STEP 9 - PERSIST
+Save durable knowledge, correction, and useful training signals.
+
+STEP 10 - ADVANCE OR REMEDIATE
+Proceed only when the evidence supports advancement.
+
+5. MASTERY LEVELS
+
+L0 Unknown
+L1 Exposed
+L2 Can restate
+L3 Can explain
+L4 Can apply with guidance
+L5 Can apply independently
+L6 Can detect errors
+L7 Can generalize
+L8 Can teach/test another agent
+L9 Expert / field-validated
+
+The framework must support partial mastery by concept.
+
+6. SUCCESS CONDITION
+An agent is considered trained for a capability only when it can repeatedly
+perform the capability under tests that it did not simply memorize.

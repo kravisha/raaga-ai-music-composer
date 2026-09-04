@@ -1,0 +1,118 @@
+TRAINER-STUDENT-JUDGE ARCHITECTURE
+Version: 0.1
+
+1. ROLES
+
+A. STUDENT AGENT
+Purpose:
+Learn the target capability and perform the work.
+
+Responsibilities:
+- consume lessons
+- reiterate lessons
+- explain understanding
+- perform exercises
+- answer tests
+- expose uncertainty
+- record mistakes
+- apply corrections
+- demonstrate improvement
+
+B. TRAINER AGENT
+Purpose:
+Teach, challenge, measure, and adapt training.
+
+Responsibilities:
+- learn the same domain
+- understand the student's current level
+- create tests
+- increase test difficulty
+- identify weak areas
+- prescribe remediation
+- avoid repetitive low-grade testing
+- verify transfer from knowledge to action
+
+IMPORTANT:
+Trainer is also a learner.
+Trainer quality must evolve with student quality.
+
+C. JUDGE AGENT
+Purpose:
+Resolve disputes that Student and Trainer cannot settle confidently.
+
+Lifecycle:
+- created only when needed
+- receives the relevant knowledge/state from both parties
+- receives the exact disputed question
+- analyzes evidence
+- returns a ruling, confidence, and rationale
+- emits reusable lesson(s)
+- terminates
+
+The Judge agent itself does NOT need permanent persistence by default.
+
+2. JUDGE INPUT
+
+The Judge receives:
+- dispute_id
+- student claim
+- trainer claim
+- evidence from Student
+- evidence from Trainer
+- relevant shared knowledge
+- applicable rules
+- uncertainty/confidence from each side
+- exact question to resolve
+
+3. JUDGE OUTPUT
+
+- ruling
+- winning/accepted claim, if any
+- rejected claim, if any
+- rationale
+- confidence
+- unresolved issues
+- correction to Student
+- correction to Trainer
+- reusable lesson
+- whether external evidence is required
+
+4. WHEN TO INVOKE JUDGE
+
+Invoke when:
+- Student and Trainer disagree materially
+- both have plausible evidence
+- confidence gap is small
+- correctness matters
+- neither can resolve using shared knowledge
+
+Do NOT invoke when:
+- disagreement is trivial
+- answer is already an explicit hard rule
+- Student clearly failed an objective test
+- Trainer clearly misread a known rule
+
+5. ESCALATION
+
+If Judge cannot decide:
+status = UNRESOLVED
+Then:
+- seek additional evidence
+- consult stronger model/tool/human
+- create a new test
+- defer the lesson if necessary
+
+6. PERSISTENCE RULE
+
+Persist:
+- dispute
+- ruling
+- useful rationale
+- corrected rule
+- new test idea
+- confidence outcome
+
+Do not persist:
+- temporary Judge identity
+- disposable chain/session state
+- duplicated derived context
