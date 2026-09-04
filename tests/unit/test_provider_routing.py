@@ -7,6 +7,8 @@ decision itself.
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from raagacomposer.core.models import CreativeBrief
@@ -126,12 +128,16 @@ def test_a_weak_local_model_is_still_the_fallback_for_a_middling_task():
     assert router(local).explain("q") == "answer from local3b"
 
 
-def test_a_weak_backend_is_not_asked_to_write_lyrics_at_all(caplog):
+def test_a_weak_backend_is_not_asked_to_write_lyrics_in_an_unjudged_mode(caplog):
     """Measured: a 3B model spent 704s on ten lines and returned nothing
-    usable, while the built-in engine fits them exactly and instantly. A long
-    wait for a worse answer is not a fallback worth having."""
+    usable, while the built-in engine fits them exactly and instantly.
+
+    Where there is no judge to catch that, the strength floor still keeps it
+    out of the quality-critical work; the judged modes attempt it and decide
+    on the answer instead (see the local_first tests below).
+    """
     _, _, local = trio()
-    r = router(local)
+    r = router(local, policy="auto")
     assert r.chain(tasks.WRITE_LYRICS) == []
     assert r.chain(tasks.SUGGEST_RAAGAS) == []
     assert r.write_lyrics([], CreativeBrief()) == []
@@ -172,23 +178,36 @@ def test_the_policy_reorders_the_chain(policy, first):
 @pytest.mark.parametrize("policy,first", [
     ("auto", "opus"),
     ("claude_first", "opus"),
-    ("local_first", "opus"),      # the weak local model does not qualify
     ("claude_only", "opus"),
 ])
 def test_a_hard_task_ignores_a_preference_for_a_backend_too_weak_for_it(policy,
                                                                        first):
+    """In the unjudged modes the strength floor is all there is to go on, so
+    a weak backend is still kept out of the quality-critical work."""
     opus, haiku, local = trio()
     r = router(opus, haiku, local, policy=policy)
     assert r.chain(tasks.WRITE_LYRICS)[0].name == first
 
 
-def test_local_only_with_a_weak_model_sends_lyrics_to_the_built_in_engine():
-    """Preferring the machine you are on cannot conjure a capable model."""
+def test_a_judged_mode_tries_the_weak_local_model_before_anything_paid():
+    """The standing policy replaced the floor here: nothing is excluded
+    before it has been tried, and the judge decides on what came back
+    rather than on a strength number chosen in advance."""
+    opus, haiku, local = trio()
+    r = router(opus, haiku, local, policy="local_first")
+    chain = r.chain(tasks.WRITE_LYRICS)
+    assert chain[0].name == "local3b"
+    assert [b.name for b in chain[1:]] == ["opus", "haiku"]
+
+
+def test_local_only_now_attempts_the_weak_model_rather_than_excluding_it():
+    """It may still end at the built-in engine - but by being judged and
+    found wanting, not by never being asked."""
     opus, haiku, local = trio()
     r = router(opus, haiku, local, policy="local_only")
-    assert r.chain(tasks.WRITE_LYRICS) == []
-    assert r.write_lyrics([], CreativeBrief()) == []
-    assert local.calls == []
+    assert [b.name for b in r.chain(tasks.WRITE_LYRICS)] == ["local3b"]
+    assert r.write_lyrics([], CreativeBrief()) == ["line from local3b"]
+    assert local.calls, "the local model must actually be asked"
 
 
 def test_local_only_never_reaches_a_remote_backend():
@@ -577,3 +596,135 @@ def test_the_registry_explains_itself_when_nothing_is_configured(settings,
     providers = registry.build(settings, stt_name="typed")
     assert not providers.llm.available
     assert providers.notes and "Claude" in providers.notes[0]
+
+
+# --------------------------------------------------------------------------
+# local tiers (standing routing policy: attempt local first)
+# --------------------------------------------------------------------------
+def test_the_registry_builds_one_backend_per_registered_tier(settings):
+    """The tiers are named in the config so the escalation loop can ask for
+    the one it wants; each has to exist as a backend of its own for that."""
+    settings.llm_provider = "ollama"
+    settings.llm_local_endpoint = "http://127.0.0.1:1"    # nothing listening
+    settings.routing_tiers = {"small": "a:1", "mid": "b:2", "json": "c:3"}
+    settings.routing_order = ["small", "mid"]
+    settings.routing_order_json = ["json", "mid"]
+
+    names = [b.name for b in registry.build_llm(settings).backends]
+    assert names[:3] == ["ollama:a:1", "ollama:b:2", "ollama:c:3"]
+
+
+def test_a_tier_is_ordered_cheapest_first(settings):
+    settings.llm_provider = "ollama"
+    settings.llm_local_endpoint = "http://127.0.0.1:1"
+    settings.routing_tiers = {"json": "c:3", "mid": "b:2", "small": "a:1"}
+    settings.routing_order = ["small", "mid"]
+    settings.routing_order_json = ["json", "mid"]
+    names = [b.name for b in registry.build_llm(settings).backends]
+    # Declaration order in the mapping must not decide it; the orders do.
+    assert names.index("ollama:a:1") < names.index("ollama:b:2")
+
+
+def test_a_tier_that_is_not_pulled_says_so_rather_than_substituting(settings):
+    """A model named in the config but missing on the machine is a visible
+    "not installed", never a quiet answer from a different model."""
+    settings.llm_provider = "ollama"
+    settings.routing_tiers = {"small": "definitely-not-pulled:0.1b"}
+    settings.routing_order = ["small"]
+    settings.routing_order_json = []
+    backend = registry.build_llm(settings).backends[0]
+    assert backend.name == "ollama:definitely-not-pulled:0.1b"
+    assert not backend.available
+    assert "definitely-not-pulled" in backend.status()
+
+
+def test_no_tiers_configured_still_builds_the_single_local_model(settings):
+    settings.llm_provider = "ollama"
+    settings.llm_local_endpoint = "http://127.0.0.1:1"
+    settings.routing_tiers = {}
+    settings.routing_order = []
+    settings.routing_order_json = []
+    settings.llm_local_model = "solo:1b"
+    names = [b.name for b in registry.build_llm(settings).backends]
+    assert "ollama:solo:1b" in names
+
+
+def test_one_tag_of_a_family_does_not_stand_in_for_another():
+    """Found by running it: qwen3:8b reported itself ready because qwen3:4b
+    had been pulled, then answered every request with a 404.  Harmless while
+    only one Ollama model was ever configured; wrong the moment the routing
+    tiers put two tags of one family side by side."""
+    from raagacomposer.providers.local_llm import _same_model
+
+    assert _same_model("qwen3:4b", "qwen3:4b")
+    assert not _same_model("qwen3:4b", "qwen3:8b")
+    assert not _same_model("qwen3:8b", "qwen3:4b")
+    # A bare name still means :latest, on either side.
+    assert _same_model("llama3:latest", "llama3")
+    assert _same_model("llama3", "llama3:latest")
+    assert not _same_model("llama3:8b", "llama3")
+    assert not _same_model("", "qwen3:4b")
+    assert not _same_model("hermes3:8b", "qwen3:8b")
+
+
+# --------------------------------------------------------------------------
+# the judged loop through the router
+# --------------------------------------------------------------------------
+def test_a_schema_failure_escalates_past_a_confident_local_model(tmp_path):
+    """The case that motivated putting schema first: a local model can be
+    confident and still return a row with no raaga name in it."""
+    from raagacomposer.providers import escalation
+
+    bad = FakeBackend("local", 40, 0.0, local=True)
+    bad.suggest_raagas = lambda brief, candidates: [{": ": "raaga"}]
+    good = FakeBackend("opus", 90, 15.0, local=False)
+    log = escalation.AttemptLog(tmp_path / "attempts.jsonl")
+    r = RoutedLLM([lambda: bad, lambda: good], policy="local_first",
+                  refresh_seconds=0, attempt_log=log)
+
+    out = r.suggest_raagas(CreativeBrief(), ["K"])
+    assert out == [{"raaga": "K", "reason": "opus"}]
+
+    decision = r.last_decision["suggest_raagas"]
+    assert [a.verdict for a in decision.attempts] == ["schema", "accepted"]
+    assert decision.backend == "opus" and decision.paid and decision.escalated
+
+
+def test_the_mode_and_the_model_are_recorded_with_every_result():
+    """Otherwise runs made under different modes are not comparable, and a
+    change we made ourselves looks like the model getting worse."""
+    local = FakeBackend("local", 40, 0.0, local=True)
+    r = RoutedLLM([lambda: local], policy="local_first", refresh_seconds=0)
+    r.suggest_raagas(CreativeBrief(), ["K"])
+    decision = r.last_decision["suggest_raagas"]
+    assert decision.mode == "local_first"
+    assert decision.backend == "local"
+    assert r.last_route["suggest_raagas"] == "local"
+
+
+def test_the_routing_log_keeps_what_each_backend_said(tmp_path):
+    from raagacomposer.providers import escalation
+
+    bad = FakeBackend("local", 40, 0.0, local=True)
+    bad.suggest_raagas = lambda brief, candidates: [{"raaga": "not-in-the-list"}]
+    good = FakeBackend("opus", 90, 15.0, local=False)
+    path = tmp_path / "attempts.jsonl"
+    r = RoutedLLM([lambda: bad, lambda: good], policy="local_first",
+                  refresh_seconds=0, attempt_log=escalation.AttemptLog(path))
+    r.suggest_raagas(CreativeBrief(mood="sad"), ["K"])
+
+    row = json.loads(path.read_text(encoding="utf-8").splitlines()[-1])
+    assert row["mode"] == "local_first"
+    assert row["answered_by"] == "opus"
+    assert "not-in-the-list" in row["outputs"]["local"]
+    assert "reason" in row["outputs"]["opus"]
+    assert row["attempts"][0]["verdict"] == "schema"
+
+
+def test_an_unjudged_mode_keeps_the_old_accept_anything_behaviour():
+    """auto has no thresholds worth applying, so a non-empty answer is
+    accepted exactly as it always was - including a malformed one."""
+    bad = FakeBackend("opus", 90, 15.0, local=False)
+    bad.suggest_raagas = lambda brief, candidates: [{": ": "raaga"}]
+    r = RoutedLLM([lambda: bad], policy="auto", refresh_seconds=0)
+    assert r.suggest_raagas(CreativeBrief(), ["K"]) == [{": ": "raaga"}]
