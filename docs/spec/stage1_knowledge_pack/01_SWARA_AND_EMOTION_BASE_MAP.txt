@@ -1,0 +1,100 @@
+RAAGA STAGE 1 - SWARA + EMOTION BASE MAP
+Legend: [GRAMMAR] hard rule. [HEURISTIC] starter selection logic.
+
+A. SWARASTHANA DICTIONARY [GRAMMAR]
+PitchClass is a deterministic 12-TET reference relative to Sa=0. It is useful for tests.
+Carnatic intonation and gamaka are richer than fixed 12-TET and must be learned later.
+
+S  | Shadja                 | pc=0  | fixed
+R1 | Shuddha Rishabha       | pc=1
+R2 | Chatushruti Rishabha   | pc=2
+R3 | Shatshruti Rishabha    | pc=3
+G1 | Shuddha Gandhara       | pc=2
+G2 | Sadharana Gandhara     | pc=3
+G3 | Antara Gandhara        | pc=4
+M1 | Shuddha Madhyama       | pc=5
+M2 | Prati Madhyama         | pc=6
+P  | Panchama               | pc=7  | fixed
+D1 | Shuddha Dhaivata       | pc=8
+D2 | Chatushruti Dhaivata   | pc=9
+D3 | Shatshruti Dhaivata    | pc=10
+N1 | Shuddha Nishada        | pc=9
+N2 | Kaisiki Nishada        | pc=10
+N3 | Kakali Nishada         | pc=11
+
+OVERLAPS [GRAMMAR]
+R2 and G1 share a principal pitch position.
+R3 and G2 share a principal pitch position.
+D2 and N1 share a principal pitch position.
+D3 and N2 share a principal pitch position.
+They are not interchangeable labels: their FUNCTION inside the raga differs.
+
+B. INDIVIDUAL SWARA CHARACTER [HEURISTIC]
+Never treat this as "one note = one emotion." Context controls the result.
+
+S  = home, anchor, completion, resolution.
+R1 = close-to-Sa pull; tension, yearning, inwardness.
+R2 = forward motion; openness, balance, lyrical movement.
+R3 = sharp propulsion; urgency, brightness-edge, vivadi color.
+G1 = compressed Gandhara function; austerity/tension; same principal pitch as R2.
+G2 = tender/plaintive color; introspection, karuna-like softness.
+G3 = open/bright Gandhara; lyricism, confidence, radiance.
+M1 = grounded center; settled, earthy, calm/classical poise.
+M2 = heightened center; luminous, searching, mysterious, tense.
+P  = strong secondary anchor; stability, breadth, firmness.
+D1 = weight/darkness; pathos, seriousness, inward pull.
+D2 = open Dhaivata; energy, warmth, forward movement.
+D3 = urgent/bright-edged Dhaivata; vivadi tension.
+N1 = compressed Nishada function; unresolved/dense color; same principal pitch as D2.
+N2 = soft Nishada; longing, tenderness, gentle incompletion.
+N3 = strong leading pull to upper Sa; aspiration, climax, resolution.
+
+C. SIX R-G CHARACTER BLOCKS [HEURISTIC]
+R1 G1 = compressed / austere / tense / vivadi-colored
+R1 G2 = plaintive / inward / grave / yearning
+R1 G3 = wide-contrast / dignified / austere-bright / solemn
+R2 G2 = tender / introspective / humane / compassionate
+R2 G3 = open / lyrical / confident / warm
+R3 G3 = bright-edged / urgent / intense / vivadi-colored
+
+D. MADHYAMA CHARACTER [HEURISTIC]
+M1 = grounded / earthy / settled
+M2 = luminous / searching / mysterious / heightened
+
+E. SIX D-N CHARACTER BLOCKS [HEURISTIC]
+D1 N1 = compressed / dark / tense / unresolved
+D1 N2 = soft-dark / plaintive / descending pathos
+D1 N3 = poignant contrast / dramatic upward pull / strong resolution
+D2 N2 = warm / gentle / rounded / relaxed
+D2 N3 = open / affirmative / expansive / strong resolution
+D3 N3 = bright-edged / urgent / tense / vivadi-colored
+
+F. WHY THIS BLOCK MODEL WORKS FOR STAGE 1
+Every Melakarta can be represented as:
+    R-G block + M1/M2 + D-N block
+Example, Keeravani:
+    R2G2 = tender/inward
+    M1   = grounded
+    D1N3 = poignant + strong pull to Sa
+Starter result: poignant, introspective, yearning, dramatic, grounded.
+This is explainable logic instead of a magic label.
+
+G. INTERVAL/PHRASE RULES [HEURISTIC]
+- More semitone motion tends to increase tension or subdued color.
+- Wider melodic movement tends to increase openness/excitement.
+- N3->S strongly signals arrival/resolution.
+- R1 near S can intensify yearning/tension.
+- M2 can add mystery/heightened tension, especially against S/P.
+- S and P are stability anchors.
+- Tempo and rhythm change arousal. Do not infer arousal from scale alone.
+- Repetition, gamaka, landing notes, phrase direction, and register can reverse or reshape a raw scale impression.
+
+H. PLAYBACK RULES
+1. Store every note as (functional_swara, pitch_class, octave, duration, ornament).
+2. Never store only MIDI note number; preserve functional label.
+3. Reference test frequency:
+       hz = Sa_hz * 2 ** ((pitch_class + 12*octave_offset)/12)
+4. 12-TET is acceptable for deterministic Stage-1 swarasthana tests.
+5. Do NOT call fixed 12-TET playback "complete Carnatic rendering."
+6. Add raga-specific intonation/gamaka later as a separate learned layer.
+7. Arohana/Avarohana playback must never collapse into one repeated note.

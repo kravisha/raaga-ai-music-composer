@@ -1,0 +1,107 @@
+RAAGA STAGE 1 - BRIEF -> RAGA SELECTION ENGINE
+Goal: make "Suggested for this brief" reliably return a ranked LIST, never a blank box.
+
+INPUTS USED FOR RAGA CHOICE
+Primary: Title, Situation, Mood, Feel.
+Secondary/tie-breakers: Tempo, Song Type, Language, user history.
+Instrumentation belongs mainly to arrangement, not basic raga identity.
+
+1. CONVERT BRIEF TO A TARGET EMOTION VECTOR
+Recommended dimensions:
+sadness, tenderness, yearning, romance, devotion, serenity,
+joy, warmth, brightness, gravity, mystery, tension, power, wonder.
+
+Use an LLM/SLM semantic classifier if available.
+Offline fallback: deterministic keyword/synonym dictionary.
+Always produce normalized weights 0.0-1.0.
+
+Example:
+Situation="love failure"
+Mood="sad romantic"
+Feel="lonely late night but warm"
+Target might emphasize:
+yearning=.95, sadness=.85, tenderness=.80, romance=.75,
+warmth=.50, gravity=.45, serenity=.30,
+joy=.05, power=.10.
+
+2. BUILD EACH MELAKARTA PROFILE
+Use:
+R-G block character
++ M character
++ D-N block character
++ optional curated starter tags in the Melakarta files.
+
+Do not infer identity from raga name.
+
+3. SCORE
+Suggested deterministic blend:
+Mood match      0.30
+Feel match      0.30
+Situation match 0.25
+Title match     0.10
+Tempo/tie-break 0.05
+
+score = weighted semantic/tag similarity - contradiction penalties.
+
+Useful contradiction penalties:
+- sad/tender brief vs urgent/bright-edged profile: penalty unless "intense" is requested.
+- peaceful brief vs tense/unresolved profile: penalty.
+- celebratory brief vs grave/pathos-heavy profile: penalty.
+- mystery/wonder brief may BONUS M2/searching profiles.
+- warm romantic brief may BONUS R2G2 or R2G3 and D2N2.
+- grief/yearning may BONUS R1G2, R2G2, D1N2, D1N3.
+- majestic/joy may BONUS R2G3 + D2N3.
+- intense devotional may BONUS M2 with plaintive/poignant blocks.
+
+4. OUTPUT CONTRACT
+Return 5 suggestions by default.
+For each:
+- rank
+- raga name + Melakarta number
+- score 0-100
+- Arohana
+- Avarohana
+- one-sentence reason using the block logic
+- 2-4 fit tags
+
+Never return an empty list.
+If model inference fails, run deterministic fallback.
+If deterministic parsing is uncertain, still return candidates with "low confidence."
+
+5. DIVERSITY
+If top scores are nearly tied, avoid five almost-identical profiles.
+Return a useful spread, e.g.:
+- closest emotional fit
+- warmer alternative
+- darker/intense alternative
+- brighter alternative
+- M1/M2 contrast when appropriate
+
+6. TRAINER FEEDBACK LOOP
+User actions become training signals:
+accepted_raga      +1.0
+auditioned         +0.2
+rejected           -0.7
+"too sad"          reduce sadness/gravity match
+"too bright"       reduce brightness
+"more devotional"  increase devotion/searching/gravity
+"warmer"           increase tenderness/warmth
+"more intense"     increase tension/power
+
+Save feedback separately from hard grammar.
+Do not rewrite Arohana/Avarohana from preference feedback.
+
+7. STAGE-1 AUDITION FLOW
+A. Apply Brief -> top 5 ragas.
+B. User selects one.
+C. Play Arohana.
+D. Play Avarohana.
+E. User confirms swara/raga identity.
+F. Later Stage-1: generate 3-5 short constrained melodic candidates using ONLY that raga's swaras.
+G. User selects/grades tune.
+H. Only after tune is locked -> Stage 2 lyrics.
+
+8. IMPORTANT FUTURE UPGRADE
+The Melakarta scale is only the parent skeleton. When janya ragas are added, the engine must also model:
+vakra movement, varjya notes, anya swaras, characteristic prayogas,
+gamaka grammar, nyasa/landing notes, and phrase identity.

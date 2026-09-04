@@ -1,0 +1,79 @@
+CLAUDE HANDOFF - RAAGA COMPOSER STAGE 1
+Please treat the accompanying files as the Stage-1 knowledge specification.
+
+OBJECTIVE
+Fix the current raga-suggestion/training foundation before lyrics.
+The AI must first learn swaras, then Melakarta structure, then explainable emotional selection.
+
+DO NOT
+- do not pretend scale recall equals full raga mastery.
+- do not hard-code "one raga = one emotion."
+- do not modify Melakarta grammar from user feedback.
+- do not let Apply Brief fail silently.
+- do not generate lyrics in Stage 1.
+- do not generate a single repeated-note "tune" when asked to play a raga.
+
+IMPLEMENT
+1. Load the swara map.
+2. Load all 72 Melakarta records.
+3. Validate every record at startup.
+4. Parse Title + Situation + Mood + Feel.
+5. Produce ranked top-5 raga suggestions with explanations.
+6. Allow user to select and audition Arohana/Avarohana.
+7. Store selection/rejection feedback as learned preference weights.
+8. Preserve deterministic fallback when no cloud model/key exists.
+
+VALIDATION RULES
+- Exactly 72 Melakarta records.
+- IDs exactly 1..72, no duplicates.
+- 1..36 contain M1; 37..72 contain M2.
+- Every Arohana pattern: S R G M P D N S.
+- Every Avarohana uses the same functional swaras in reverse.
+- R must be lower than G in the standard pitch-position ordering.
+- D must be lower than N.
+- S and P always present.
+- No blank suggested-raga result for a valid brief.
+
+MANDATORY UNIT TESTS
+A. Keeravani (#21)
+Arohana:   S R2 G2 M1 P D1 N3 S
+Avarohana: S N3 D1 P M1 G2 R2 S
+
+B. Swara pitch-position overlaps
+R2/G1 -> same principal pitch position
+R3/G2 -> same principal pitch position
+D2/N1 -> same principal pitch position
+D3/N2 -> same principal pitch position
+Functional labels must still be preserved.
+
+C. Melakarta endpoints
+#01 Kanakangi:  S R1 G1 M1 P D1 N1 S
+#36 Chalanata:  S R3 G3 M1 P D3 N3 S
+#37 Salagam:    S R1 G1 M2 P D1 N1 S
+#72 Rasikapriya:S R3 G3 M2 P D3 N3 S
+
+D. Brief-selection smoke test
+Given a sad + romantic + lonely + warm brief:
+- output must contain 5 ranked ragas
+- each result must include reason + scale
+- result should favor tender/yearning/poignant/warm profiles
+- it should not default to the same raga for every sad brief
+
+E. Playback smoke test
+Selecting Keeravani must play 8 ascending swara events and 8 descending swara events.
+There must be changing pitches according to the stored pitch classes.
+
+DATA MODEL SUGGESTION
+Hard facts:
+melakarta_id, name, chakra, arohana[], avarohana[], rg_pair, madhyama, dn_pair
+
+Heuristic:
+tags[], good_for[], learned_weights{}, confidence
+
+Trainer feedback:
+brief_id, candidate_raga, action, user_comment, timestamp
+
+DONE CRITERIA FOR THIS BUG
+"Apply Brief" creates visible raga suggestions reliably, selections are musically legal
+for the chosen Melakarta, explanations are traceable to the maps, and the user can
+audition the exact Arohana/Avarohana before tune generation.

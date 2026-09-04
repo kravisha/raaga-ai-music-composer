@@ -184,11 +184,19 @@ library asserts, and the composer generates from that view. Studying changes
 the music; a correction from the creator lowers confidence in specific phrases
 and they stop being used.
 
-**Known weakness, deliberately not hidden.** The agent's own critique of its
-tunes still scores `phrase_authenticity` and `interest` low: it stays inside
-the raaga and cadences correctly, but it quotes the raaga's idioms less often
-than a musician would. That is the next piece of work, and the evaluator says
-so on every tune rather than the number being quietly reweighted.
+**Known weakness, now measured.** The agent's own critique of its tunes
+scored `phrase_authenticity` and `interest` low. On 2026-09-04 the numbers
+were taken (`tools/measure_composer.py`, Keeravani taught by the reference
+provider, 45-second tunes, seeds 1..20): authenticity 0.751, interest 0.437,
+originality 0.775, overall 0.823. The composer now quotes fragments, treats
+scale runs as facts and follows a learned idiom (see "The learning loop and
+the Agent Factory" below); with all three, authenticity 0.745, interest
+0.442, originality 0.733, structure 0.857, overall 0.820. Authenticity and
+originality are both scored by matching the same heard phrases and pull
+against each other by construction; interest is scored on distinct notes,
+rhythmic variety and span, which no guidance yet touches. Both are evaluator
+calibration questions, open, and the script that answers them is in the
+repository rather than the number being quietly reweighted.
 
 ## Preparing real recordings
 
@@ -587,6 +595,95 @@ through an exception message or a request dump is masked before any handler
 writes it, and the diagnostics export scrubs the same patterns again and
 never bundles `credentials.json`. Two layers because the second exists to
 catch what the first was not written for.
+
+## The learning loop and the Agent Factory
+
+Added 2026-09-04. Two plans, `docs/PLAN_learning_loop.md` and
+`docs/PLAN_agent_factory.md`, and eight pull requests (#3 to #10). The
+decisions above stand unless a line here says otherwise.
+
+**A retry is a fresh attempt, seeded from the unit and the attempt number.**
+REG-095 failed in three of four full-suite runs because the practice seed was
+the wall-clock second: every retry made within one second replayed the failed
+attempt note for note until the twelve-attempt cap. `practice_seed(unit,
+attempt)` is a CRC of both, so the same attempt sets the same exercises in
+every process and every retry sets different ones. The hash-seed suspect was
+real but was not the cause; freezing the clock in a script was what
+reproduced it.
+
+**A failure is knowledge, not a log line.** The evaluator's mistakes are
+structured findings; a failed attempt writes lessons with the specification's
+Failure/Lesson fields (v0.3 section 38); a recurring mistake is one row that
+counts, not a duplicate. Guidance built from those lessons constrains the
+next attempt without telling the evaluator, so a pass still measures the
+agent. Guided retries fixed 16 of 20 seeds that failed the short-phrase unit
+on originality; the remaining four are the originality checker penalising
+scale runs in six-note lines.
+
+**A scale is not a phrase.** The reference provider renders the arohanam and
+avarohanam; research stored them as eight-note phrases at confidence 0.97,
+and they became the composer's favourite quotations and the loudest idiom
+evidence. A monotone run of six or more notes is treated as the fact it is:
+kept in the bank the evaluator reads, never a prayoga, never idiom.
+
+**The idiom is a prior-weighted shading, attached to the learned view only.**
+`RaagaIdiom` adds heard moves to the composer's own habits expressed as four
+pseudo-observations, so a handful of phrases shades choices rather than
+replacing them. An unstudied raaga has no idiom and composes byte for byte as
+before; the golden melodies are the guard.
+
+**The learning framework is a package that knows no music.** The Universal
+Learning Framework v0.1 (`docs/spec/agent_factory/`) lives in
+`raagacomposer/factory/`: ladders L0 to L9 and T0 to T10, four data splits,
+an adaptive trainer, a Judge that is a function building a throwaway object,
+the ten-step cycle, promotion and release gates, and a cumulative maturity
+ladder. A toy plural-rules domain proves it without music and carries the
+framework's acceptance tests in domain-free form. The Raga agent is the first
+Student; `RagaTrainer` and the library's hard rules are its Trainer and Judge.
+
+**Hard knowledge is the library; heard knowledge is heuristic.** A learned
+fact that contradicts the library loses a dispute to a hard rule, the ruling's
+correction goes in at full confidence, and the claims it contradicts are
+overruled rather than left to share a key. The learned view keeps the most
+trusted claim per key; it used to keep whichever the store returned last.
+
+**Running the loop for real is part of verification.** Every increment's
+implementation arrived with green unit tests, and a probe that ran the real
+loop found seam defects the tests could not: a curriculum never told a unit
+passed, a ladder with no higher rung to promote to, disputes raised on passed
+results, a rule ruling on the word "invalid", feedback that carried no
+actionable kinds, praise that jumped a concept from L0 to L9. Each probe is
+now a regression test.
+
+**The creator is the external evidence.** Rejecting a tune opens a dispute
+between the agent's verdict and the creator's, resolved at once in the
+creator's favour with a candidate reusable lesson; the creator's words are
+mapped by a small lexicon into the evaluator's finding kinds so they become
+guidance for the next tune. Praise is field evidence (L9) only once the
+capability has reached L7 on real-world passes: one success is not a rule.
+
+## Stage 1 knowledge pack
+
+Added 2026-09-04. `docs/spec/stage1_knowledge_pack/` holds the creator's
+Stage 1 pack verbatim: the swarasthana dictionary, all 72 melakarta scales
+with block-character heuristics, the brief-to-raga selection engine and its
+acceptance tests. It is treated as guidelines for what the agent should know
+at stage 1, not as a rewrite of the library.
+
+**Its [GRAMMAR] is hard knowledge, its [HEURISTIC] is heuristic.** That is
+the same distinction the Agent Factory already draws (`KnowledgeClass`), so
+the pack slots in without a new concept. `tests/unit/test_stage1_pack.py`
+runs the pack's own validation rules and mandatory unit tests A to C against
+the files, and checks that every melakarta the library carries agrees with
+the pack's arohanam and avarohanam. The heuristic tags are checked for
+presence, never for truth.
+
+**Not built yet, deliberately.** Loading all 72 melakartas into the library,
+the block-character emotion profiles, the brief-to-raga engine with its
+diversity and penalty rules, and audition playback are the next increment
+(`docs/PLAN_stage1_knowledge.md`). Apply Brief already ranks from the
+knowledge base with a deterministic fallback (v0.3 section 6); the pack's
+engine is the design for making that ranking explainable from the maps.
 
 ## Not built, deliberately
 
