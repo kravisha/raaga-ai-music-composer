@@ -5,6 +5,8 @@ what went wrong and why it mattered rather than only asserting the fix.
 """
 from __future__ import annotations
 
+import time
+
 import pytest
 import soundfile as sf
 
@@ -129,3 +131,41 @@ def test_reg_a_source_that_fails_still_leaves_a_report(training):
     run = training.store.runs()[0]
     assert run.status == RunStatus.FAILED
     assert training.store.report(run.run_id) is not None
+
+
+def test_reg_the_queue_worker_must_survive_the_ui_polling_the_store(training):
+    """``test_the_queue_worker_processes_everything_it_is_given`` stalled once
+    in a full-suite run on 2026-09-04: "training queue started", then nothing
+    for 120 seconds, both runs still queued, no exception anywhere.
+
+    The training store shared one sqlite3 connection between the worker
+    thread and the UI thread with nothing serialising them, and the sqlite3
+    module does not make that safe on its own.  The worker's ``_next()`` and
+    the poller's ``pending()`` run the very same SELECT, so they fought over
+    one cached statement; depending on the interleaving that raised
+    ``InterfaceError: bad parameter or other API misuse`` in whichever thread
+    lost (killing the worker silently, since nothing catches it there), or
+    handed the worker a reset cursor, or left it waiting for ever.  Polling
+    every 100 ms made it rare; polling flat out makes it reproduce at once.
+
+    ``TrainingStore._lock`` now serialises every statement, as the agent's
+    KnowledgeRepository already did.  This test polls without sleeping so the
+    window is as wide as it gets, and fails fast rather than waiting out the
+    120-second deadline of the test that found it.
+    """
+    results = training.search("Kambhoji lesson")
+    training.add_to_queue([r.source_id for r in results[:2]])
+    training.start_learning()
+
+    deadline = time.time() + 60
+    while time.time() < deadline:
+        # The same statement the worker's _next() runs, as fast as possible.
+        if not training.queue.pending() and not training.queue.running:
+            break
+    still_running = training.queue.running
+    training.queue.stop()
+
+    statuses = {r["status"] for r in training.queue_snapshot()}
+    assert not still_running, "the worker never came back"
+    assert RunStatus.QUEUED not in statuses, statuses
+    assert statuses == {RunStatus.COMPLETED}, statuses

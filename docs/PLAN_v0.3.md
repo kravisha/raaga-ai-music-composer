@@ -125,6 +125,23 @@ note for note until the twelve-attempt cap. Fixed on `main` in PR #3
 (seed from the unit id and attempt number, REG-100); this branch is rebased
 on that fix and the full suite passed 958 on 2026-09-04.
 
+A second one-off, `test_the_queue_worker_processes_everything_it_is_given`,
+stalled once in a full-suite run on 2026-09-04 (commit c3f87e6): "training
+queue started", then nothing for its 120-second deadline, both runs still
+queued, no exception in any thread. The cause was the training store sharing
+one sqlite3 connection between the queue worker and the UI thread with
+nothing serialising them - the same defect the agent's KnowledgeRepository
+had been given a lock for in PR #5, and which sqlite3 turns into
+`InterfaceError: bad parameter or other API misuse`, a cursor reset under
+another thread's feet, or a worker that never returns, depending on the
+interleaving. The worker's `_next()` and the test's `pending()` poll run the
+same SELECT, so they contended for one cached statement; polling every 100 ms
+made it rare, polling flat out reproduces it every time. `TrainingStore`
+now holds an `RLock` for every statement, with a unit test
+(`test_training_store_threads.py`) and a queue-level regression
+(`test_reg_the_queue_worker_must_survive_the_ui_polling_the_store`) that
+both fail on the old store within two seconds.
+
 ## Next milestone
 
 Section 59 (WORKING): Apply Brief meaningfully ranks raagas from the Knowledge
