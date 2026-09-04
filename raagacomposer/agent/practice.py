@@ -26,6 +26,7 @@ from ..raaga.library import SWARA_SEMITONES, Raaga, RaagaLibrary, parse_swara
 from . import analysis
 from .curriculum import Unit
 from .evaluator import Evaluation, Evaluator, Finding
+from .guidance import Guidance
 from .knowledge import KnowledgeRepository
 from .learned import learned_phrase_bank, learned_raaga
 from .originality import PhraseIndex, check as check_originality
@@ -77,6 +78,8 @@ class PracticeReport:
     # Every exercise's findings, not only the last one's: an attempt with
     # five exercises is marked on all five.
     findings: List[Finding] = field(default_factory=list)
+    # What this attempt was told before it ran, if anything.
+    guidance: Optional[Guidance] = None
 
     def summary(self) -> str:
         got = sum(1 for e in self.exercises if e.passed)
@@ -90,10 +93,13 @@ class PracticeEngine:
         self.repo = repository
         self.library = library
         self.settings = settings or Settings.load()
+        # Set for the duration of a run(), read by the handlers that
+        # generate; empty (never None) so a handler need not guard it.
+        self._guidance: Guidance = Guidance()
 
     # ==================================================================
-    def run(self, unit: Unit, raaga_name: str = "", seed: int = 0
-            ) -> PracticeReport:
+    def run(self, unit: Unit, raaga_name: str = "", seed: int = 0,
+            guidance: Optional[Guidance] = None) -> PracticeReport:
         rng = random.Random(seed or practice_seed(unit.id))
         name = unit.raaga_name or raaga_name
         raaga = None
@@ -113,10 +119,12 @@ class PracticeEngine:
             "classify.valid": self._classify_valid,
         }.get(unit.skill_type)
 
-        report = PracticeReport(unit_id=unit.id, skill_type=unit.skill_type)
+        report = PracticeReport(unit_id=unit.id, skill_type=unit.skill_type,
+                                guidance=guidance)
         if handler is None:
             report.detail = f"no practice handler for {unit.skill_type}"
             return report
+        self._guidance = guidance or Guidance()
         try:
             handler(unit, raaga, rng, report)
         except Exception as exc:  # noqa: BLE001 - a failed lesson is data
@@ -125,6 +133,8 @@ class PracticeEngine:
             report.score = 0.0
             report.passed = False
             return report
+        finally:
+            self._guidance = Guidance()
 
         if report.exercises:
             report.score = round(
@@ -382,37 +392,62 @@ class PracticeEngine:
     # ==================================================================
     def _motif(self, raaga: Raaga, rng: random.Random, length: int,
                bank: Optional[Sequence[Sequence[str]]] = None,
-               cadence: bool = False) -> List[str]:
+               cadence: bool = False,
+               guidance: Optional[Guidance] = None) -> List[str]:
         """Invent a short line: sometimes quoting an idiom, mostly its own."""
+        g = guidance or Guidance()
         tokens: List[str] = []
         current = rng.choice(raaga.graha or ["S"])
         leapt = False
         guard = 0
         while len(tokens) < length and guard < length * 8:
             guard += 1
-            if bank and len(tokens) + 2 <= length and rng.random() < 0.35:
+            if bank and len(tokens) + 2 <= length and \
+                    rng.random() < min(0.8, 0.35 + g.quote_more):
                 fragment = list(rng.choice(list(bank)))
                 # Quote at most a few notes of an idiom: the phrase has to be
                 # the agent's own line, seeded by what it heard, not a copy.
                 room = min(3, length - len(tokens))
                 start_at = rng.randrange(max(1, len(fragment) - room + 1))
+                # Built on a scratch copy first: if landing this quote would
+                # replay a run the line was told to avoid, the whole quote is
+                # skipped (falling through to the walk below) rather than
+                # committed - but every draw above still happened, so a
+                # guided attempt makes exactly the same rng calls as today.
+                quoted = list(tokens)
+                quote_current = current
+                blocked = False
                 for token in fragment[start_at:start_at + room]:
                     # Bring the quoted idiom into the octave the line is
                     # already in, so borrowing does not cause a leap.
                     token = clamp_token(raaga, token, TONIC,
-                                        raaga.midi(current, TONIC) - 7,
-                                        raaga.midi(current, TONIC) + 7)
-                    if not tokens or token != tokens[-1]:
-                        tokens.append(token)
-                        current = token
+                                        raaga.midi(quote_current, TONIC) - 7,
+                                        raaga.midi(quote_current, TONIC) + 7)
+                    if not quoted or token != quoted[-1]:
+                        if g.replays(quoted + [token]):
+                            blocked = True
+                            break
+                        quoted.append(token)
+                        quote_current = token
+                if blocked:
+                    continue
+                tokens[:] = quoted
                 current = tokens[-1] if tokens else current
                 leapt = False
                 continue
             direction = 1 if rng.random() < 0.5 else -1
-            steps = 1 if (leapt or rng.random() < 0.85) else 2
+            steps = 1 if (leapt or
+                          rng.random() < min(0.98, 0.85 + 0.13 * g.prefer_step)
+                          ) else 2
             leapt = steps > 1
             nxt = raaga.step(current, steps * direction, direction)
             nxt = clamp_token(raaga, nxt, TONIC, TONIC - 7, TONIC + 14)
+            if not g.allows_transition(current, nxt):
+                nxt = clamp_token(raaga, raaga.step(current, -steps * direction,
+                                                    -direction),
+                                  TONIC, TONIC - 7, TONIC + 14)
+                if not g.allows_transition(current, nxt):
+                    continue
             # A phrase that stands still on one note is not a phrase.
             if tokens and nxt == tokens[-1]:
                 nxt = clamp_token(raaga, raaga.step(current, -steps * direction,
@@ -420,22 +455,69 @@ class PracticeEngine:
                                   TONIC, TONIC - 7, TONIC + 14)
                 if tokens and nxt == tokens[-1]:
                     continue
+            if g.vary_more and sum(1 for t in tokens
+                                   if parse_swara(t)[0] == parse_swara(nxt)[0]
+                                   ) >= 2:
+                alt = clamp_token(raaga, raaga.step(current, -steps * direction,
+                                                    -direction),
+                                  TONIC, TONIC - 7, TONIC + 14)
+                if g.allows_transition(current, alt) and \
+                        (not tokens or alt != tokens[-1]):
+                    nxt = alt
+            if g.replays(tokens + [nxt]):
+                replay_alt = clamp_token(
+                    raaga, raaga.step(current, -steps * direction, -direction),
+                    TONIC, TONIC - 7, TONIC + 14)
+                if g.allows_transition(current, replay_alt) and \
+                        (not tokens or replay_alt != tokens[-1]) and \
+                        not g.replays(tokens + [replay_alt]):
+                    nxt = replay_alt
+                else:
+                    continue
             current = nxt
             tokens.append(current)
         tokens = tokens[:length]
         # Any phrase of real length comes to rest; that is what makes it a phrase.
-        if (cadence or len(tokens) >= 4) and raaga.nyasa and tokens:
-            resting = clamp_token(raaga, rng.choice(raaga.nyasa), TONIC,
+        if (cadence or g.must_end_on_nyasa or len(tokens) >= 4) and \
+                raaga.nyasa and tokens:
+            candidates = [s for s in raaga.nyasa
+                         if parse_swara(s)[0] not in g.avoid_endings]
+            if g.prefer_jeeva:
+                jeeva_only = [s for s in candidates
+                             if parse_swara(s)[0] in set(raaga.jeeva)]
+                if jeeva_only:
+                    candidates = jeeva_only
+            if not candidates:
+                candidates = list(raaga.nyasa)
+            resting = clamp_token(raaga, rng.choice(candidates), TONIC,
                                   TONIC - 7, TONIC + 14)
             if len(tokens) > 1 and resting == tokens[-2]:
                 resting = clamp_token(raaga, raaga.nyasa[0], TONIC,
                                       TONIC - 7, TONIC + 14)
+            # The cadence is a note like any other: it may not make a
+            # forbidden move or complete a run the line was told not to
+            # replay.  Deterministic fallback, no draws.
+            if len(tokens) > 1 and not self._cadence_allowed(tokens, resting, g):
+                for option in candidates:
+                    option = clamp_token(raaga, option, TONIC, TONIC - 7, TONIC + 14)
+                    if option != tokens[-2] and \
+                            self._cadence_allowed(tokens, option, g):
+                        resting = option
+                        break
             tokens[-1] = resting
         return tokens
 
+    @staticmethod
+    def _cadence_allowed(tokens: Sequence[str], resting: str,
+                         g: Guidance) -> bool:
+        return (g.allows_transition(tokens[-2], resting)
+                and not g.replays(list(tokens[:-1]) + [resting]))
+
     def _notes_from_tokens(self, raaga: Raaga, tokens: Sequence[str],
                            rng: random.Random,
-                           tempo_bpm: float = 72.0) -> List[Note]:
+                           tempo_bpm: float = 72.0,
+                           guidance: Optional[Guidance] = None) -> List[Note]:
+        g = guidance or Guidance()
         notes: List[Note] = []
         expressive = set(raaga.jeeva) | set(raaga.nyasa)
         beat = 60.0 / max(30.0, tempo_bpm)
@@ -455,12 +537,25 @@ class PracticeEngine:
             gamaka = raaga.gamaka_for(token) if wants_gamaka else ""
             if not gamaka and wants_gamaka and duration >= 0.7:
                 gamaka = "kampita"
+            if g.add_gamaka and not gamaka and duration >= beat * 0.5:
+                gamaka = raaga.gamaka_for(token) or "kampita"
             velocity = 96 if (i == 0 or last) else rng.randint(72, 92)
             notes.append(Note(swara=token, midi=raaga.midi(token, TONIC),
                               start=round(t, 4), duration=duration,
                               velocity=velocity, gamaka=gamaka))
             t += duration
         return notes
+
+    def _phrase_bank(self, raaga_name: str, guidance: Guidance,
+                     min_confidence: float = 0.4,
+                     limit: int = 64) -> List[List[str]]:
+        """The same phrases and order ``learned_phrase_bank`` would give,
+        minus any this attempt was told not to quote.  With an empty
+        ``guidance`` the result is identical to ``learned_phrase_bank``."""
+        return [list(p.swaras) for p in
+                self.repo.phrases(raaga=raaga_name, min_confidence=min_confidence,
+                                  limit=limit)
+                if p.id not in guidance.avoid_quoting and 2 <= len(p.swaras) <= 10]
 
     def _generate_pattern(self, unit: Unit, raaga: Optional[Raaga],
                           rng: random.Random, report: PracticeReport) -> None:
@@ -470,16 +565,17 @@ class PracticeEngine:
         want_variations = int(unit.params.get("variations", 0))
         check_original = bool(unit.params.get("check_originality", False))
         cadence = bool(unit.params.get("cadence", False))
+        guidance = self._guidance
 
-        bank = learned_phrase_bank(self.repo, raaga.name) if use_bank else None
+        bank = self._phrase_bank(raaga.name, guidance) if use_bank else None
         index = PhraseIndex.from_repository(self.repo, raaga.name)
         evaluator = Evaluator(self.library, index)
 
         tempo = 72.0
         previous: List[List[str]] = []
         for i in range(unit.exercises):
-            tokens = self._motif(raaga, rng, length, bank, cadence)
-            notes = self._notes_from_tokens(raaga, tokens, rng, tempo)
+            tokens = self._motif(raaga, rng, length, bank, cadence, guidance)
+            notes = self._notes_from_tokens(raaga, tokens, rng, tempo, guidance)
             evaluation = evaluator.evaluate(
                 notes, raaga, tonic_midi=TONIC, tempo_bpm=tempo,
                 learned_phrases=bank)
