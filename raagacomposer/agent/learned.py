@@ -8,7 +8,7 @@ and the caller is told how much of the picture came from learning.
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from ..core.logging_setup import get_logger
 from ..raaga.library import Raaga, RaagaLibrary, parse_swara
@@ -96,6 +96,18 @@ def learned_raaga(repo: KnowledgeRepository, library: RaagaLibrary,
         if list(phrase) not in prayogas:
             prayogas.append(list(phrase))
 
+    # Provenance for "why did you choose this phrase?" (agent/music_agent.py,
+    # explain_choice): where each heard prayoga came from, keyed by its
+    # swaras so the composer can look it up without carrying Phrase objects
+    # into music/, which must not import agent/.
+    prayoga_sources: Dict[str, Any] = {}
+    for phrase in heard_phrases:
+        source = repo.source(phrase.source_id) if phrase.source_id else None
+        prayoga_sources[" ".join(phrase.swaras)] = {
+            "phrase_id": phrase.id,
+            "origin": source.title if source else "my own practice",
+        }
+
     raaga = replace(
         base,
         name=base.name or name,
@@ -108,6 +120,7 @@ def learned_raaga(repo: KnowledgeRepository, library: RaagaLibrary,
         prayogas=prayogas,
         moods=moods,
         source="learned" if known else base.source,
+        prayoga_sources=prayoga_sources,
     )
     # Built from the final arohanam/avarohanam/nyasa (facts if known, the
     # library otherwise) so degree() and cadence_for() agree with what the

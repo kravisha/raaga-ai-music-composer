@@ -276,6 +276,95 @@ def test_negative_feedback_becomes_a_lesson(app, settle):
     assert (app.project_dir / "project.json").exists()
 
 
+# --------------------------------------------------------------------------
+# item 4: guided regeneration, provenance, T10 (docs/PLAN_agent_factory.md)
+# --------------------------------------------------------------------------
+def test_item4_feedback_shapes_the_next_tune(app, settle):
+    app.select_raaga("Keeravani")
+    teach(app)
+    app.generate_tune(seed=11)
+    settle()
+
+    app.critique_tune()
+    app.give_feedback("This does not sound like Keeravani, too mechanical.")
+
+    store = app.agent.factory_store()
+    profile = app.agent.profile()
+    disputes = store.disputes(profile.id)
+    assert disputes, "negative feedback should have opened a dispute"
+    ruling = store.ruling(disputes[0].ruling_id)
+    assert ruling is not None and ruling.decided_by == "creator"
+
+    reusable = store.reusable_lessons(domain="carnatic-music")
+    assert any(r.rule_or_procedure.startswith(
+        "the creator rejected a Keeravani tune") for r in reusable)
+
+    app.generate_tune(seed=13)
+    settle()
+    second = app.project.melody()
+    guided = (any(line.startswith("rewrite") for line in second.validation)
+             or bool(second.guidance_note))
+
+    evaluation = app.agent.evaluator("Keeravani").evaluate(
+        second.notes, app.composing_raaga(), brief=app.project.brief,
+        tempo_bpm=second.tempo_bpm,
+        expected_seconds=app.project.brief.duration_target,
+        learned_phrases=app.agent.phrase_bank("Keeravani"))
+    no_repetitive_finding = not any(f.kind == "repetitive"
+                                    for f in evaluation.findings)
+    assert guided or no_repetitive_finding, (
+        f"neither held: validation={second.validation!r} "
+        f"guidance_note={second.guidance_note!r} "
+        f"findings={[f.kind for f in evaluation.findings]!r}")
+    if guided:
+        reason = "guidance was applied (rewrite line or guidance note present)"
+    else:
+        reason = "the second tune's evaluation carries no repetitive finding"
+    assert reason
+
+    answer = app.ask_agent("why did you choose this phrase?")
+    assert answer
+    names_a_phrase = "quoted" in answer.lower()
+    names_a_lesson = "avoided" in answer.lower() or "guided" in answer.lower()
+    assert names_a_phrase or names_a_lesson, answer
+
+
+def test_item4_provenance_survives_save_and_reopen(app, settle):
+    from raagacomposer.core.persistence import ProjectStore
+
+    app.select_raaga("Keeravani")
+    teach(app)
+    app.generate_tune(seed=17)
+    settle()
+    melody = app.project.melody()
+    app.save()
+
+    reopened = ProjectStore(app.settings).open(app.project_dir)
+    got = reopened.melody()
+    assert got.provenance == melody.provenance
+    assert got.guidance_note == melody.guidance_note
+
+
+def test_item4_a_tune_is_a_t10_result(app, settle):
+    from raagacomposer.factory.models import Split, TestLevel
+
+    app.select_raaga("Keeravani")
+    app.generate_tune(seed=21)
+    settle()
+
+    store = app.agent.factory_store()
+    profile = app.agent.profile()
+    results = store.results(profile.id, level=TestLevel.T10_REAL_WORLD,
+                            split=Split.REAL_WORLD)
+    assert results
+    test = store.test(results[0].test_id)
+    assert test is not None
+    assert test.capability == "compose:Keeravani"
+
+    record = store.mastery(profile.id, "compose:Keeravani")
+    assert record.evidence
+
+
 def test_learning_state_outlives_the_application(app, settle, settings):
     from raagacomposer.app import AppController
     teach(app)

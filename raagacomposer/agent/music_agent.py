@@ -41,6 +41,20 @@ NEGATIVE = re.compile(
 POSITIVE = re.compile(
     r"\b(good|great|nice|lovely|like|love|keep|beautiful|amazing|better|"
     r"perfect|yes)\b", re.I)
+# What a creator's complaint points at, in the evaluator's own vocabulary
+# (agent/evaluator.py finding kinds), so guidance can act on it.
+FEEDBACK_KINDS = [
+    (re.compile(r"mechanical|robotic|monoton|boring|repetit|same"),
+     ["repetitive", "no_gamaka"]),
+    (re.compile(r"flat|lifeless|no (feel|ornament|gamaka)|plain"), ["no_gamaka"]),
+    (re.compile(r"(not|n't|doesn't|does not) (sound|feel) like|drift|wrong raaga|"
+                r"not (the )?raaga|sounds like (another|a different)"),
+     ["neighbour_drift", "no_idiom"]),
+    (re.compile(r"jump|leap|disjoint|jerky|all over"), ["too_many_leaps"]),
+    (re.compile(r"(end|finish|clos)\w* (badly|abrupt|wrong|nowhere)|unresolved|"
+                r"doesn't resolve|does not resolve"), ["no_cadence"]),
+    (re.compile(r"off (the )?beat|rhythm|timing"), ["off_beat"]),
+]
 
 
 @dataclass
@@ -720,6 +734,20 @@ class MusicAgent:
             return "positive"
         return "neutral"
 
+    @staticmethod
+    def feedback_kinds(text: str) -> List[str]:
+        """The finding kinds the creator's words point at, so a complaint
+        about a tune the critic passed still becomes guidance the next tune
+        obeys ("too mechanical" -> vary more, add gamaka)."""
+        low = (text or "").lower()
+        kinds: List[str] = []
+        for pattern, mapped in FEEDBACK_KINDS:
+            if pattern.search(low):
+                for kind in mapped:
+                    if kind not in kinds:
+                        kinds.append(kind)
+        return kinds
+
     def record_feedback(self, text: str, raaga: str = "",
                         swaras: Optional[Sequence[str]] = None,
                         target_kind: str = "composition",
@@ -849,8 +877,17 @@ class MusicAgent:
     def record_composition(self, *, project_id: str, title: str, raaga: str,
                            brief: CreativeBrief, notes: Sequence[Note],
                            structure: Optional[Dict[str, Any]] = None,
-                           tempo_bpm: float = 0.0) -> Tuple[str, Evaluation]:
-        """Mark the agent's own work and remember how it went."""
+                           tempo_bpm: float = 0.0, seed: int = 0
+                           ) -> Tuple[str, Evaluation]:
+        """Mark the agent's own work and remember how it went.
+
+        A tune is also the T10 (real-world) test of the Agent Factory ladder
+        (docs/PLAN_agent_factory.md, "Item 4, integrated"): every composition
+        files a ``TestSpec``/``TestResult`` and applies mastery evidence to
+        ``compose:<raaga>``.  Guarded so a factory failure never blocks a
+        tune - the composer must keep working even if the factory database
+        is unavailable.
+        """
         raaga_view, _ = self.raaga_for_composition(raaga)
         target = raaga_view or self.library.get(raaga)
         evaluation = Evaluation()
@@ -865,7 +902,195 @@ class MusicAgent:
             structure=structure or {},
             scores=evaluation.scores, final_score=evaluation.overall(),
             notes=evaluation.recommendation)
+        try:
+            version = (structure or {}).get("version", 0)
+            self._record_t10_composition(project_id, version, raaga, notes,
+                                         evaluation, seed)
+        except Exception as exc:  # noqa: BLE001 - the factory must never block a tune
+            log.warning("could not file the composition as a T10 test: %s", exc)
         return composition_id, evaluation
+
+    def _record_t10_composition(self, project_id: str, version: Any, raaga: str,
+                                notes: Sequence[Note], evaluation: Evaluation,
+                                seed: int) -> None:
+        """Generate Tune is the T10 test (docs/PLAN_agent_factory.md, "Item 4,
+        integrated"): the student's claim is its own self-evaluation (the
+        learned view); the trainer's claim is the same verdict read off the
+        library view, so a tune that only looks good through what the agent
+        has heard does not pass on its own say-so."""
+        from ..factory.mastery import apply_evidence
+        from ..factory.models import Split, TestLevel, TestResult, TestSpec
+
+        store = self.factory_store()
+        profile = self.profile()
+        concept = f"compose:{raaga}"
+        threshold = float(getattr(self.settings, "compose_threshold", 0.7))
+        overall = evaluation.overall()
+        passed = overall >= threshold
+        student_verdict = "acceptable" if passed else "needs work"
+
+        library_raaga = self.library.get(raaga)
+        trainer_evaluation = evaluation
+        if library_raaga is not None and notes:
+            trainer_evaluation = Evaluator(
+                self.library, self.phrase_index(raaga)).evaluate(notes, library_raaga)
+        trainer_verdict = ("acceptable" if trainer_evaluation.overall() >= threshold
+                           else "needs work")
+
+        test = TestSpec(capability=concept, level=TestLevel.T10_REAL_WORLD,
+                        split=Split.REAL_WORLD, objective=False, ambiguity=0.6,
+                        seed=seed, payload={"project_id": project_id,
+                                            "version": version})
+        store.save_test(test)
+
+        findings = evaluation.findings
+        result = TestResult(
+            test_id=test.id, agent_id=profile.id, level=TestLevel.T10_REAL_WORLD,
+            split=Split.REAL_WORLD, score=overall, passed=passed,
+            student_claim=student_verdict, student_confidence=evaluation.confidence,
+            trainer_claim=trainer_verdict,
+            trainer_confidence=trainer_evaluation.confidence,
+            failure_mode=findings[0].kind if findings else "",
+            evidence=[f.text for f in findings])
+        store.save_result(result)
+
+        record = store.mastery(profile.id, concept)
+        apply_evidence(record, "T10", result.id, passed=passed)
+        store.save_mastery(record)
+
+    def explain_choice(self, melody, raaga: str) -> str:
+        """"Why did you choose this phrase?" (spec section 16), answered from
+        what the tune actually borrowed (``melody.provenance``), what a
+        guided rewrite avoided (``melody.validation`` and
+        ``melody.guidance_note``), and what is still an open lesson for the
+        raaga."""
+        rows: List[str] = []
+        for entry in list(melody.provenance)[:5]:
+            when = self._time_at_note(melody, int(entry.get("start", 0)))
+            origin = entry.get("origin") or "the raaga library"
+            rows.append(f"at {when} I quoted {entry.get('swaras', '')} "
+                       f"from {origin}")
+        if not rows:
+            rows.append("I did not quote a particular phrase here - this "
+                       "line is my own, from the raaga's scale and what I "
+                       "have practised.")
+        rewrites = [line for line in melody.validation if line.startswith("rewrite")]
+        rows.extend(rewrites)
+        guidance_note = getattr(melody, "guidance_note", "")
+        if guidance_note:
+            rows.append(f"I was guided to: {guidance_note}")
+        open_lessons = [l for l in self.repo.lessons(raaga=raaga, limit=50)
+                        if not l.applied]
+        remarks = [l for l in open_lessons if l.kind == "creator_feedback"]
+        if remarks:
+            rows.append(f"I kept your note in mind: "
+                        f"\"{remarks[0].failure_reason[:120]}\"")
+        acted = [l for l in open_lessons if l.kind != "creator_feedback"]
+        if acted:
+            worst = max(acted, key=lambda l: l.recurrences)
+            what = {
+                "repetitive": "varied the line more",
+                "no_gamaka": "added ornament",
+                "too_many_leaps": "moved by step",
+                "no_cadence": "closed on a resting note",
+                "neighbour_drift": "leaned on the raaga's own notes",
+                "no_idiom": "quoted the raaga's own phrases more",
+                "off_beat": "kept to the beat",
+                "not_original": "avoided a phrase I had copied",
+            }.get(worst.kind, f"worked on {worst.kind.replace('_', ' ')}")
+            source = ("your feedback" if worst.dimension == "creator"
+                      else "my own critique")
+            rows.append(f"I {what} because of {source}: {worst.kind}, "
+                        f"seen {worst.recurrences} time"
+                        f"{'s' if worst.recurrences != 1 else ''}")
+        return "\n".join(rows)
+
+    @staticmethod
+    def _time_at_note(melody, index: int) -> str:
+        seconds = melody.notes[index].start if 0 <= index < len(melody.notes) else 0.0
+        return f"{int(seconds) // 60}:{int(seconds) % 60:02d}"
+
+    def record_field_feedback(self, raaga: str, text: str, positive: bool,
+                              evaluation: Optional[Evaluation],
+                              project_id: str) -> Optional[Any]:
+        """Creator feedback on a tune is field evidence (docs/PLAN_agent_factory.md,
+        "Item 4, integrated"; document 02 section 5: the creator is the
+        external evidence that decides).  Negative feedback opens a dispute
+        between the agent's own verdict and the creator's, resolves it at
+        once in the creator's favour, and leaves a candidate reusable lesson
+        and a failed mastery signal.  Positive feedback is field evidence
+        (L9) and a passed real-world result.  Returns the ``Ruling`` when one
+        was made, else ``None``."""
+        from ..factory.mastery import apply_evidence
+        from ..factory.models import (Dispute, KnowledgeClass, MasteryLevel,
+                                      ReusableLesson, Ruling, Split, TestLevel,
+                                      TestResult, ValidationStatus)
+
+        store = self.factory_store()
+        profile = self.profile()
+        concept = f"compose:{raaga}"
+        threshold = float(getattr(self.settings, "compose_threshold", 0.7))
+        evaluation = evaluation or Evaluation()
+        overall = evaluation.overall()
+        findings = evaluation.findings
+        student_verdict = "acceptable" if overall >= threshold else "needs work"
+
+        if not positive:
+            dispute = Dispute(
+                agent_id=profile.id,
+                question=f"is this tune acceptable in {raaga}?",
+                student_claim=student_verdict, trainer_claim="not acceptable",
+                evidence_student=[f.text for f in findings],
+                evidence_trainer=[text],
+                student_confidence=evaluation.confidence, trainer_confidence=0.95,
+                critical=False)
+            store.save_dispute(dispute)
+
+            # The guidance kinds the last evaluation's findings map to - what
+            # a Guidance built from just this tune's own findings would
+            # correct, not the raaga's whole lesson history.
+            guidance_kinds = sorted({f.kind for f in findings}
+                                    | set(self.feedback_kinds(text)))
+            ruling = Ruling(
+                dispute_id=dispute.id, ruling="the creator's verdict stands",
+                accepted_claim="trainer", rejected_claim="student",
+                rationale=text, correction_student=", ".join(guidance_kinds),
+                confidence=0.95, needs_external_evidence=False,
+                decided_by="creator")
+            store.save_ruling(ruling)
+
+            reusable = ReusableLesson(
+                source_event=ruling.id,
+                rule_or_procedure=f"the creator rejected a {raaga} tune: {text}",
+                knowledge_class=KnowledgeClass.EXPERIENCE,
+                validation_status=ValidationStatus.CANDIDATE,
+                scope_domain="carnatic-music", scope_concept=concept,
+                source_agent_id=profile.id, confidence=0.6)
+            store.save_reusable(reusable)
+
+            record = store.mastery(profile.id, concept)
+            apply_evidence(record, "T10", ruling.id, passed=False)
+            store.save_mastery(record)
+            return ruling
+
+        # Positive feedback: field evidence (document 05 section 6).  One
+        # word of praise validates a capability the agent has already shown
+        # it generalises (L7 from real-world passes); before that it counts
+        # as one more real-world pass, not expertise (document 04 section
+        # 5: one success is not a rule).
+        record = store.mastery(profile.id, concept)
+        evidence_id = f"feedback:{int(time.time() * 1000)}:{text[:40]}"
+        kind = ("field" if record.level >= MasteryLevel.L7_GENERALIZES
+                else "T10")
+        apply_evidence(record, kind, evidence_id, passed=True)
+        store.save_mastery(record)
+        result = TestResult(
+            agent_id=profile.id, level=TestLevel.T10_REAL_WORLD, split=Split.REAL_WORLD,
+            score=overall, passed=True, student_claim=student_verdict,
+            student_confidence=evaluation.confidence, trainer_claim="acceptable",
+            trainer_confidence=0.95, evidence=[text])
+        store.save_result(result)
+        return None
 
     # ==================================================================
     # status for the UI (section 17)

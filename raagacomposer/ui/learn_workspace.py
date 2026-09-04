@@ -56,6 +56,8 @@ LESSON_COLUMNS = ("Mistake", "Times", "Last seen", "Correction")
 FINDINGS_COLUMNS = ("When", "Unit / task", "Mistake", "Correction")
 MASTERY_COLUMNS = ("Concept", "Level", "Evidence", "Next test")
 TESTS_COLUMNS = ("When", "Level", "Split", "Novelty", "Result", "Failure mode")
+COMPOSITION_COLUMNS = ("When", "Raaga", "Score", "Rewrites", "Quoted phrases",
+                      "Feedback")
 
 
 def provider_summary_line(rows: List[Any]) -> str:
@@ -620,6 +622,15 @@ class LearnWorkspace(QWidget):
         self.findings_table.setMinimumHeight(120)
         findings_layout.addWidget(self.findings_table)
         layout.addWidget(findings_box)
+
+        composition_box = QGroupBox("Composition learning")
+        composition_layout = QVBoxLayout(composition_box)
+        self.composition_table = QTableWidget(0, len(COMPOSITION_COLUMNS))
+        self.composition_table.setHorizontalHeaderLabels(list(COMPOSITION_COLUMNS))
+        self.composition_table.verticalHeader().setVisible(False)
+        self.composition_table.setMinimumHeight(120)
+        composition_layout.addWidget(self.composition_table)
+        layout.addWidget(composition_box)
         return page
 
     def _refresh_findings(self) -> None:
@@ -639,6 +650,47 @@ class LearnWorkspace(QWidget):
                 table.setItem(row, column, item)
         table.resizeColumnsToContents()
 
+    def _refresh_compositions(self) -> None:
+        """T10 (Generate Tune) results for the profile, last 12, joined with
+        the knowledge base's compositions and feedback where that is cheap -
+        guarded like ``_refresh_trainer``, since a fresh app may have no
+        factory database and no tunes yet."""
+        try:
+            from raagacomposer.factory.models import TestLevel
+
+            store = self.app.agent.factory_store()
+            profile = self.app.agent.profile()
+            results = store.results(profile.id, level=TestLevel.T10_REAL_WORLD,
+                                    limit=12)
+            feedback_by_raaga: Dict[str, str] = {}
+            for row in self.app.agent.repo.feedback(limit=50):
+                feedback_by_raaga.setdefault(row.get("raaga", ""), row.get("text", ""))
+            current_melody = self.app.project.melody()
+            table = self.composition_table
+            table.setRowCount(len(results))
+            for row, result in enumerate(results):
+                test = store.test(result.test_id) if result.test_id else None
+                raaga = (test.capability.split(":", 1)[1]
+                        if test and ":" in test.capability else "")
+                project_id = test.payload.get("project_id", "") if test else ""
+                when = time.strftime("%Y-%m-%d %H:%M", time.localtime(result.at))
+                rewrites, quoted = "-", "-"
+                if (current_melody is not None
+                        and project_id == self.app.project.project_id
+                        and current_melody.raaga == raaga):
+                    rewrites = str(sum(1 for v in current_melody.validation
+                                       if v.startswith("rewrite")))
+                    quoted = str(len(current_melody.provenance))
+                values = (when, raaga, f"{result.score:.2f}", rewrites, quoted,
+                         feedback_by_raaga.get(raaga, "-"))
+                for column, value in enumerate(values):
+                    item = QTableWidgetItem(str(value))
+                    item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                    table.setItem(row, column, item)
+            table.resizeColumnsToContents()
+        except Exception:  # noqa: BLE001
+            pass
+
     # ==================================================================
     def refresh(self) -> None:
         self._refresh_dashboard()
@@ -647,6 +699,7 @@ class LearnWorkspace(QWidget):
         self._refresh_trainer()
         self._refresh_knowledge_gaps()
         self._refresh_findings()
+        self._refresh_compositions()
         self.agent_panel.refresh()
         if (self.training_panel.training is not None
                 and not self.training_panel.training.store.closed):

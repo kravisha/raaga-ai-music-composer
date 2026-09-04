@@ -27,6 +27,10 @@ EVIDENCE_LEVELS: Dict[str, MasteryLevel] = {
     "T7": MasteryLevel.L6_DETECTS_ERRORS,
     "T8": MasteryLevel.L7_GENERALIZES,
     "T9": MasteryLevel.L7_GENERALIZES,
+    # A real-world performance the critic passed shows the capability
+    # generalises to a whole task; only external validation (the creator,
+    # a real recording) takes it further.
+    "T10": MasteryLevel.L7_GENERALIZES,
     "authored_test_used": MasteryLevel.L8_CAN_TEACH,
     "field": MasteryLevel.L9_EXPERT,
 }

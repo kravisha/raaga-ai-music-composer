@@ -256,6 +256,57 @@ def test_train_step_hands_the_curriculum_on_to_learn_step(tmp_path, settings,
     assert seen_after_train == seen_baseline[1:]
 
 
+# --------------------------------------------------------------------------
+# item 4: field evidence and the maturity ladder (docs/PLAN_agent_factory.md,
+# "Item 4, integrated")
+# --------------------------------------------------------------------------
+def test_af_field_evidence_can_reach_l9(taught_agent):
+    """A passing tune files a T10 result; positive creator feedback after it
+    is field evidence (document 05 section 6) and can carry
+    ``compose:Keeravani`` all the way to L9 - but ``compose:<raaga>`` is not
+    one of ``AgentProfile.capabilities`` (those are curriculum unit ids;
+    ``MusicAgent.profile`` never adds composing concepts to that list), so
+    reaching L9 on it cannot by itself move ``AgentFactory.assess`` to S7:
+    the maturity ladder requires *every* capability to clear each stage
+    before the next one is even checked (document 05 section 4), and a
+    ``taught_agent`` has only walked one unit's path through a much larger
+    curriculum, so S2 ("all capabilities >= L4") does not hold.  This test
+    asserts whichever the ladder actually produces and explains why."""
+    from raagacomposer.factory.factory import AgentFactory
+    from raagacomposer.factory.mastery import EVIDENCE_LEVELS
+    from raagacomposer.core.models import CreativeBrief, Note
+
+    agent = taught_agent
+
+    notes = [Note(swara=s, midi=60) for s in ("S", "R2", "G2", "M1", "P")]
+    composition_id, evaluation = agent.record_composition(
+        project_id="proj_l9", title="L9 test", raaga="Keeravani",
+        brief=CreativeBrief(), notes=notes, seed=42)
+
+    store = agent.factory_store()
+    profile = agent.profile()
+    concept = "compose:Keeravani"
+    before = store.mastery(profile.id, concept)
+    assert before.evidence, "the tune should have filed a T10 result"
+
+    ruling = agent.record_field_feedback(
+        "Keeravani", "Lovely, that sounds just right.", True, evaluation,
+        "proj_l9")
+    assert ruling is None            # positive feedback resolves nothing
+
+    after = store.mastery(profile.id, concept)
+    assert after.level == EVIDENCE_LEVELS["field"]   # L9_EXPERT
+
+    profile = agent.profile()
+    factory = AgentFactory(store)
+    maturity = factory.assess(profile)
+    from raagacomposer.factory.models import Maturity
+    assert maturity < Maturity.S7_FIELD_TRUSTED, (
+        "compose:Keeravani reaching L9 must not by itself promote the agent "
+        "to S7 - it is not one of profile.capabilities, and the curriculum "
+        "capabilities that are is not fully mastered by a taught_agent")
+
+
 def test_af04b_a_wrong_belief_is_corrected_through_a_training_cycle(taught_agent):
     """Acceptance test 4 the way it happens in training, not by calling the
     Judge by hand: the student confidently believes Keeravani has G3, so it

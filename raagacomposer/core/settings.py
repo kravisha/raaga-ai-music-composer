@@ -104,6 +104,9 @@ class Settings:
     learning_preprocess_recordings: bool = True
     learning_remove_drone: bool = True
     learning_gate_speech: bool = True
+    # --- guided composition (docs/PLAN_learning_loop.md item 4) ---------
+    compose_rewrites: int = 3          # rewrites tried before keeping the best
+    compose_threshold: float = 0.7     # evaluator overall score to pass
     recent_projects: list = field(default_factory=list)
     extra: Dict[str, Any] = field(default_factory=dict)
 
