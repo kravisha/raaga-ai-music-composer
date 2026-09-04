@@ -524,3 +524,73 @@ def test_reg_102c_guidance_survives_a_restart(tmp_path, settings, raagas):
         assert guidance.avoid_endings == {"D1"}
     finally:
         second.close()
+
+
+# --------------------------------------------------------------------------
+# REG-103  a studied raaga composes from its idiom
+# --------------------------------------------------------------------------
+def test_reg_103_a_studied_raaga_composes_from_its_idiom(
+        tmp_path, settings, raagas):
+    """Once the agent has heard Keeravani's characteristic phrases, the raaga
+    it composes from carries a ``RaagaIdiom`` (docs/PLAN_learning_loop.md,
+    "An idiom model from the phrase bank"), and a tune generated from it
+    stays inside the raaga and is the agent's own line on the first try - no
+    regeneration needed to satisfy the originality checker."""
+    from raagacomposer.agent.idiom import MIN_PHRASES
+    from raagacomposer.agent.originality import check as check_originality
+    from raagacomposer.music.melody import MelodyOptions
+    from raagacomposer.music.melody import generate as generate_melody
+    from raagacomposer.music.structure import plan_sections
+    from raagacomposer.raaga.library import parse_swara
+
+    settings.knowledge_db = str(tmp_path / "k.db")
+    agent = MusicAgent(settings, raagas)
+    try:
+        _teach_through_prayogas(agent)
+        raaga, _ = agent.raaga_for_composition("Keeravani")
+        assert raaga is not None
+        assert raaga.idiom is not None
+        assert raaga.idiom.phrases >= MIN_PHRASES
+
+        opts = MelodyOptions(seed=7, tempo_bpm=72, duration_target=60,
+                             tonic_midi=60, voice_low=52, voice_high=79)
+        sections = plan_sections(opts.duration_target, opts.tempo_bpm,
+                                 opts.beats_per_cycle, opts.song_type)
+        melody = generate_melody(raaga, opts, sections)
+        assert melody.notes
+
+        allowed = set(raaga.allowed)
+        bases = [parse_swara(n.swara)[0] for n in melody.notes]
+        assert all(b in allowed for b in bases), sorted(set(bases) - allowed)
+
+        index = agent.phrase_index("Keeravani")
+        report = check_originality([n.swara for n in melody.notes], index)
+        assert report.is_original, report.summary()
+    finally:
+        agent.close()
+
+
+def test_reg_103b_an_unstudied_raaga_has_no_idiom(tmp_path, settings, raagas):
+    """A raaga the agent has never studied has no idiom on its composing
+    view, and composes byte-identically to the library raaga - the same
+    guarantee the golden melody tests pin, exercised through the agent's own
+    ``raaga_for_composition`` rather than ``learned_raaga`` directly."""
+    from raagacomposer.music.melody import MelodyOptions
+    from raagacomposer.music.melody import generate as generate_melody
+
+    settings.knowledge_db = str(tmp_path / "k.db")
+    agent = MusicAgent(settings, raagas)
+    try:
+        raaga, _ = agent.raaga_for_composition("Mohanam")
+        assert raaga is not None
+        assert raaga.idiom is None
+
+        library_raaga = raagas.require("Mohanam")
+        opts = MelodyOptions(seed=3, tempo_bpm=72, duration_target=60,
+                             tonic_midi=60, voice_low=52, voice_high=79)
+        agent_melody = generate_melody(raaga, opts)
+        library_melody = generate_melody(library_raaga, opts)
+        assert [(n.swara, n.start, n.duration) for n in agent_melody.notes] == \
+               [(n.swara, n.start, n.duration) for n in library_melody.notes]
+    finally:
+        agent.close()

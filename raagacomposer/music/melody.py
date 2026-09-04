@@ -31,6 +31,17 @@ RHYTHM_BANK: Dict[str, List[List[float]]] = {
 
 CONTOURS = ("arch", "rise", "fall", "wave", "flat")
 
+# The longest run a tune may share with a learned phrase before the
+# originality checker (agent/originality.py, DEFAULT_MAX_RUN) rejects it.
+# Kept equal by a test (tests/unit/test_idiom.py) rather than an import,
+# because music/ must not import agent/.
+MAX_QUOTE_NOTES = 6
+# A phrase longer than that is quoted as a fragment of this many notes, the
+# same limit practice puts on quoting an idiom (docs/DECISIONS.md,
+# "Originality is enforced"): a six-note quote passes the checker but scores
+# a third on originality, a three-note one keeps most of it.
+QUOTE_FRAGMENT_NOTES = 3
+
 
 @dataclass
 class MelodyOptions:
@@ -128,19 +139,32 @@ def _rhythm_for(tempo: int, beats_per_cycle: int, intensity: float,
 def _phrase_tokens(raaga: Raaga, rng: random.Random, start: str, count: int,
                    contour: str, span: float, ornament: float,
                    cadence: Optional[str]) -> List[str]:
+    idiom = getattr(raaga, "idiom", None)
     tokens: List[str] = []
     cur = start
     start_deg = raaga.degree(cur)
     i = 0
     while i < count:
         remaining = count - i
-        # Occasionally quote a characteristic phrase of the raaga verbatim.
+        # Occasionally quote a characteristic phrase of the raaga verbatim -
+        # or, when it runs longer than the originality checker would allow,
+        # as a fragment transposed into the current octave.
         if (raaga.prayogas and remaining >= 3 and i > 0
                 and rng.random() < 0.22 + 0.25 * ornament):
             frag = list(rng.choice(raaga.prayogas))
+            # A phrase longer than MAX_QUOTE_NOTES is quoted as a fragment
+            # of QUOTE_FRAGMENT_NOTES, never whole; a deterministic window
+            # (no rng draw) picks which part.  No library prayoga exceeds
+            # MAX_QUOTE_NOTES (max 5, verified), so this never fires for an
+            # unstudied raaga and changes nothing there.
+            if len(frag) > MAX_QUOTE_NOTES:
+                start_at = ((i + len(tokens))
+                           % (len(frag) - QUOTE_FRAGMENT_NOTES + 1))
+                frag = frag[start_at:start_at + QUOTE_FRAGMENT_NOTES]
+            frag = frag[:remaining]
             _, octave = parse_swara(cur)
             frag_tokens = []
-            for tok in frag[:remaining]:
+            for tok in frag:
                 b, o = parse_swara(tok)
                 frag_tokens.append(_with_octave(b, octave + o))
             tokens.extend(frag_tokens)
@@ -155,12 +179,17 @@ def _phrase_tokens(raaga: Raaga, rng: random.Random, start: str, count: int,
             direction = 1
         elif cur_deg > target_deg + 0.5:
             direction = -1
+        elif idiom is not None:
+            direction = idiom.pick_direction(cur, rng)
         else:
             direction = rng.choice((1, -1, 1, -1, 0))
         if direction == 0:
             tokens.append(cur)
         else:
-            steps = 1 if rng.random() < 0.75 else 2
+            if idiom is not None:
+                steps = idiom.pick_steps(cur, direction, rng)
+            else:
+                steps = 1 if rng.random() < 0.75 else 2
             cur = raaga.step(cur, steps * direction, direction)
             tokens.append(cur)
         i += 1
@@ -220,7 +249,12 @@ def generate_section_notes(raaga: Raaga, section: Section, opts: MelodyOptions,
             contour = "arch" if p % 2 == 0 else "rise"
         else:
             contour = rng.choice(CONTOURS)
-        cadence = _nearest_nyasa(raaga, cur) if (last_phrase or rng.random() < 0.5) else None
+        if last_phrase or rng.random() < 0.5:
+            idiom = getattr(raaga, "idiom", None)
+            cadence = (idiom.cadence_for(raaga, cur) if idiom is not None
+                      else _nearest_nyasa(raaga, cur))
+        else:
+            cadence = None
         tokens = _phrase_tokens(raaga, rng, cur, len(pattern), contour,
                                 span * (0.6 + 0.8 * intensity), ornament, cadence)
 

@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from ..core.logging_setup import get_logger
 from ..core.settings import config_dir
@@ -62,6 +62,10 @@ class Raaga:
     melakarta: Optional[int] = None
     notes: str = ""
     source: str = "builtin"
+    # The learned tendencies (agent/idiom.py, RaagaIdiom); only the learned
+    # view (agent/learned.py, learned_raaga) ever carries one.  Excluded from
+    # repr/equality and never serialised so it cannot leak into raagas.json.
+    idiom: Optional[Any] = field(default=None, repr=False, compare=False)
 
     # -- note sets ---------------------------------------------------------
     @property
