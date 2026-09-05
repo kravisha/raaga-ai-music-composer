@@ -469,6 +469,38 @@ class MusicAgent:
         return suggestions[:limit]
 
     # ==================================================================
+    # what a studied source taught (docs/PLAN_youtube_curriculum.md)
+    # ==================================================================
+    def file_stated_lessons(self, report, raaga: str = "") -> List[Any]:
+        """Turn a completed Learning Report into lessons to be examined on.
+
+        The join between the Training tab and the Agent Factory: Training
+        studies a source and writes a report, and until now everything that
+        report contained sat there unexamined, because lessons only ever came
+        from the shipped curriculum.
+
+        These are *stated* lessons - what a person said, not what the agent
+        heard - so they go to the factory store, which the composer does not
+        read, and never to the phrase bank, which it does.  They can carry a
+        concept to L3, can explain, and no further; ``factory/mastery.py``
+        enforces that cap on its own.
+        """
+        from ..training.lessons import lessons_from_report
+
+        made = lessons_from_report(report, raaga or self.curriculum.current_raaga())
+        if not made:
+            return []
+        store = self.factory_store()
+        for lesson in made:
+            store.save_lesson(lesson)
+        self.repo.log_event(
+            "lessons.filed",
+            f"{len(made)} stated lesson(s) from "
+            f"{getattr(getattr(report, 'source', None), 'title', 'a source')}"[:180],
+            raaga=raaga)
+        return made
+
+    # ==================================================================
     # selection feedback (Stage 1 pack document 05 section 6)
     # ==================================================================
     #: The pack's own signal strengths, plus one it does not name.  Passing a

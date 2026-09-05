@@ -40,7 +40,8 @@ class TrainingController:
                  raagas: Optional[RaagaLibrary] = None,
                  store: Optional[TrainingStore] = None,
                  agent_repo=None, curriculum=None, kb=None,
-                 on_change: Optional[Callable[[], None]] = None) -> None:
+                 on_change: Optional[Callable[[], None]] = None,
+                 on_report: Optional[Callable[[Any], None]] = None) -> None:
         self.settings = settings or Settings.load()
         self.raagas = raagas or default_library()
         path = getattr(self.settings, "training_db", "") or None
@@ -57,7 +58,8 @@ class TrainingController:
         self.pipeline = LearningPipeline(self.store, self.raagas,
                                          self.settings, agent_repo,
                                          curriculum, kb=kb)
-        self.queue = TrainingQueueService(self.store, self.pipeline, on_change)
+        self.queue = TrainingQueueService(self.store, self.pipeline,
+                                          on_change, on_report)
         self.reports = LearningReportService(self.store)
         self.history = TrainingHistoryService(self.store)
         self.knowledge = KnowledgeBaseService(self.store, self.raagas,

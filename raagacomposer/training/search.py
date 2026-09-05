@@ -32,6 +32,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 from ..core.logging_setup import get_logger
 from ..core.settings import Settings
 from ..raaga.library import Raaga, RaagaLibrary
+from . import youtube
 from .models import Accessibility, LearningSource, SearchQuery
 from .store import TrainingStore, identity_of
 
@@ -316,7 +317,8 @@ class WebLeadProvider(SearchProvider):
                 language=str(item.get("language", "")),
                 accessibility_status=Accessibility.METADATA_ONLY,
                 provider=self.name,
-                metadata={"rights": "external-unverified"}))
+                metadata={"rights": "external-unverified",
+                          "video_id": str(item.get("video_id", ""))}))
         return out
 
 
@@ -341,7 +343,8 @@ class LearningSourceSearchService:
                 ReferenceExerciseProvider(raagas),
                 WebLeadProvider(
                     bool(getattr(self.settings, "training_allow_web", False)),
-                    web_finder),
+                    web_finder if web_finder is not None
+                    else youtube.finder(self.settings)),
             ]
 
     # ------------------------------------------------------------------
