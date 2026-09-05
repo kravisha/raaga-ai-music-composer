@@ -315,6 +315,19 @@ def test_typed_adapter_is_always_available():
     assert "typed" in adapter.status()
 
 
+def test_whisper_does_not_load_its_model_to_say_it_is_installed():
+    """``build_adapter`` constructs every candidate while the application
+    is starting, so a constructor that loads a model charges fifteen
+    seconds of startup to creators who never press the microphone."""
+    from raagacomposer.speech.stt import WhisperSTT
+
+    stt = WhisperSTT("tiny")
+    # Installed or not, the constructor must not have loaded anything.
+    assert stt._model is None
+    if stt.available:
+        assert "loads on first use" in stt.status()
+
+
 def test_build_adapter_falls_back_to_typed(settings):
     settings.stt_provider = "none"
     assert build_adapter(settings).name == "typed"
