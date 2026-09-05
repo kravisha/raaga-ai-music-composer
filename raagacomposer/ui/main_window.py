@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import (QApplication, QButtonGroup, QDockWidget,
                                QFileDialog, QHBoxLayout, QLabel, QMainWindow,
@@ -41,6 +41,33 @@ log = get_logger("ui")
 
 
 class MainWindow(QMainWindow):
+    """The composer's window.
+
+    Every callback the controller offers is delivered through a signal
+    rather than called directly, because not all of them arrive on this
+    thread.  Speech capture runs on its own (``capture.py``: a daemon
+    thread named ``raaga-stt``), and a recognised phrase runs the whole
+    command pipeline from there - interpreting it, changing the project,
+    and then asking this window to refresh.
+
+    Touching a widget from a thread other than the one that built it is
+    undefined behaviour in Qt.  It does not raise: it takes the process
+    down, which is why saying "hello" to the microphone closed the
+    application without leaving a traceback in the log.
+
+    A signal is the supported way across that boundary.  Qt queues it when
+    the emitter is on another thread and delivers it directly when it is
+    not, so nothing on the main thread pays for the safety.
+    """
+
+    #: Controller callbacks, as signals.  ``object`` rather than a concrete
+    #: type so a controller change cannot silently stop them being emitted.
+    project_changed = Signal()
+    status_arrived = Signal(str)
+    conversation_changed = Signal()
+    render_finished = Signal(str)
+    error_arrived = Signal(str)
+
     def __init__(self, app: AppController) -> None:
         super().__init__()
         self.app = app
@@ -52,11 +79,19 @@ class MainWindow(QMainWindow):
         self._build_menu()
         self._build_status()
 
-        app.on_project_changed = self.refresh
-        app.on_status = self._status_message
-        app.on_conversation = self.conversation.refresh
-        app.on_render = lambda kind: self.arrangement.refresh()
-        app.on_error = self._show_error
+        # Through signals, never directly - see the class docstring.  The
+        # controller may call any of these from the speech thread.
+        self.project_changed.connect(self.refresh)
+        self.status_arrived.connect(self._status_message)
+        self.conversation_changed.connect(self.conversation.refresh)
+        self.render_finished.connect(lambda kind: self.arrangement.refresh())
+        self.error_arrived.connect(self._show_error)
+
+        app.on_project_changed = self.project_changed.emit
+        app.on_status = self.status_arrived.emit
+        app.on_conversation = self.conversation_changed.emit
+        app.on_render = self.render_finished.emit
+        app.on_error = self.error_arrived.emit
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)

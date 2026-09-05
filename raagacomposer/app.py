@@ -179,6 +179,13 @@ class AppController:
         # ``core/jobs.py`` and ``pump`` below).
         self.actions: Dict[str, ActionStatus] = {}
         self._action_queue: "queue.Queue[ActionStatus]" = queue.Queue()
+        #: Recognised speech, waiting to be acted on by whoever calls
+        #: ``pump``.  Speech capture runs on its own thread and used to run
+        #: the whole command pipeline from there - interpreting the phrase,
+        #: changing the project, and refreshing the window - which crashed
+        #: the application the first time anyone spoke to it.  Jobs have
+        #: always come back through ``pump``; speech now uses the same door.
+        self._utterance_queue: "queue.Queue[str]" = queue.Queue()
         self.last_suggestions: List = []
         #: The brief ``last_suggestions`` were made for, so selection
         #: feedback is attached to what was actually asked.
@@ -345,6 +352,7 @@ class AppController:
         # describes (e.g. ``last_suggestions``) is already in place by the
         # time ``on_action`` sees it.
         self._drain_actions()
+        self._drain_utterances()
         self._sync_context()
         if events and self.on_project_changed:
             self.on_project_changed()
@@ -2121,8 +2129,30 @@ class AppController:
         self._notify_conversation()
 
     def _on_transcript_final(self, text: str) -> None:
+        """Called on the speech thread: queue it, do not act on it here.
+
+        ``handle_utterance`` interprets the phrase, possibly through a
+        language model, changes the project and asks the window to redraw.
+        None of that may happen on a capture thread, so it waits for the
+        next ``pump`` the way a finished job does.
+        """
         self.context.partial = ""
-        self.handle_utterance(text)
+        self._utterance_queue.put(text)
+        self._notify_conversation()
+
+    def _drain_utterances(self) -> None:
+        """Act on anything heard since the last pump, on this thread."""
+        while True:
+            try:
+                text = self._utterance_queue.get_nowait()
+            except queue.Empty:
+                return
+            try:
+                self.handle_utterance(text)
+            except Exception as exc:  # noqa: BLE001
+                # A misheard phrase must not take the application with it.
+                log.exception("could not act on what was heard: %s", text)
+                self.error("voice", f"I could not act on that: {exc}")
 
     def handle_utterance(self, text: str) -> Command:
         """Interpret one instruction and act on it."""

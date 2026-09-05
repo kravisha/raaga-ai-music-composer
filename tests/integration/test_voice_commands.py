@@ -5,6 +5,8 @@ interpret -> resolve against conversation state -> execute -> record the turn.
 """
 from __future__ import annotations
 
+import threading
+
 import pytest
 
 pytestmark = pytest.mark.integration
@@ -253,3 +255,61 @@ def test_typed_input_uses_the_same_pipeline(song, settle):
     settle()
     assert app.project.arrangement().tracks_for_instrument("veena")
     assert app.project.conversation[-1].text == "Add veena."
+
+
+# --------------------------------------------------------------------------
+# speech arrives on its own thread, and must not act on it
+# --------------------------------------------------------------------------
+def test_speech_is_acted_on_by_the_thread_that_pumps(song, settle):
+    """The crash: speaking to the application closed it.
+
+    Capture runs on a daemon thread, and a recognised phrase used to run
+    the whole command pipeline from there - interpreting it, changing the
+    project, and refreshing the window.  Touching a widget off the thread
+    that built it does not raise in Qt; it takes the process down, which
+    is why the log held no traceback.
+
+    Nothing here draws a widget, so this asserts the property that makes
+    that impossible: the phrase is acted on by whoever calls ``pump``, not
+    by the thread that heard it.
+    """
+    app = song
+    acted_on = []
+    original = app.handle_utterance
+
+    def record(text):
+        acted_on.append(threading.current_thread().name)
+        return original(text)
+
+    app.handle_utterance = record
+    heard_on = []
+
+    def speak():
+        heard_on.append(threading.current_thread().name)
+        app._on_transcript_final("Add veena.")
+
+    thread = threading.Thread(target=speak, name="raaga-stt")
+    thread.start()
+    thread.join(timeout=5)
+
+    assert heard_on == ["raaga-stt"]
+    assert not acted_on, "the capture thread ran the command itself"
+
+    settle()
+    assert acted_on and acted_on[0] != "raaga-stt", \
+        "the command was never acted on, or ran on the wrong thread"
+    assert app.project.arrangement().tracks_for_instrument("veena")
+
+
+def test_a_phrase_that_cannot_be_acted_on_does_not_take_the_app_down(song, settle):
+    """A microphone failure must never crash the whole application."""
+    app = song
+
+    def explode(text):
+        raise RuntimeError("interpretation blew up")
+
+    app.handle_utterance = explode
+    app._on_transcript_final("Something impossible.")
+    settle()          # pump drains it; the exception must stay contained
+    assert "could not act on that" in app.status_text.lower() or \
+        any("could not act" in e.message.lower() for e in app.project.errors)
