@@ -46,10 +46,12 @@ from .music import melody as melody_engine
 from .music import mixer
 from .music.melody import MelodyOptions
 from .music.structure import plan_sections
+from .music.synth import render_notes
 from .music.validator import validate
 from .providers import registry as provider_registry
 from .providers.status import ProviderStatus
 from .providers.status import provider_statuses as _provider_statuses
+from .raaga import audition
 from .raaga.library import Raaga, library as raaga_library
 from .raaga.selection import (RaagaSuggestion, expand_feel_words, infer_tempo,
                               suggest as suggest_raagas)
@@ -879,6 +881,55 @@ class AppController:
                 for d, v in sorted(correction.items())) + ")"
         self._changed("raaga.reject", detail)
         return correction
+
+    def audition_raaga(self, name: str = "", play: bool = True):
+        """Play a raaga's exact arohanam and avarohanam (pack section 7).
+
+        The audition step between suggesting a raaga and composing in one:
+        the creator hears the scale and confirms it is the raaga they meant.
+        What is played is exactly what the library stores - no phrase, no
+        ornament, no chosen register - so that a disagreement is about the
+        raaga rather than about the performance.
+
+        Returns the plan whether or not there is an audio device, because
+        what was *meant* to be played is the checkable part and a machine
+        with no sound card should still be able to say what it would sound.
+        """
+        raaga = self.raagas.get(name) if name else self.current_raaga()
+        if raaga is None:
+            self.status("Choose a raaga to hear first.")
+            return None
+
+        plan = audition.plan(raaga, tonic=self.project.raaga.tonic_midi
+                             or audition.TONIC)
+        if not audition.is_playable(plan):
+            # Pack document 01 section H rule 7: an audition that collapses
+            # into one repeated note has not demonstrated anything.
+            self.error("audition",
+                       f"{raaga.name} has no scale to play - its arohanam or "
+                       f"avarohanam is missing from the library.")
+            return plan
+
+        instrument = catalog.get("veena") or catalog.get("flute")
+        audio = render_notes(plan.notes, instrument, self.sample_rate,
+                             total_seconds=plan.seconds)
+        self._cache_render("audition", audio)
+        self.status(f"{raaga.name}: {len(plan.ascending)} swaras up, "
+                    f"{len(plan.descending)} down")
+        if play:
+            self.play_render("audition")
+
+        # The pack counts hearing a raaga as a weak signal in its favour
+        # (document 05 section 6, auditioned +0.2) - weaker than choosing it,
+        # because listening is not yet agreeing.  Only when we know which
+        # brief it answers, on the same rule selection feedback follows.
+        answered = self._feedback_brief(raaga.name)
+        if answered is not None and self.agent is not None:
+            try:
+                self.agent.audition_raaga(answered, raaga.name)
+            except Exception as exc:                             # noqa: BLE001
+                log.warning("could not record the audition: %s", exc)
+        return plan
 
     def set_raaga_lock(self, locked: bool) -> None:
         self.project.raaga.state = ApprovalState.LOCKED if locked else ApprovalState.APPROVED

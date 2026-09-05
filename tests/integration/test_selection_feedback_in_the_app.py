@@ -167,3 +167,59 @@ def test_feedback_never_changes_what_the_raaga_is(app):
     after = (list(raaga.arohanam), list(raaga.avarohanam), list(raaga.jeeva),
              list(raaga.nyasa))
     assert after == before
+
+
+# --------------------------------------------------------------------------
+# audition (pack document 05 section 7, plan item S4)
+# --------------------------------------------------------------------------
+def test_auditioning_renders_the_scale_and_can_be_played(app):
+    _apply(app, **SAD)
+    app.select_raaga((app.project.raaga.alternatives or [])[0])
+
+    heard = app.audition_raaga(play=False)
+    assert heard is not None
+    assert len(heard.ascending) >= 5 and len(heard.descending) >= 5
+    # It is real audio, of about the length the plan says it should be.
+    rendered = app._renders.get("audition")
+    assert rendered is not None
+    assert rendered.duration == pytest.approx(heard.seconds, abs=0.5)
+
+
+def test_auditioning_is_a_weaker_signal_than_choosing(app):
+    """The pack's own weights: auditioned +0.2, accepted +1.0.  Listening is
+    not yet agreeing."""
+    offered = _apply(app, **SAD)
+    app.audition_raaga(offered[1], play=False)
+    after_hearing = max(w.weight for w in app.agent.selection_preferences(offered[1]))
+
+    app.agent.forget_selection_preferences()
+    app.select_raaga(offered[1])
+    after_choosing = max(w.weight for w in app.agent.selection_preferences(offered[1]))
+
+    assert 0 < after_hearing < after_choosing
+
+
+def test_auditioning_a_raaga_we_did_not_suggest_still_plays_it(app):
+    """Hearing a raaga is always allowed; only the learning needs to know
+    which brief it answers."""
+    _apply(app, **SAD)
+    _apply(app, situation="a wedding", mood="joyful", feel="bright and festive")
+    heard = app.audition_raaga("Shubhapantuvarali", play=False)
+    assert heard is not None and heard.raaga == "Shubhapantuvarali"
+    assert app.agent.selection_preferences("Shubhapantuvarali") == []
+
+
+def test_auditioning_without_a_raaga_says_so_rather_than_failing(app):
+    assert app.audition_raaga("no-such-raaga", play=False) is None
+
+
+@pytest.mark.ui
+def test_the_panel_can_play_the_scale(app, qt_app):
+    from raagacomposer.ui.panels.raaga_panel import RaagaPanel
+
+    _apply(app, **SAD)
+    panel = RaagaPanel(app)
+    panel.suggest()
+    panel.suggestions.setCurrentRow(0)
+    panel.audition_selected()
+    assert app._renders.get("audition") is not None
