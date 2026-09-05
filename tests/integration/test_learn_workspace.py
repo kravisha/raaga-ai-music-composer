@@ -150,7 +150,7 @@ def test_the_dashboard_owns_the_learner_controls(window):
 
     # Both are still reachable without the mouse.
     learn_menu = next(a.menu() for a in window.menuBar().actions()
-                      if a.text() == "&Learning")
+                      if a.text() == "&Learn")
     labels = [a.text() for a in learn_menu.actions()]
     assert "Stop learning" in labels
     assert "Start / pause learning" in labels

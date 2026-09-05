@@ -222,6 +222,19 @@ class MainWindow(QMainWindow):
         bar.addWidget(self.cancel_btn)
 
     def _build_menu(self) -> None:
+        """One menu bar, two vocabularies.
+
+        MAIN and LEARN are separate top-level workspaces (spec section 4),
+        and the menus below belong to MAIN: File is a *project's* file, Edit
+        is a project's undo stack, Compose makes a project's music.  LEARN
+        is not part of any project - everything it does benefits the agent
+        and touches only the knowledge store - so those menus are hidden
+        *and disabled* there.  Disabled matters as much as hidden: an
+        invisible menu's shortcuts still fire, and Ctrl+T should not
+        generate a tune while you are reading the agent's curriculum.
+
+        ``_apply_workspace_chrome`` does the swapping, from one place.
+        """
         menu = self.menuBar()
 
         file_menu = menu.addMenu("&File")
@@ -285,10 +298,12 @@ class MainWindow(QMainWindow):
         self._action(make_menu, "Render full mix", "Ctrl+M",
                      lambda: self.app.render("full"))
 
-        learn_menu = menu.addMenu("&Learning")
-        self._action(learn_menu, "Open the Learn workspace", None,
-                     lambda: self.set_workspace("LEARN"))
-        learn_menu.addSeparator()
+        # LEARN's own menu.  It replaces File / Edit / Compose rather than
+        # sitting beside them, so the agent's workspace never offers to save
+        # a project, undo a composition or render a mix - none of which it
+        # has.  Settings and Quit are repeated here because they are the
+        # application's, not a project's, and LEARN must still reach them.
+        learn_menu = menu.addMenu("&Learn")
         self._action(learn_menu, "Start / pause learning", "Ctrl+Shift+L",
                      self.agent_panel._toggle_learning)
         self._action(learn_menu, "Study one lesson now", None,
@@ -303,6 +318,12 @@ class MainWindow(QMainWindow):
                      self.agent_panel._choose_corpus)
         self._action(learn_menu, "What the agent knows", None,
                      self._show_knowledge)
+        learn_menu.addSeparator()
+        # Separate QAction objects from MAIN's, carrying the same shortcuts.
+        # Exactly one of the two copies is ever enabled, so the shortcut is
+        # never ambiguous - and Ctrl+, still opens Settings from LEARN.
+        self._action(learn_menu, "Settings...", "Ctrl+,", self._open_settings)
+        self._action(learn_menu, "Quit", QKeySequence.Quit, self.close)
 
         voice_menu = menu.addMenu("&Voice control")
         self._action(voice_menu, "Start / stop listening", "Ctrl+Space",
@@ -314,6 +335,17 @@ class MainWindow(QMainWindow):
         self._action(help_menu, "Voice command examples", None, self._show_help)
         self._action(help_menu, "Export diagnostics...", None, self._export_diagnostics)
         self._action(help_menu, "About", None, self._about)
+
+        # Which menus belong to which workspace.  View, Voice control and
+        # Help are the application's own and stay in both - the transport
+        # too, since an ear test may well need to play something.
+        self._main_menus = (file_menu, edit_menu, make_menu)
+        self._learn_menus = (learn_menu,)
+
+        # Built last but shown first, so Learn leads LEARN's bar the way
+        # File leads MAIN's.  MAIN's order is untouched: the menu it sits
+        # in front of is hidden there anyway.
+        menu.insertMenu(view_menu.menuAction(), learn_menu)
 
     def _action(self, menu, text: str, shortcut, slot) -> QAction:  # noqa: ANN001
         action = QAction(text, self)
@@ -368,8 +400,32 @@ class MainWindow(QMainWindow):
         self.learn_ws_action.setChecked(name == "LEARN")
         self.app.settings.extra["workspace"] = name
         self.app.settings.save()
+        self._apply_workspace_chrome(name)
         if name == "LEARN":
             self.learn_workspace.refresh()
+
+    def in_main(self) -> bool:
+        """True while the composer's own workspace is the one on screen."""
+        return self.workspaces.currentIndex() == 0
+
+    def _apply_workspace_chrome(self, name: str) -> None:
+        """Give each workspace only the menus that belong to it.
+
+        Hiding a menu is not enough on its own: the actions inside keep
+        their shortcuts, so a hidden Compose menu would still generate a
+        tune on Ctrl+T from the LEARN screen.  Each action is disabled as
+        well, which is what actually takes the shortcut away.
+        """
+        main = name == "MAIN"
+        for menus, mine in ((self._main_menus, main),
+                            (self._learn_menus, not main)):
+            for group in menus:
+                group.menuAction().setVisible(mine)
+                group.setEnabled(mine)
+                for action in group.actions():
+                    action.setEnabled(mine)
+        # Stage, duration and folder describe a project.  LEARN has none.
+        self.project_status_label.setVisible(main)
 
     def _open_settings(self) -> None:
         dialog = SettingsDialog(self.app, self)
@@ -489,8 +545,12 @@ class MainWindow(QMainWindow):
         self.arrangement.refresh()
         self.undo_action.setText(f"Undo {self.app.undo.undo_label()}".strip())
         self.redo_action.setText(f"Redo {self.app.undo.redo_label()}".strip())
-        self.undo_action.setEnabled(self.app.undo.can_undo)
-        self.redo_action.setEnabled(self.app.undo.can_redo)
+        # ``and self.in_main()`` because refresh runs on a timer: without it
+        # the next tick would quietly re-enable Undo while LEARN is showing,
+        # handing back the Ctrl+Z that the workspace swap just took away.
+        composing = self.in_main()
+        self.undo_action.setEnabled(self.app.undo.can_undo and composing)
+        self.redo_action.setEnabled(self.app.undo.can_redo and composing)
         # The song's name leads, the way a document's does: "Kaadhal - Raaga
         # AI Music Composer", with the unsaved mark beside the name it
         # belongs to.
