@@ -36,6 +36,13 @@ log = get_logger("agent.research")
 AUDIO_SUFFIXES = {".wav", ".flac", ".ogg", ".aiff", ".aif", ".mp3"}
 ANALYSIS_SR = analysis.DEFAULT_SR
 
+#: Providers whose audio the application rendered itself, from notes it
+#: chose: the raaga is a fact about that audio rather than a claim about
+#: it, so the swara naming may assume it.  Everything else - a file from
+#: the creator's folder, anything from the web - has to earn the label,
+#: which means being named freely and then judged (see ``ingest``).
+IN_RAAGA_BY_CONSTRUCTION = {"reference", "project"}
+
 
 @dataclass
 class SourceCandidate:
@@ -165,6 +172,41 @@ class LocalCorpusProvider(SourceProvider):
     def find(self, raaga: Raaga, goal: str, limit: int) -> List[SourceCandidate]:
         if not self.folder or not self.folder.exists():
             return []
+        listed = self._from_manifest(raaga, limit)
+        if listed is not None:
+            return listed
+        return self._by_name(raaga, limit)
+
+    def _from_manifest(self, raaga: Raaga,
+                       limit: int) -> Optional[List[SourceCandidate]]:
+        """What a manifest says, when the folder has one.
+
+        Returns ``None`` when there is no manifest, so the caller falls
+        back to matching on names.  An empty *list* is a real answer -
+        the manifest was read and nothing in it is this raaga - and must
+        not be confused with "no manifest".
+        """
+        from ..training import manifest as manifest_module
+
+        if manifest_module.find_manifest(self.folder) is None:
+            return None
+        candidates: List[SourceCandidate] = []
+        for entry in manifest_module.music_for(self.folder, raaga.name):
+            audio = entry.audio_path()
+            if audio is None:              # video not extracted yet
+                continue
+            candidates.append(SourceCandidate(
+                locator=str(audio), title=entry.path.stem, provider=self.name,
+                raaga=raaga.name, content_type="audio",
+                rights_status=self.rights_status, quality=0.8,
+                notes=entry.notes or f"from {self.folder}",
+                audio_loader=self._loader(audio)))
+            if len(candidates) >= limit:
+                break
+        return candidates
+
+    def _by_name(self, raaga: Raaga, limit: int) -> List[SourceCandidate]:
+        """The original rule: the raaga's name in the file or folder name."""
         wanted = raaga.name.lower()
         candidates: List[SourceCandidate] = []
         for path in sorted(self.folder.rglob("*")):
@@ -383,8 +425,32 @@ class ResearchAgent:
                 log.info("prepared %s: %s", candidate.title, prepared.summary())
 
         try:
+            # Whether the naming may assume the raaga depends on who made
+            # the audio.  ``_extract`` below rejects phrases containing
+            # swaras the raaga does not have, and that guard can only fire
+            # if the naming was free to land outside it.
+            #
+            # For material from outside, free naming is the whole point:
+            # the raaga is a *claim* about a downloaded file, and snapping
+            # every pitch inside it proves the claim by arithmetic.  On a
+            # real film mashup that let 416 notes of D2 and M1 through as
+            # Hamsadhwani, with the guard unable to say a word.
+            #
+            # For audio the application rendered itself from the library,
+            # the raaga is not a claim but a fact - we chose those notes -
+            # so constraining is right, and going free there would only
+            # throw away real phrases whenever the pitch tracker named a
+            # synthesised note as a neighbour a few cents away.
+            trusted = candidate.provider in IN_RAAGA_BY_CONSTRUCTION
             analysed = analysis.analyse(audio, sr, raaga, tonic_hint,
-                                        fixed_tonic_midi=fixed_tonic)
+                                        fixed_tonic_midi=fixed_tonic,
+                                        constrain_to_raaga=trusted)
+            if not trusted and raaga is not None:
+                # Named freely above, so a foreign note keeps a foreign
+                # name.  This gives back the raaga's own name to anything
+                # within a gamaka's reach of it, so ornament survives and
+                # only what is really outside stays outside.
+                analysis.relabel_within_raaga(analysed, raaga)
         except Exception as exc:  # noqa: BLE001
             self.repo.update_source(stored.id, status="failed", error=str(exc))
             result.error = f"analysis failed: {exc}"

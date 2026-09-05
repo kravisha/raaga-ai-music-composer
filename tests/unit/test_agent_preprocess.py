@@ -145,7 +145,12 @@ def test_a_lesson_keeps_the_singing_and_silences_the_talking():
 
     assert prepared.drone.found
     assert prepared.silenced_seconds > 3.0, "the talking should be silenced"
-    assert prepared.kept_seconds > 5.0, "the singing should survive"
+    # 4.5 rather than 5.0 of the 6 sung seconds: the fixture's singer now
+    # agrees with their own tanpura about Sa, so the sung Sa sits on the
+    # drone's own frequency and the notch takes a little more of it.  The
+    # assertion is "most of the singing survives", which is the claim; the
+    # exact figure moved for a reason that makes the fixture more honest.
+    assert prepared.kept_seconds > 4.5, "the singing should survive"
 
     def rms(start: float, end: float) -> float:
         block = prepared.audio[int(start * ANALYSIS_SR):int(end * ANALYSIS_SR)]

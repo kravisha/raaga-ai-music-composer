@@ -190,11 +190,19 @@ def lesson_signal(talk_seconds: float = 4.0, sung_seconds: float = 6.0,
 
     Returns (audio, sung_start, sung_end) so a test can say where the singing
     actually was.
+
+    The singing is built on ``sa_hz``, the drone's own Sa.  It used to take
+    ``sung_signal``'s default of 220 Hz while the drone sat at 261.63, three
+    semitones adrift, so that relative to its own tanpura the "Keeravani
+    lesson" sang G3 and D2 - two notes Keeravani does not contain.  Nothing
+    caught it, because the analysis was told the raaga and snapped every
+    pitch into it.  A singer and their drone agree about Sa; the fixture
+    now does too.
     """
     import numpy as np
 
     parts = [speech_signal(talk_seconds, sr=sr),
-             sung_signal(sung_seconds, sr=sr),
+             sung_signal(sung_seconds, base_hz=sa_hz, sr=sr),
              speech_signal(talk_seconds, sr=sr)]
     voice = np.concatenate(parts).astype(np.float32)
     mixed = 0.75 * voice + 0.55 * drone_signal(len(voice) / sr, sa_hz, sr)

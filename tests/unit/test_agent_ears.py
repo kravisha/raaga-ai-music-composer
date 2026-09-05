@@ -222,6 +222,74 @@ def test_a_file_can_be_analysed(tmp_path, raagas):
     assert result.version == analysis.ANALYSIS_VERSION
 
 
+# --------------------------------------------------------------------------
+# naming a pitch must not assume the answer
+# --------------------------------------------------------------------------
+def test_naming_constrained_to_a_raaga_cannot_hear_a_foreign_note(raagas):
+    """Play a note the raaga does not contain, and it is renamed silently.
+
+    This is the behaviour the ingestion path must not rely on: with the
+    raaga passed, nearest_swara can only answer from that raaga's swaras.
+    """
+    hamsadhwani = raagas.require("Hamsadhwani")   # S R2 G3 P N3, no M1
+    keeravani = raagas.require("Keeravani")       # has M1
+    audio = render(keeravani, ["M1", "M1", "M1"], TONIC)
+
+    snapped = analysis.analyse(audio, SR, hamsadhwani,
+                               fixed_tonic_midi=float(TONIC))
+    heard = {n.swara.rstrip("+-") for n in snapped.notes}
+    assert "M1" not in heard, "the constrained naming should not emit M1"
+    assert heard <= {"S", "R2", "G3", "P", "N3"}
+
+
+def test_free_naming_hears_the_foreign_note_for_what_it_is(raagas):
+    """The same audio, analysed free, keeps M1 - so a guard can reject it."""
+    hamsadhwani = raagas.require("Hamsadhwani")
+    keeravani = raagas.require("Keeravani")
+    audio = render(keeravani, ["M1", "M1", "M1"], TONIC)
+
+    free = analysis.analyse(audio, SR, hamsadhwani, fixed_tonic_midi=float(TONIC),
+                            constrain_to_raaga=False)
+    heard = {n.swara.rstrip("+-") for n in free.notes}
+    assert "M1" in heard, "free naming must be able to say 'not in this raaga'"
+
+
+def test_a_bent_note_keeps_the_raagas_name_but_a_foreign_one_does_not(raagas):
+    """The middle ground the ingestion path relies on.
+
+    Free naming is honest about foreign notes and brutal about ornament: a
+    gamaka swings past a quarter tone, so a bent G3 gets called M1 and its
+    phrase is discarded.  Re-labelling within a gamaka's reach keeps the
+    ornament and still refuses a note that is really outside.
+    """
+    hamsadhwani = raagas.require("Hamsadhwani")   # S R2 G3 P N3
+    tonic = float(TONIC)
+
+    result = analysis.AnalysisResult(tonic_midi=tonic)
+    result.notes = [
+        # G3 is 4 semitones up; 60 cents sharp of it is a bent G3 ...
+        analysis.AnalysedNote(start=0.0, duration=0.4, midi=tonic + 4.6),
+        # ... while M1, a full semitone above G3, is not in this raaga.
+        analysis.AnalysedNote(start=0.5, duration=0.4, midi=tonic + 5.0),
+    ]
+    for note in result.notes:
+        note.swara, note.cents_deviation = analysis.nearest_swara(
+            note.midi, tonic)                       # free naming, all twelve
+    assert [n.swara for n in result.notes] == ["M1", "M1"]
+
+    analysis.relabel_within_raaga(result, hamsadhwani)
+    assert result.notes[0].swara == "G3", "a bent G3 should stay a G3"
+    assert result.notes[1].swara == "M1", "a real M1 must stay foreign"
+
+
+def test_the_tonic_help_survives_free_naming(raagas):
+    """Only the naming goes free; the raaga still helps locate Sa."""
+    raaga = raagas.require("Keeravani")
+    audio = render(raaga, ["S", "R2", "G2", "M1", "P", "M1", "G2", "S"], 60)
+    free = analysis.analyse(audio, SR, raaga, constrain_to_raaga=False)
+    assert free.tonic_midi == pytest.approx(60, abs=1.0)
+
+
 def test_resampling_preserves_the_pitch():
     t = np.arange(SR) / SR
     audio = (0.5 * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
