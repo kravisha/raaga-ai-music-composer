@@ -197,6 +197,8 @@ class RagaStudent:
         skill_type = payload.get("skill_type", "generate.pattern")
         params = dict(payload.get("params", {}))
 
+        if skill_type.endswith(".stated"):
+            return self._perform_stated(raaga, skill_type, params)
         if skill_type == "explain":
             return self._perform_explain(raaga, params)
 
@@ -276,6 +278,48 @@ class RagaStudent:
                 evidence.append(f"{key}: {fact.value}")
         return Performance(output=output, claim=output, confidence=confidence,
                            evidence=evidence, payload={})
+
+    def _perform_stated(self, raaga: str, skill_type: str,
+                        params: dict) -> Performance:
+        """Answer a question about something a source taught.
+
+        From the knowledge base, deliberately - not from the lesson.  The
+        lesson is what the source said and is the thing being graded against;
+        answering out of it would be reading the answer back rather than
+        showing what was retained.
+
+        A concept name like ``arohanam:Keeravani`` says which fact is being
+        asked about, so the agent recalls that fact if it kept it and says
+        plainly that it did not if it has nothing.
+        """
+        concept = str(params.get("concept", ""))
+        topic = concept.split(":")[0] if concept else ""
+        keys = [topic] if topic and topic != "general" else \
+            self._fact_keys(None, raaga)
+
+        remembered: List[str] = []
+        evidence: List[str] = [f"raaga: {raaga}", f"concept: {concept}"]
+        for key in keys:
+            fact = self.agent.repo.best_fact(raaga, key)
+            if fact is not None:
+                remembered.append(f"{key} {fact.value}")
+                evidence.append(f"{key}: {fact.value}")
+
+        if skill_type == "explain.stated" and remembered:
+            output = "; ".join(
+                f"{MEANINGS.get(key, key)}: {value}"
+                for key, value in ((k, self.agent.repo.best_fact(raaga, k).value)
+                                   for k in keys
+                                   if self.agent.repo.best_fact(raaga, k)))
+        else:
+            output = " ".join(remembered)
+
+        if not output:
+            output = f"I did not keep anything about {topic or concept}."
+        confidence = knowledge_confidence(self.agent.repo, raaga)["overall"]
+        return Performance(output=output, claim=output,
+                           confidence=round(confidence, 3), evidence=evidence,
+                           payload={})
 
     # ------------------------------------------------------------------
     # correction

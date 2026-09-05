@@ -54,7 +54,12 @@ DASHBOARD_FIELDS = [
 EXERCISE_COLUMNS = ("Exercise", "Score", "Pass threshold", "Result", "Detail")
 LESSON_COLUMNS = ("Mistake", "Times", "Last seen", "Correction")
 FINDINGS_COLUMNS = ("When", "Unit / task", "Mistake", "Correction")
-MASTERY_COLUMNS = ("Concept", "Level", "Evidence", "Next test")
+#: "Taught by" separates what the agent was told from what it worked
+#: out by practising.  A concept learned from a transcript can reach
+#: "can explain" and no further, and the creator should be able to
+#: see which kind of knowing a level represents rather than infer it.
+MASTERY_COLUMNS = ("Concept", "Taught by", "Level", "Evidence",
+                   "Next test")
 TESTS_COLUMNS = ("When", "Level", "Split", "Novelty", "Result", "Failure mode")
 COMPOSITION_COLUMNS = ("When", "Raaga", "Score", "Rewrites", "Quoted phrases",
                       "Feedback")
@@ -483,11 +488,20 @@ class LearnWorkspace(QWidget):
             profile = self.app.agent.profile()
 
             from raagacomposer.factory.mastery import next_test_level
+            from raagacomposer.training.lessons import is_stated
+
+            # Which concepts came from something somebody said, rather than
+            # from the curriculum the agent practises.
+            stated = {lesson.concept for lesson
+                      in store.lessons(domain="carnatic-music")
+                      if is_stated(lesson)}
             table = store.mastery_table(profile.id)
             self.mastery_table.setRowCount(len(table))
             for row, concept in enumerate(sorted(table)):
                 record = table[concept]
-                values = (concept, record.level.label, str(len(record.evidence)),
+                taught_by = "a source (stated)" if concept in stated                     else "practice"
+                values = (concept, taught_by, record.level.label,
+                         str(len(record.evidence)),
                          next_test_level(record).label)
                 for column, value in enumerate(values):
                     item = QTableWidgetItem(str(value))
