@@ -22,7 +22,7 @@ Code comments retain their original section numbers on purpose: rewriting every 
 | section 12.2 | Master Spec v0.2 | raagacomposer/app.py:1 | Application controller as single point of project state change | 1, 64 |
 | section 12.33 | Master Spec v0.2 | raagacomposer/core/settings.py:1 | Settings and credential management | 42, 55 |
 | section 14 | Master Spec v0.2 | raagacomposer/ui/main_window.py:1 | Main desktop window | 4 |
-| section 14A | Master Spec v0.2 | raagacomposer/ui/panels/project_panel.py:1 | Project header panel | 4.1 |
+| section 14A | Master Spec v0.2 | raagacomposer/ui/main_window.py:227 | Project actions (File menu) | 4.1, 4.3 |
 | section 14B | Master Spec v0.2 | raagacomposer/ui/panels/brief_panel.py:1 | Creative brief panel | 5, 6 |
 | section 14C | Master Spec v0.2 | raagacomposer/ui/panels/raaga_panel.py:1 | Raaga panel | 7 |
 | section 14E | Master Spec v0.2 | raagacomposer/ui/panels/lyrics_panel.py:1 | Lyrics panel | 9 |
@@ -71,7 +71,7 @@ Code comments retain their original section numbers on purpose: rewriting every 
 | 3.2 | Python | (foundational) | raagacomposer/app.py, entire package |
 | 3.3 | Packaging | (foundational) | packaging/ |
 | 4 | Top-Level UI Architecture | Master Spec v0.2 section 14 | raagacomposer/ui/main_window.py |
-| 4.1 | Main Workspace | Master Spec v0.2 section 14A | raagacomposer/ui/main_window.py, raagacomposer/ui/panels/project_panel.py |
+| 4.1 | Main Workspace | Master Spec v0.2 section 14A | raagacomposer/ui/main_window.py |
 | 4.2 | Learn Workspace | Learning spec section 17 | raagacomposer/ui/panels/agent_panel.py |
 | 4.3 | Menu Bar | (foundational; no explicit old reference) | raagacomposer/ui/main_window.py |
 | 5 | Main Workspace - Creative Brief | Master Spec v0.2 section 14B | raagacomposer/ui/panels/brief_panel.py |

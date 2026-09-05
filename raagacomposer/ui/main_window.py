@@ -16,9 +16,9 @@ from PySide6.QtGui import QAction, QActionGroup, QKeySequence
 from PySide6.QtWidgets import (QApplication, QButtonGroup, QDockWidget,
                                QFileDialog, QHBoxLayout, QLabel, QMainWindow,
                                QMessageBox, QProgressBar, QPushButton,
-                               QScrollArea, QSlider, QSplitter, QStackedWidget,
-                               QStatusBar, QTabWidget, QToolBar, QToolButton,
-                               QVBoxLayout, QWidget)
+                               QScrollArea, QSizePolicy, QSlider, QSplitter,
+                               QStackedWidget, QStatusBar, QTabWidget, QToolBar,
+                               QToolButton, QVBoxLayout, QWidget)
 
 from ..app import AppController
 from ..core.logging_setup import get_logger
@@ -32,7 +32,6 @@ from .panels.brief_panel import BriefPanel
 from .panels.conversation_panel import ConversationPanel
 from .panels.lyrics_panel import LyricsPanel
 from .panels.output_panel import OutputPanel
-from .panels.project_panel import ProjectPanel
 from .panels.raaga_panel import RaagaPanel
 from .panels.tune_panel import TunePanel
 from .panels.voice_panel import VoicePanel
@@ -81,12 +80,6 @@ class MainWindow(QMainWindow):
     # construction
     # ==================================================================
     def _build_panels(self) -> None:
-        self.project_panel = ProjectPanel(self.app)
-        self.project_panel.newRequested.connect(self.new_project)
-        self.project_panel.openRequested.connect(self.open_project)
-        self.project_panel.openPathRequested.connect(self._open_path)
-        self.project_panel.saveRequested.connect(self.save_project)
-        self.project_panel.saveAsRequested.connect(self.save_project_as)
 
         self.brief_panel = BriefPanel(self.app)
         self.raaga_panel = RaagaPanel(self.app)
@@ -96,7 +89,6 @@ class MainWindow(QMainWindow):
         left = QWidget()
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(6, 6, 6, 6)
-        left_layout.addWidget(self.project_panel)
         left_layout.addWidget(self.brief_panel)
         left_layout.addWidget(self.raaga_panel)
         left_layout.addStretch(1)
@@ -235,6 +227,10 @@ class MainWindow(QMainWindow):
         file_menu = menu.addMenu("&File")
         self._action(file_menu, "New project", QKeySequence.New, self.new_project)
         self._action(file_menu, "Open project...", QKeySequence.Open, self.open_project)
+        # Where every other application keeps it, rather than a dropdown in
+        # a panel taking 179px off the top of the composing column.
+        self.recent_menu = file_menu.addMenu("Open &Recent")
+        self.recent_menu.aboutToShow.connect(self._fill_recent_menu)
         self._action(file_menu, "Save", QKeySequence.Save, self.save_project)
         self._action(file_menu, "Save As...", QKeySequence.SaveAs, self.save_project_as)
         file_menu.addSeparator()
@@ -335,6 +331,18 @@ class MainWindow(QMainWindow):
         self.provider_settings_btn = QPushButton("Settings")
         self.provider_settings_btn.setFlat(True)
         self.provider_settings_btn.clicked.connect(self._open_settings)
+        self.project_status_label = QLabel("")
+        self.project_status_label.setObjectName("hint")
+        # A permanent status widget that sizes to its text drags the whole
+        # window's minimum width along with it - this one cost 226px before
+        # it was made to shrink, which is the opposite of the point of
+        # moving the project header off the left column.  Ignored means the
+        # status bar may squeeze it to nothing when space is short; the full
+        # path is in the tooltip either way.
+        self.project_status_label.setSizePolicy(QSizePolicy.Ignored,
+                                                QSizePolicy.Preferred)
+        self.project_status_label.setMaximumWidth(320)
+        self.statusBar().addPermanentWidget(self.project_status_label)
         self.statusBar().addPermanentWidget(self.provider_status_label)
         self.statusBar().addPermanentWidget(self.provider_settings_btn)
 
@@ -419,7 +427,7 @@ class MainWindow(QMainWindow):
 
     def save_project_as(self) -> None:
         directory = QFileDialog.getExistingDirectory(
-            self, "Save project as (choose an empty folder)",
+            self, "Save song as (choose or name a folder)",
             str(self.app.store.projects_dir))
         if directory:
             self.app.save_as(Path(directory))
@@ -468,7 +476,6 @@ class MainWindow(QMainWindow):
     # refresh and messages
     # ==================================================================
     def refresh(self) -> None:
-        self.project_panel.refresh()
         self.brief_panel.refresh()
         self.raaga_panel.refresh()
         self.tune.refresh()
@@ -482,8 +489,39 @@ class MainWindow(QMainWindow):
         self.redo_action.setText(f"Redo {self.app.undo.redo_label()}".strip())
         self.undo_action.setEnabled(self.app.undo.can_undo)
         self.redo_action.setEnabled(self.app.undo.can_redo)
+        # The song's name leads, the way a document's does: "Kaadhal - Raaga
+        # AI Music Composer", with the unsaved mark beside the name it
+        # belongs to.
         title = self.app.project.title + (" *" if self.app.dirty else "")
-        self.setWindowTitle(f"Raaga AI Music Composer - {title}")
+        self.setWindowTitle(f"{title} - Raaga AI Music Composer")
+        project = self.app.project
+        # The folder's name is the useful part on screen; the whole path is
+        # a tooltip away for anyone who needs it.
+        directory = self.app.project_dir
+        self.project_status_label.setText(
+            f"{project.current_stage.value} - "
+            f"{project.brief.duration_target:.0f}s - "
+            f"{directory.name if directory else 'not saved yet'}")
+        self.project_status_label.setToolTip(
+            str(directory) if directory else "This song has not been saved yet")
+
+    def _fill_recent_menu(self) -> None:
+        """Rebuilt each time it opens, so it is never stale."""
+        self.recent_menu.clear()
+        try:
+            entries = self.app.recent_projects()
+        except Exception as exc:  # noqa: BLE001 - a menu is never worth a crash
+            log.warning("could not list recent projects: %s", exc)
+            entries = []
+        if not entries:
+            empty = self.recent_menu.addAction("Nothing opened yet")
+            empty.setEnabled(False)
+            return
+        for entry in entries[:10]:
+            path = str(entry.get("path", ""))
+            label = str(entry.get("title", "")) or Path(path).name
+            action = self.recent_menu.addAction(f"{label}    {path}")
+            action.triggered.connect(lambda _=False, p=path: self._open_path(p))
 
     def _status_message(self, text: str) -> None:
         self.statusBar().showMessage(text, 12000)
