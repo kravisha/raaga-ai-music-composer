@@ -40,6 +40,15 @@ class CaptureState:
     error: str = ""
     backend: str = ""
     device: str = ""
+    #: What the microphone is doing, in the creator's terms rather than the
+    #: implementation's.  Voice was the one part of the application that
+    #: gave no sign of what it was doing: you pressed a button, spoke, and
+    #: either something happened or nothing did.  One of ``off``, ``ready``,
+    #: ``listening``, ``hearing``, ``thinking``, ``done``, ``error``.
+    phase: str = "off"
+    #: The last thing it understood, so a creator can see whether it heard
+    #: them correctly before blaming the command.
+    heard: str = ""
 
 
 class VoiceInputManager:
@@ -77,6 +86,7 @@ class VoiceInputManager:
             return True
         if not self.available:
             self.state.error = "No microphone backend is available."
+            self.state.phase = "error"
             self._notify()
             return False
         try:
@@ -87,6 +97,7 @@ class VoiceInputManager:
             self._stream.start()
         except Exception as exc:  # noqa: BLE001
             self.state.error = f"Microphone error: {exc}"
+            self.state.phase = "error"
             log.error(self.state.error)
             self._stream = None
             self._notify()
@@ -98,6 +109,8 @@ class VoiceInputManager:
         self._thread.start()
         self.state.listening = True
         self.state.error = ""
+        self.state.phase = "listening"
+        self.state.heard = ""
         self.state.device = str(self.settings.mic_device or "default")
         log.info("listening (backend=%s)", self.adapter.name)
         self._notify()
@@ -161,6 +174,7 @@ class VoiceInputManager:
                 self._utterance.append(chunk)
                 if not self.state.speaking and self._speech_blocks >= 2:
                     self.state.speaking = True
+                    self.state.phase = "hearing"
                     self._announced_barge_in = False
                     self._notify()
                 # Barge-in fires as soon as speech is confidently detected.
@@ -189,6 +203,7 @@ class VoiceInputManager:
         audio = np.concatenate(self._utterance) if self._utterance else None
         self._utterance.clear()
         self.state.speaking = False
+        self.state.phase = "thinking" if audio is not None else "listening"
         self._speech_blocks = 0
         self._silence_blocks = 0
         self._notify()
@@ -210,6 +225,9 @@ class VoiceInputManager:
         if not text:
             return
         log.info("heard: %s", text)
+        self.state.heard = text
+        self.state.phase = "done"
+        self._notify()
         if self.on_final:
             self._safe(self.on_final, text)
 
@@ -230,13 +248,29 @@ class VoiceInputManager:
         except Exception:  # noqa: BLE001
             log.debug("capture callback failed", exc_info=True)
 
+    #: What each phase says on screen.  Section 15 of the next-phase
+    #: specification asks for the microphone's state to be visible rather
+    #: than guessed at from whether anything happened.
+    PHASE_TEXT = {
+        "off": "Microphone off",
+        "listening": "Listening",
+        "hearing": "Hearing you",
+        "thinking": "Working out what you said",
+        "done": "Heard",
+        "error": "Microphone problem",
+    }
+
     def status_text(self) -> str:
         if self.state.error:
             return self.state.error
         if not self.state.listening:
             return f"Microphone off - {self.adapter.status()}"
-        return ("Listening (speaking)" if self.state.speaking
-                else f"Listening - {self.adapter.status()}")
+        phase = self.PHASE_TEXT.get(self.state.phase, "Listening")
+        if self.state.phase == "done" and self.state.heard:
+            return f'Heard: "{self.state.heard}"'
+        if self.state.phase == "listening":
+            return f"Listening - {self.adapter.status()}"
+        return phase
 
     def close(self) -> None:
         self.stop()

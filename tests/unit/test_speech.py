@@ -330,3 +330,35 @@ def test_resampling_changes_length_not_shape():
 def test_transcript_dataclass_defaults():
     t = Transcript("play the end")
     assert t.final and t.confidence == 1.0
+
+
+# --------------------------------------------------------------------------
+# what the microphone is doing, visibly
+# --------------------------------------------------------------------------
+def test_the_microphone_says_what_it_is_doing():
+    """Voice gave no sign of its state: you spoke, and either something
+    happened or nothing did.  Section 15 asks for the phases to be visible."""
+    from raagacomposer.speech.capture import CaptureState, VoiceInputManager
+
+    manager = VoiceInputManager.__new__(VoiceInputManager)
+    manager.state = CaptureState(backend="typed")
+    manager.adapter = TypedSTT()
+
+    assert "off" in manager.status_text().lower()
+
+    manager.state.listening = True
+    manager.state.phase = "listening"
+    assert "listening" in manager.status_text().lower()
+
+    manager.state.phase = "hearing"
+    assert "hearing" in manager.status_text().lower()
+
+    manager.state.phase = "thinking"
+    assert manager.status_text() == "Working out what you said"
+
+    manager.state.phase = "done"
+    manager.state.heard = "generate a tune"
+    assert "generate a tune" in manager.status_text()
+
+    manager.state.error = "Microphone error: no such device"
+    assert manager.status_text() == "Microphone error: no such device"
