@@ -385,10 +385,21 @@ class AppController:
         return path
 
     def save_as(self, directory: Path) -> Path:
+        """Save under a new name - which is also how a song is renamed.
+
+        The folder the creator picks *is* the name, the way Save As names a
+        document anywhere else, so there is no separate rename and no name
+        field on screen.  The song and the project share the one name.
+        """
         target = self.store.save_as(self.project, self.project_dir, Path(directory))
         self.project_dir = target
+        chosen = Path(directory).name.strip()
+        if chosen and chosen != self.project.title:
+            self.project.title = chosen
+            self.project.brief.title = chosen
+            self.store.save(self.project, target)
         self.dirty = False
-        self.status(f"Saved a copy to {target}")
+        self.status(f"Saved as {self.project.title}")
         if self.on_project_changed:
             self.on_project_changed()
         return target
@@ -898,6 +909,27 @@ class AppController:
         self._changed("raaga.reject", detail)
         return correction
 
+    def tune_instrument(self):
+        """Which instrument the tune and the audition are heard on.
+
+        The creative brief already has a "Prefer" field, and until now
+        nothing read it: the tune was rendered on a hardcoded veena whatever
+        the creator asked for.  So the brief decides, then the setting, then
+        the veena that used to be the only answer.
+
+        Only an instrument that can carry a lead is taken from the brief - a
+        mridangam listed under "prefer" is a real preference about the
+        arrangement and not an offer to play the melody on it.
+        """
+        for name in self.project.brief.instruments_preferred:
+            instrument = catalog.get(str(name).strip())
+            if instrument is not None and "lead" in instrument.roles:
+                return instrument
+        configured = catalog.get(getattr(self.settings, "tune_instrument", ""))
+        if configured is not None and "lead" in configured.roles:
+            return configured
+        return catalog.get("veena") or catalog.all_instruments()[0]
+
     def audition_raaga(self, name: str = "", play: bool = True):
         """Play a raaga's exact arohanam and avarohanam (pack section 7).
 
@@ -926,7 +958,7 @@ class AppController:
                        f"avarohanam is missing from the library.")
             return plan
 
-        instrument = catalog.get("veena") or catalog.get("flute")
+        instrument = self.tune_instrument()
         audio = render_notes(plan.notes, instrument, self.sample_rate,
                              total_seconds=plan.seconds)
         self._cache_render("audition", audio)
@@ -1805,7 +1837,7 @@ class AppController:
         def work(ctx: JobContext) -> Tuple[str, np.ndarray, dict]:
             if kind == "tune":
                 ctx.progress(0.2, "Sounding the tune")
-                inst = catalog.get("veena") or catalog.all_instruments()[0]
+                inst = self.tune_instrument()
                 audio = provider.render_part(melody.notes, inst.key, sr,
                                              total_seconds=total, seed=melody.seed)
                 from .audio import dsp

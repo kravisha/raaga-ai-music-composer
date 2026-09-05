@@ -126,6 +126,10 @@ class Settings:
     llm_local_timeout: float = 180.0
     llm_refresh_seconds: float = 30.0   # how often to notice a key being added
     stt_provider: str = "auto"          # auto | none | vosk | whisper
+    #: What the tune and the audition are heard on when the brief does
+    #: not name a lead instrument.  Any catalog key with a "lead"
+    #: role: veena, violin, flute, sitar, sarod, santoor, piano...
+    tune_instrument: str = "veena"
     music_provider: str = "local"
     voice_provider: str = "local"
     sample_rate: int = 44100

@@ -32,6 +32,10 @@ class BriefPanel(QGroupBox):
         super().__init__("Creative brief", parent)
         self.app = app
 
+        # The song's name lives in the window title bar, the way a document's
+        # does in any other application, and is changed from File > Rename.
+        # The widget stays so the value still round-trips through apply() and
+        # refresh(); it is simply never shown.
         self.title = QLineEdit()
         self.title.setPlaceholderText("Song title")
         self.situation = QLineEdit()
@@ -66,18 +70,34 @@ class BriefPanel(QGroupBox):
         self.notes.setPlaceholderText("Anything else")
         self.notes.setFixedHeight(46)
 
+        # The four fields that decide the music, always visible.  Eleven
+        # stacked fields pushed the Raaga panel 204px below the fold on a
+        # 1500x950 window, so the controls added most recently were the ones
+        # you had to scroll to reach.  The rest are the same fields, one
+        # click away, and nothing is removed.
         form = QFormLayout()
-        form.addRow("Title", self.title)
         form.addRow("Situation", self.situation)
         form.addRow("Mood", self.mood)
         form.addRow("Feel", self.feel)
         form.addRow("Language", self.language)
-        form.addRow("Song type", self.song_type)
-        form.addRow("Target length", self.duration)
-        form.addRow("Tempo", self.tempo)
-        form.addRow("Prefer", self.prefer)
-        form.addRow("Avoid", self.avoid)
-        form.addRow("Notes", self.notes)
+
+        more_form = QFormLayout()
+        more_form.setContentsMargins(0, 0, 0, 0)
+        more_form.addRow("Song type", self.song_type)
+        more_form.addRow("Target length", self.duration)
+        more_form.addRow("Tempo", self.tempo)
+        more_form.addRow("Prefer", self.prefer)
+        more_form.addRow("Avoid", self.avoid)
+        more_form.addRow("Notes", self.notes)
+
+        self.more = QWidget()
+        self.more.setLayout(more_form)
+        self.more.setVisible(False)
+
+        self.more_btn = QPushButton("More details")
+        self.more_btn.setCheckable(True)
+        self.more_btn.setFlat(True)
+        self.more_btn.toggled.connect(self._toggle_more)
 
         apply_btn = QPushButton("Apply brief")
         apply_btn.setObjectName("primary")
@@ -90,6 +110,8 @@ class BriefPanel(QGroupBox):
         container.setLayout(form)
         layout = QVBoxLayout(self)
         layout.addWidget(container)
+        layout.addWidget(self.more_btn)
+        layout.addWidget(self.more)
         layout.addWidget(apply_btn)
         layout.addWidget(self.status_label)
         self.refresh()
@@ -104,6 +126,10 @@ class BriefPanel(QGroupBox):
             self._show_action_status(status)
 
         self.app.on_action = _on_action
+
+    def _toggle_more(self, shown: bool) -> None:
+        self.more.setVisible(shown)
+        self.more_btn.setText("Fewer details" if shown else "More details")
 
     def apply(self) -> None:
         self.app.apply_brief(

@@ -89,8 +89,10 @@ def _shot(window: MainWindow, name: str) -> Path:
 # construction
 # --------------------------------------------------------------------------
 def test_the_window_builds_with_every_panel(window):
-    assert window.windowTitle().startswith("Raaga AI Music Composer")
-    for panel in (window.project_panel, window.brief_panel, window.raaga_panel,
+    # The song's name leads the title bar, the way a document's does.
+    assert window.windowTitle().endswith("Raaga AI Music Composer")
+    assert window.app.project.title in window.windowTitle()
+    for panel in (window.brief_panel, window.raaga_panel,
                   window.tune, window.lyrics, window.voice, window.output,
                   window.arrangement, window.conversation, window.agent_panel,
                   window.training_panel, window.learn_workspace):
@@ -111,6 +113,38 @@ def test_the_transport_and_menus_exist(window):
     assert window.play_btn.text() == "Play"
     titles = [a.text() for a in window.menuBar().actions()]
     assert "&File" in titles and "&Compose" in titles
+
+
+def test_project_management_lives_in_the_file_menu(window):
+    """The Project panel was removed from the left column on purpose.
+
+    It was the tallest thing there, and it pushed the creative controls
+    below the fold.  New / Open / Save / Save As / Recent belong in File,
+    where every other application keeps them, so the space they used goes
+    back to the work.
+    """
+    assert not hasattr(window, "project_panel")
+    file_menu = next(a.menu() for a in window.menuBar().actions()
+                     if a.text() == "&File")
+    labels = [a.text() for a in file_menu.actions()]
+    for wanted in ("New project", "Open project...", "Save", "Save As..."):
+        assert wanted in labels, f"{wanted} is not in the File menu"
+    assert any(a.menu() is window.recent_menu for a in file_menu.actions())
+
+
+def test_the_left_column_fits_the_window(window):
+    """The point of the reorganisation: no controls cut off below the fold."""
+    left = window.brief_panel.parentWidget()
+    tall = sum(w.sizeHint().height()
+               for w in (window.brief_panel, window.raaga_panel))
+    assert left is window.raaga_panel.parentWidget()
+    assert tall <= 900, f"the left column wants {tall}px and will be cut off"
+
+
+def test_the_song_name_is_not_editable_on_screen(window):
+    """Renaming happens through Save As, so no stray name field on screen."""
+    assert window.brief_panel.title.parentWidget() is None
+    assert not window.brief_panel.title.isVisible()
 
 
 def test_an_empty_project_renders(window, qt_app):

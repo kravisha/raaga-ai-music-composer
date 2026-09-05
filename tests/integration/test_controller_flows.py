@@ -347,3 +347,36 @@ def test_exports_write_real_files(ready, settle, tmp_path):
 def test_exporting_something_unrendered_is_reported_not_crashed(ready, tmp_path):
     assert ready.export(tmp_path / "nothing.wav", "instrumental") is None
     assert "Render" in ready.status_text
+
+
+# --------------------------------------------------------------------------
+# the brief chooses the instrument, and Save As names the song
+# --------------------------------------------------------------------------
+def test_the_brief_decides_which_instrument_the_tune_is_heard_on(app):
+    """The brief's "Prefer" field was written and never read.
+
+    The tune and the audition were rendered on a hardcoded veena whatever
+    the creator asked for, which is why a violinist kept hearing a veena.
+    """
+    assert app.tune_instrument().name.lower() == "veena"   # the old default
+    app.update_brief(instruments_preferred=["violin"])
+    assert app.tune_instrument().name.lower() == "violin"
+
+
+def test_a_percussion_preference_does_not_take_over_the_melody(app):
+    """"Prefer mridangam" is about the arrangement, not the lead line."""
+    app.update_brief(instruments_preferred=["mridangam"])
+    assert "lead" in app.tune_instrument().roles
+
+
+def test_save_as_is_how_a_song_is_renamed(app, tmp_path):
+    """There is no name field on screen; the folder you choose is the name."""
+    app.new_project("Untitled Song")
+    app.save_as(tmp_path / "Kaadhal Tholvi")
+    assert app.project.title == "Kaadhal Tholvi"
+    assert app.project.brief.title == "Kaadhal Tholvi"
+    assert not app.dirty
+
+    # and it survives the round trip to disk
+    reopened = app.store.open(app.project_dir)
+    assert reopened.title == "Kaadhal Tholvi"
