@@ -86,6 +86,64 @@ def clamp_token(raaga: Raaga, token: str, tonic: int, low: int, high: int) -> st
     return base + _oct_marks(octave)
 
 
+def enforce_direction(raaga: Raaga, notes: List[Note], tonic: int) -> int:
+    """Make every move legal in the direction it actually travels.
+
+    The generator walks in scale-degree space, taking each next note from the
+    ascending or descending ladder as the phrase requires.  Two things then
+    happen to that walk which know nothing about direction: octaves are
+    placed to fit a register, and phrases are joined into a section.  Either
+    can turn a legal descending step into an ascending leap - the note is
+    unchanged, the motion is reversed - and in a raaga whose arohanam and
+    avarohanam differ, rising onto a descent-only note is wrong.  Measured on
+    the library's four asymmetric raagas, that happened on 4 to 42 moves in
+    735, in as many as 16 of 20 seeds.
+
+    In a raaga whose two ladders hold the same swaras no motion can be
+    illegal, so nothing is touched and the line is bit-for-bit what the walk
+    produced.  That is also why this went unnoticed: everything was measured
+    on Keeravani, which is one of those.
+
+    A note that breaks its move is replaced by the nearest pitch that does
+    not, keeping the direction of travel.  Nothing further than a fifth away
+    is substituted - past that the repair would be a worse artefact than the
+    fault - and the evaluator still reports what is left.  Returns the number
+    of notes changed.
+    """
+    if not notes:
+        return 0
+    ascending = set(raaga.ascending)
+    descending = set(raaga.descending)
+    if ascending == descending:
+        return 0
+
+    repaired = 0
+    for i in range(1, len(notes)):
+        previous, current = notes[i - 1], notes[i]
+        if current.midi == previous.midi:
+            continue
+        rising = current.midi > previous.midi
+        allowed = ascending if rising else descending
+        if parse_swara(current.swara)[0] in allowed:
+            continue
+
+        best, best_gap = None, None
+        for swara in sorted(allowed):
+            for octave in range(-3, 4):
+                token = _with_octave(swara, octave)
+                midi = token_midi(raaga, token, tonic)
+                if midi == previous.midi or (midi > previous.midi) != rising:
+                    continue
+                gap = abs(midi - current.midi)
+                if best_gap is None or gap < best_gap:
+                    best, best_gap = (token, midi), gap
+        if best is None or best_gap > 7:
+            continue
+        current.swara, current.midi = best[0], best[1]
+        repaired += 1
+    return repaired
+
+
 def _oct_marks(octave: int) -> str:
     if octave > 0:
         return "+" * octave
@@ -446,6 +504,10 @@ def generate(raaga: Raaga, opts: MelodyOptions,
                                      "end": entry_dict["end"] + offset})
         if notes:
             entry = notes[-1].swara
+    # Last, on the whole line: the direction of a move is only finally known
+    # once octaves are placed and the sections are joined, and it is the
+    # direction that decides whether a note is allowed (see enforce_direction).
+    enforce_direction(raaga, melody.notes, opts.tonic_midi)
     return melody
 
 

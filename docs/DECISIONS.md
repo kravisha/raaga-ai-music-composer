@@ -999,6 +999,65 @@ Harmless while one local model was ever configured; wrong the moment the
 tiers put two tags of one family side by side. A bare name still means
 `:latest` on both sides.
 
+## Evaluator calibration
+
+Added 2026-09-05, `docs/PLAN_learning_loop.md` item 5. The plan sent me to
+reconcile authenticity against originality and to find why nothing moves
+interest. Measuring first, as the plan insists, found something else.
+
+**We were measuring the composer on the easiest raaga available.** The
+harness only ever measured Keeravani, which is *sampurna*: its arohanam and
+avarohanam hold the same seven swaras, so no move can break the ascent or
+descent rule and `raaga_correctness` reads 1.000 whatever the composer does.
+Adding Abheri, which forbids R2 and D2 on the way up, dropped it to 0.969 and
+exposed a real defect that had been invisible since the dimension was
+written.
+
+**A score that cannot move is not a measurement.** Across two raagas, six of
+the twelve dimensions are identical to three decimals - swara_correctness,
+raaga_drift, rhythm, mood_match, brief_match, structure - and they carry 7.5
+of the 16 weight, so 47% of `overall` is constant. `mood_match` sits at
+exactly 0.600 because that is the literal default `_mood_match` returns when
+no brief is passed, and the harness passes none. Every "overall" comparison
+recorded above was diluted by about half; the measurement script now prints a
+column per raaga and names the dimensions that never varied, so this is
+visible rather than latent.
+
+**Direction is only finally known once the line exists.** The generator walks
+in scale-degree space and takes each note from the ascending or descending
+ladder as the phrase requires - that part was always right. But octaves are
+then placed to fit a register, and phrases are joined into sections, and
+neither knows which way the line travels. Either can leave a note unchanged
+while reversing the motion into it, turning a legal descending step into an
+ascending leap onto a descent-only note. `music/melody.py`'s
+`enforce_direction` repairs the finished line, where the direction of every
+pair is finally knowable, replacing a note that breaks its move with the
+nearest pitch that does not and never substituting more than a fifth away.
+
+Measured over 20 seeds each, before and after: Abheri 13 bad moves in 735 to
+0, Kambhoji 4 to 0, Bhairavi 4 to 0, Sindhu Bhairavi 56 in 16 of 20 seeds to
+0. A raaga whose two ladders hold the same swaras returns immediately and is
+untouched, so Keeravani, Kalyani and Mohanam are bit-identical and the golden
+melodies are the proof.
+
+**The first fix was not the fix, and was dropped.** Per-note octave clamping
+was one contributor, so a `clamp_phrase` that moved a phrase as a unit took
+Abheri from 13 to 7 - but it left Kambhoji unchanged, made Sindhu Bhairavi
+marginally worse, and changed every melody in every raaga, invalidating all
+three golden files. Moving a phrase as a unit is defensible musically and may
+be worth doing on its own terms; bundling a whole-corpus change with a
+targeted bug fix is not, and it was not what was wrong.
+
+**Still open, and now measurable:** authenticity and originality read the
+same table - `learned_phrase_bank` rewards matching a heard phrase and
+`PhraseIndex.from_repository` penalises it - so they are one measurement with
+two signs rather than two opinions. The distinction that would separate them
+is evidential, and already used elsewhere for confidence: a phrase several
+independent sources agree on is the raaga's grammar, a phrase heard once is
+that source's own. Interest is `0.4 distinct + 0.3 rhythmic variety + 0.3
+span`; `vary_more` does reach the first term (`melody.py`, the repeated-note
+redraw), and nothing reaches the other 60%.
+
 ## Not built, deliberately
 
 * Video, dialogue, scene generation and lip sync - specification section 24

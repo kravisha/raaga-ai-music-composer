@@ -227,7 +227,7 @@ get an answer that cites what it learned and what it was told.
 | 2 | #6 | Guidance in practice; 16 of 20 originality failures on the short-phrase unit fixed by a guided retry |
 | 3 | #7 | Fragment quoting, scale runs as facts, the idiom; measured neutral overall, originality up, authenticity down (`docs/DECISIONS.md`, "Known weakness, now measured") |
 | 4 | #10, as increment F3 of `docs/PLAN_agent_factory.md` | Guided regeneration, provenance, "why this phrase", the creator as field evidence |
-| 5 | open | Docs are done in F4; the calibration of authenticity against originality, and of interest, remains. The measurement script is `tools/measure_composer.py` |
+| 5 | part done | Measuring first found that the harness only ever measured Keeravani, which is sampurna and so cannot fail `raaga_correctness`. Adding an asymmetric raaga exposed a real composer defect, now fixed (`enforce_direction`). Authenticity against originality, and interest, remain - see `docs/DECISIONS.md`, "Evaluator calibration" |
 
 The second number, the share of retries that repeat a finding of the same
 kind, is now enforced rather than measured: a retry carries guidance built
