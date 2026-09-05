@@ -282,6 +282,68 @@ def test_a_bent_note_keeps_the_raagas_name_but_a_foreign_one_does_not(raagas):
     assert result.notes[1].swara == "M1", "a real M1 must stay foreign"
 
 
+def test_a_flip_flopping_tracker_is_folded_back_into_the_line(raagas):
+    """Octave doubling is the tracker's signature failure on a dense mix.
+
+    "S- S++ S- S++" is autocorrelation locking onto a harmonic for a frame,
+    not a singer leaping three octaves and back.  The swara is right and
+    the register is wrong, so the note is moved, not invented.
+    """
+    tonic = float(TONIC)
+    result = analysis.AnalysisResult(tonic_midi=tonic)
+    notes = [
+        analysis.AnalysedNote(start=0.0, duration=0.3, midi=tonic, swara="S"),
+        analysis.AnalysedNote(start=0.3, duration=0.3, midi=tonic + 24,
+                              swara="S++"),          # the tracker's octave slip
+        analysis.AnalysedNote(start=0.6, duration=0.3, midi=tonic + 2,
+                              swara="R2"),
+        analysis.AnalysedNote(start=0.9, duration=0.3, midi=tonic + 4,
+                              swara="G3"),
+    ]
+    result.notes = list(notes)
+    result.phrases = [analysis.AnalysedPhrase(notes=result.notes, start=0.0,
+                                              end=1.2)]
+    assert analysis.widest_leap(result.phrases[0]) == 24
+
+    moved = analysis.repair_octaves(result)
+    assert moved == 1
+    assert [n.swara for n in result.notes] == ["S", "S", "R2", "G3"], \
+        "the swara must survive; only the octave was wrong"
+    assert analysis.widest_leap(result.phrases[0]) <= 12
+
+
+def test_a_line_that_still_leaps_is_left_leaping_to_be_refused(raagas):
+    """Not every bad phrase is an octave problem, and this must not hide it."""
+    tonic = float(TONIC)
+    result = analysis.AnalysisResult(tonic_midi=tonic)
+    result.notes = [
+        analysis.AnalysedNote(start=0.0, duration=0.3, midi=tonic, swara="S"),
+        analysis.AnalysedNote(start=0.3, duration=0.3, midi=tonic + 19,
+                              swara="P+"),
+    ]
+    result.phrases = [analysis.AnalysedPhrase(notes=result.notes, start=0.0,
+                                              end=0.6)]
+    analysis.repair_octaves(result)
+    # 19 semitones is not a whole number of octaves away from the median, so
+    # moving octaves cannot fix it - and it stays visible to the guard.
+    assert analysis.widest_leap(result.phrases[0]) > analysis.OCTAVE_LEAP_SEMITONES
+
+
+def test_an_honest_octave_leap_is_left_alone(raagas):
+    """S to S+ happens.  Only what sits outside the phrase gets moved."""
+    tonic = float(TONIC)
+    result = analysis.AnalysisResult(tonic_midi=tonic)
+    result.notes = [
+        analysis.AnalysedNote(start=0.0, duration=0.3, midi=tonic, swara="S"),
+        analysis.AnalysedNote(start=0.3, duration=0.3, midi=tonic + 12,
+                              swara="S+"),
+    ]
+    result.phrases = [analysis.AnalysedPhrase(notes=result.notes, start=0.0,
+                                              end=0.6)]
+    assert analysis.repair_octaves(result) == 0
+    assert [n.swara for n in result.notes] == ["S", "S+"]
+
+
 def test_the_tonic_help_survives_free_naming(raagas):
     """Only the naming goes free; the raaga still helps locate Sa."""
     raaga = raagas.require("Keeravani")

@@ -47,6 +47,18 @@ VIDEO_SUFFIXES = {".mp4", ".mkv", ".webm", ".m4v", ".mov"}
 KINDS = ("music", "lesson", "skip")
 
 
+#: ``prepare`` values.  Preparation - notching the drone out and gating
+#: the talking - was written for a lesson recording: one voice, a tanpura,
+#: and a teacher explaining between phrases.  A film song has no tanpura to
+#: notch and is sung throughout, so the same treatment cut a 120-second
+#: excerpt down to 31 seconds of kept audio.  A collection holds both kinds,
+#: so the manifest says which this is.
+PREPARE_AUTO = "auto"      # decide from the provider, as before
+PREPARE_YES = "yes"        # a lesson over a drone: prepare it
+PREPARE_NO = "no"          # a produced recording: leave it alone
+PREPARES = (PREPARE_AUTO, PREPARE_YES, PREPARE_NO)
+
+
 @dataclass(frozen=True)
 class Entry:
     """One row: a media file, what it is, and what it is of."""
@@ -56,6 +68,15 @@ class Entry:
     kind: str = "music"
     source: str = ""
     notes: str = ""
+    prepare: str = PREPARE_AUTO
+
+    def wants_preparation(self, default: bool) -> bool:
+        """Whether the drone notch and speech gate should run on this file."""
+        if self.prepare == PREPARE_YES:
+            return True
+        if self.prepare == PREPARE_NO:
+            return False
+        return default
 
     @property
     def is_music(self) -> bool:
@@ -154,9 +175,16 @@ def _row_to_entry(row: Dict[str, str], base: Path, manifest: Path,
     if raaga.lower() in ("", "unknown", "?"):
         raaga = ""
 
+    prepare = (row.get("prepare") or PREPARE_AUTO).strip().lower()
+    if prepare not in PREPARES:
+        log.warning("%s line %d: unknown prepare %r, deciding automatically",
+                    manifest.name, number, prepare)
+        prepare = PREPARE_AUTO
+
     return Entry(path=path, raaga=raaga, kind=kind,
                  source=(row.get("source") or "").strip(),
-                 notes=(row.get("notes") or "").strip())
+                 notes=(row.get("notes") or "").strip(),
+                 prepare=prepare)
 
 
 def music_for(root: Path, raaga: str) -> List[Entry]:

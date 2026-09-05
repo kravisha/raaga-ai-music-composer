@@ -109,13 +109,13 @@ class AppController:
         self.voice_input = VoiceInputManager(self.settings)
         self.providers = provider_registry.build(
             self.settings, stt_name=self.voice_input.adapter.status())
-        # The musician behind the instrument: permanent memory, a curriculum
-        # and everything it has learned so far.
-        self.agent = MusicAgent(self.settings, self.raagas,
-                                llm=self.providers.llm)
         # The Knowledge Base: the permanent learned memory.  Opened, never
         # recreated - if this fails the application still runs, but it says so
         # rather than carrying on with an empty one that looks like loss.
+        #
+        # Opened *before* the agent, because the agent is given it: what the
+        # agent hears has to reach the permanent memory, and it can only do
+        # that if it was handed the Knowledge Base when it was built.
         self.kb: Optional[KnowledgeBaseService] = None
         self.knowledge_context: Optional[KnowledgeContextBuilder] = None
         try:
@@ -123,11 +123,24 @@ class AppController:
             self.kb = KnowledgeBaseService.initialize_if_needed(
                 Path(path) if path else None)
             self.knowledge_context = KnowledgeContextBuilder(self.kb)
-            self._migrate_knowledge_base()
         except Exception as exc:  # noqa: BLE001
             log.error("the Knowledge Base could not be opened: %s. Nothing "
                       "has been deleted; learned knowledge is untouched.", exc)
             self.kb = None
+
+        # The musician behind the instrument: permanent memory, a curriculum
+        # and everything it has learned so far.
+        self.agent = MusicAgent(self.settings, self.raagas,
+                                llm=self.providers.llm, kb=self.kb)
+
+        # After the agent, because the migration reads the agent's own
+        # repository to bring what it already knows into the Knowledge Base.
+        if self.kb is not None:
+            try:
+                self._migrate_knowledge_base()
+            except Exception as exc:  # noqa: BLE001
+                log.error("the Knowledge Base migration did not run: %s. "
+                          "Nothing has been deleted.", exc)
 
         # The Training tab: search for material, approve it, learn from it.
         # It shares the agent's memory so what it learns reaches the composer,
