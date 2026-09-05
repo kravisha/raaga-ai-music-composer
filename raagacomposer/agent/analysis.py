@@ -402,12 +402,23 @@ def estimate_tempo(notes: Sequence[AnalysedNote]) -> float:
 # --------------------------------------------------------------------------
 def analyse(audio: np.ndarray, sr: int, raaga: Optional[Raaga] = None,
             tonic_hint_midi: Optional[float] = None,
-            fixed_tonic_midi: Optional[float] = None) -> AnalysisResult:
+            fixed_tonic_midi: Optional[float] = None,
+            constrain_to_raaga: bool = True) -> AnalysisResult:
     """Run the whole pipeline over an audio buffer.
 
     ``fixed_tonic_midi`` is the tanpura: when the tonic is given rather than
     inferred, a single note can be named, which estimation from one pitch
     could never do.
+
+    ``raaga`` does two separate jobs here, and a caller checking whether a
+    recording is *in* that raaga must not want both.  It helps locate Sa,
+    which is a fair use of what you know.  It also restricts the names a
+    pitch may be given, and that is question-begging: with a raaga passed,
+    ``nearest_swara`` can only answer from that raaga's swaras, so every
+    note lands inside it and conformance becomes 100% by arithmetic.  Pass
+    ``constrain_to_raaga=False`` to keep the tonic help and let the naming
+    range over all twelve, so that "is this really Hamsadhwani?" has an
+    answer that could have been no.
     """
     result = AnalysisResult(sample_rate=sr)
     audio = np.asarray(audio, dtype=np.float32).reshape(-1)
@@ -442,7 +453,10 @@ def analyse(audio: np.ndarray, sr: int, raaga: Optional[Raaga] = None,
     result.tonic_midi = (float(fixed_tonic_midi) if fixed_tonic_midi is not None
                          else freq_to_midi(tonic_hz))
 
-    result.notes = notes_from_pitch(times, f0, conf, result.tonic_midi, raaga)
+    # The raaga has already helped find Sa above; from here it would only
+    # be deciding the answer to the question being asked.
+    result.notes = notes_from_pitch(times, f0, conf, result.tonic_midi,
+                                    raaga if constrain_to_raaga else None)
     result.phrases = segment_phrases(result.notes)
     result.tempo_bpm = estimate_tempo(result.notes)
 
@@ -454,6 +468,57 @@ def analyse(audio: np.ndarray, sr: int, raaga: Optional[Raaga] = None,
         tuning = float(np.clip(1.0 - deviations.mean() / 50.0, 0.0, 1.0))
     result.confidence = round(
         0.4 * tonic_conf + 0.35 * note_conf + 0.25 * tuning, 3)
+    return result
+
+
+#: How far a note may sit from one of the raaga's swaras and still be that
+#: swara.  Carnatic phrasing is not a sequence of held pitches: a gamaka
+#: swings well past a quarter tone, so judging by the nearest of twelve
+#: names throws away real music - a G2 bent 60 cents sharp gets called G3
+#: and its whole phrase is discarded.  Two swaras are never closer than a
+#: semitone, so 70 cents keeps bent notes and still refuses a foreign one.
+GAMAKA_TOLERANCE_CENTS = 70.0
+
+
+def relabel_within_raaga(result: AnalysisResult, raaga: Raaga,
+                         tolerance_cents: float = GAMAKA_TOLERANCE_CENTS
+                         ) -> AnalysisResult:
+    """Let freely-named notes take the raaga's name when they are close.
+
+    This is the middle ground between the two ways of naming a pitch, and
+    it exists because both extremes are wrong for judging whether a
+    recording is in a raaga.
+
+    Naming *with* the raaga answers the question before it is asked: every
+    pitch snaps to one of that raaga's swaras, conformance is 100% by
+    arithmetic, and a guard downstream can never reject anything.  Naming
+    freely across all twelve is honest about foreign notes but brutal about
+    ornament, because a bent note lands on a neighbour's name.
+
+    So: name freely first, then give a note the raaga's own name when its
+    pitch is within ``tolerance_cents`` of one of the raaga's swaras.  What
+    is left outside is genuinely outside - at least a semitone from every
+    note the raaga has - and the guard can act on it.
+
+    Mutates ``result`` in place; phrases hold the same note objects.
+    """
+    allowed = list(raaga.allowed)
+    if not allowed:
+        return result
+    for note in result.notes:
+        if note.swara.rstrip("+-") in allowed:
+            continue
+        semitones = note.midi - result.tonic_midi
+        best_swara, best_octave, best_delta = "", 0, 1e9
+        for octave in range(-4, 5):
+            for swara in allowed:
+                delta = semitones - (SWARA_SEMITONES.get(swara, 0) + 12 * octave)
+                if abs(delta) < abs(best_delta):
+                    best_swara, best_octave, best_delta = swara, octave, delta
+        if best_swara and abs(best_delta) * 100.0 <= tolerance_cents:
+            marks = "+" * best_octave if best_octave > 0 else "-" * (-best_octave)
+            note.swara = best_swara + marks
+            note.cents_deviation = best_delta * 100.0
     return result
 
 
