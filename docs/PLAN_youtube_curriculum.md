@@ -99,8 +99,8 @@ already works and already feeds the composer. This plan does not touch it.
 |---|---|---|---|
 | Y1 | A YouTube finder for `WebLeadProvider`, off by default, behind a setting; results carry title, channel, duration, URL and `already learned` status | `training/search.py`, `core/settings.py`, tests | **done** - pasted links become leads with no key and no network; a phrase reaches the Data API only with a key *and* the web switched on |
 | Y2 | `training/lessons.py`: an approved source's report becomes framework `Lesson`s stamped `stated`, with provenance | new `training/lessons.py`, `training/queue.py`, `training/controller.py`, `agent/music_agent.py`, `app.py`, tests | **done** - one lesson per concept the source actually taught, stamped `stated:`, filed to the factory store, and asserted never to reach `repo.phrases` |
-| Y3 | Stated lessons reach the trainer; T0 to T2 only; LEARN shows them beside curriculum lessons | `agent/trainer.py`, `agent/student.py`, `ui/learn_workspace.py`, tests | A quiz generated from a video, answerable, graded |
-| Y4 | The ceiling, asserted: a concept taught only from transcripts reaches L3 and stops | `tests/`, `docs/DECISIONS.md` | The named test, and a live pass |
+| Y3 | Stated lessons reach the trainer; T0 to T2 only; LEARN shows them beside curriculum lessons | `agent/trainer.py`, `agent/student.py`, `agent/music_agent.py`, `ui/learn_workspace.py`, tests | **done** - a quiz built from a video, answered from the knowledge base, graded against what the source said |
+| Y4 | The ceiling, asserted: a concept taught only from transcripts reaches L3 and stops | `tests/`, `docs/DECISIONS.md` | **done** - `test_a_concept_taught_only_from_a_transcript_stops_at_can_explain`, and a real cycle reaching exactly L3 |
 
 Y1 and Y2 are independent. Y3 needs Y2. Y4 needs Y3.
 
@@ -175,3 +175,38 @@ What is not built yet: Y3, which lets those lessons reach `RagaTrainer` so
 quizzes are actually generated from them, and Y4, which asserts the L3
 ceiling by name.  The trainer already builds a ladder from a `Lesson`; what
 it does not yet do is take lessons from anywhere but the shipped curriculum.
+
+## Status, 2026-09-05, Y3 and Y4
+
+The loop closes.  A studied source becomes lessons; the trainer offers a new
+one the moment it exists, builds T0 to T2 questions from it, and grades the
+answer against what the source actually taught.  A real cycle on a
+video-derived lesson ran T2, scored 1.0, passed, and took the concept from
+*unknown* to **can explain** - and stopped there, which is the point.
+
+Three decisions worth recording:
+
+* **The agent answers from the knowledge base, never from the lesson.**  The
+  lesson is what the source said and is the thing being graded against;
+  answering out of it would be reading the answer back rather than showing
+  what was retained.
+* **A stated lesson jumps the queue exactly once, when it is new.**  The
+  curriculum is the spine and carries on; what a source taught is examined
+  while the creator still remembers approving it, and afterwards comes round
+  through the ladder like anything else.
+* **The grader is deterministic**, like every other judge here: word overlap
+  between what was kept and what was said.  A provider-backed reading is what
+  the escalation hook is for, not something to slip into the default path.
+
+LEARN's mastery table gained a **Taught by** column - "a source (stated)" or
+"practice" - so the difference between knowing about a raaga and being able
+to play it is on screen rather than inferred from a level number.
+
+### What the quiz does not yet prove
+
+The agent passed by recalling a fact the shipped library had already given
+it, not something the video taught.  For a raaga the library does not cover
+this is a real retention test; for one it does, the agent can pass without
+having learned anything from the source.  Checking that the recalled fact's
+provenance is the source being examined on would close that, and is the
+obvious next increment.

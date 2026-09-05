@@ -20,6 +20,7 @@ from ..factory.models import (AgentProfile, KnowledgeClass, Lesson,
                               Reiteration, ReiterationCheck, Remediation,
                               Split, TestLevel, TestResult, TestSpec)
 from ..raaga.library import parse_swara
+from ..training.lessons import is_stated
 from .curriculum import Unit
 from .evaluator import Evaluator
 from .learned import CORE_KEYS
@@ -105,9 +106,29 @@ class RagaTrainer:
     # ------------------------------------------------------------------
     # next_lesson
     # ------------------------------------------------------------------
+    def _unexamined_stated(self, profile: AgentProfile) -> Optional[Lesson]:
+        """A lesson from a studied source that has never been examined on.
+
+        The curriculum is the spine and stays so: a stated lesson jumps the
+        queue exactly once, when it is new, so that what a source taught is
+        tested while the creator still remembers approving it - and then the
+        curriculum carries on.  A concept already examined comes round again
+        through the ladder like anything else.
+        """
+        for lesson in self.store.lessons(domain="carnatic-music"):
+            if not is_stated(lesson):
+                continue
+            record = self.store.mastery(profile.id, lesson.concept)
+            if record is None or not record.evidence:
+                return lesson
+        return None
+
     def next_lesson(self, profile: AgentProfile,
                     history: Sequence[TestResult]) -> Optional[Lesson]:
         raaga = self.agent.curriculum.current_raaga()
+        stated = self._unexamined_stated(profile)
+        if stated is not None:
+            return stated
         unit = self.agent.curriculum.next_unit(raaga)
         if unit is None:
             return None
@@ -333,6 +354,19 @@ class RagaTrainer:
         record = self.store.mastery(profile.id, lesson.concept)
         level = next_test_level(record)
         attempt = sum(1 for r in history if r.lesson_id == lesson.id)
+        if is_stated(lesson):
+            # A transcript can be examined on to the point of explaining it
+            # and no further, so the ladder stops there rather than asking
+            # for an application nobody could grade honestly.
+            level = min(level, TestLevel.T2_EXPLANATION)
+            tests = self._stated_tests(level, lesson, raaga_name, history,
+                                       attempt)
+            if level < TestLevel.T2_EXPLANATION:
+                tests.extend(self._stated_tests(
+                    TestLevel(int(level) + 1), lesson, raaga_name, history,
+                    attempt, offset=len(tests)))
+            self._harder_wanted.pop(lesson.concept, None)
+            return tests[:4]
         # ``_test`` reads ``self._harder_wanted`` for every test built below;
         # consumed once, after the whole batch, so a harder variant is asked
         # for exactly by the next ``build_tests`` call and no other.
@@ -357,10 +391,43 @@ class RagaTrainer:
         self._harder_wanted.pop(lesson.concept, None)
         return tests[:4]
 
+    def _stated_tests(self, level: TestLevel, lesson: Lesson, raaga_name: str,
+                      history: Sequence[TestResult], attempt: int,
+                      offset: int = 0) -> List[TestSpec]:
+        """The rung for a lesson built from what somebody *said*.
+
+        A stated lesson has no curriculum unit behind it and no library entry
+        to be graded against: its authority is the source.  So the test asks
+        what the agent retained from studying it, and the grader compares
+        that with what the source actually taught.  The agent answers from the
+        knowledge base rather than from the lesson, or it would be reading
+        the answer back.
+
+        Recognition, recall and explanation only.  An application test built
+        from a transcript would grade the agent on something nobody heard.
+        """
+        payload = {"concept": lesson.concept,
+                   "expects": list(lesson.examples)[:6],
+                   "explanation": lesson.explanation[:600]}
+        if level == TestLevel.T0_RECOGNITION:
+            return [self._test(lesson, history, TestLevel.T0_RECOGNITION,
+                               "recognise.stated", payload, raaga_name,
+                               attempt, offset)]
+        if level == TestLevel.T1_RECALL:
+            return [self._test(lesson, history, TestLevel.T1_RECALL,
+                               "recall.stated", payload, raaga_name,
+                               attempt, offset)]
+        return [self._test(lesson, history, TestLevel.T2_EXPLANATION,
+                           "explain.stated", payload, raaga_name,
+                           attempt, offset, objective=False)]
+
     def _tests_at(self, level: TestLevel, lesson: Lesson, unit: Optional[Unit],
                   raaga_name: str, history: Sequence[TestResult], attempt: int,
                   offset: int = 0) -> List[TestSpec]:
         """The ladder rung as exercises the practice engine can run."""
+        if is_stated(lesson):
+            return self._stated_tests(level, lesson, raaga_name, history,
+                                      attempt, offset)
         tests: List[TestSpec] = []
         if level in (TestLevel.T0_RECOGNITION, TestLevel.T1_RECALL):
             tests.append(self._test(lesson, history, TestLevel.T0_RECOGNITION,
@@ -445,7 +512,10 @@ class RagaTrainer:
         raaga_name = test.payload.get("raaga", "")
         raaga_obj = self.agent.library.get(raaga_name)
 
-        if report is None and test.payload.get("skill_type") == "explain":
+        skill = str(test.payload.get("skill_type", ""))
+        if report is None and skill.endswith(".stated"):
+            return self._grade_stated(test, performance, threshold)
+        if report is None and skill == "explain":
             return self._grade_explain(test, performance, raaga_obj, threshold)
 
         score = report.score if report is not None else 0.0
@@ -499,6 +569,38 @@ class RagaTrainer:
             student_confidence=performance.confidence,
             trainer_claim=trainer_claim, trainer_confidence=trainer_confidence,
             failure_mode=failure_mode, evidence=evidence,
+            duration_seconds=performance.duration_seconds)
+
+    def _grade_stated(self, test: TestSpec, performance,
+                      threshold: float) -> TestResult:
+        """Did the agent retain what the source taught?
+
+        The reference is the lesson, not the library: a stated lesson's
+        authority is the source it came from, and the agent's answer comes
+        from the knowledge base, so this compares what was kept against what
+        was said.  Word overlap rather than anything cleverer, because the
+        judge has to be deterministic and offline like every other one here;
+        a provider-backed reading is what the escalation hook is for.
+        """
+        params = test.payload.get("params", {})
+        expected = [str(e) for e in params.get("expects", []) if str(e).strip()]
+        reference = " ".join(expected) or str(params.get("explanation", ""))
+        said = _base_tokens(reference)
+        got = _base_tokens(performance.output)
+        if not said:
+            score = 1.0 if performance.output.strip() else 0.0
+        else:
+            score = round(len(said & got) / len(said), 3)
+        passed = score >= threshold
+        return TestResult(
+            test_id=test.id, agent_id=self.agent.profile().id,
+            lesson_id=test.lesson_id, level=test.level, split=test.split,
+            score=score, passed=passed, student_claim=performance.claim,
+            student_confidence=performance.confidence,
+            trainer_claim="valid" if passed else "invalid",
+            trainer_confidence=0.6,
+            failure_mode="" if passed else "stated_not_retained",
+            evidence=expected[:3],
             duration_seconds=performance.duration_seconds)
 
     def _grade_explain(self, test: TestSpec, performance, raaga_obj,

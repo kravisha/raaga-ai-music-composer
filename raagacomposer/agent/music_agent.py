@@ -204,6 +204,23 @@ class MusicAgent:
             self._factory_store = FactoryStore(Path(path) if path else None)
         return self._factory_store
 
+    def trainer(self):
+        """The Trainer half of the Factory's pair, over this agent.
+
+        ``train_step`` builds one per cycle; this is the same thing for a
+        caller that wants to ask what would be taught or examined next
+        without running a cycle - the LEARN views, and the tests.
+        """
+        from .trainer import RagaTrainer
+
+        return RagaTrainer(self, self.factory_store())
+
+    def student(self, profile=None):
+        """The Student half, over this agent."""
+        from .student import RagaStudent
+
+        return RagaStudent(self, profile or self.profile())
+
     def profile(self):
         """The agent's ``AgentProfile``: created once, then loaded and kept
         current (capabilities, current raaga, knowledge version) on every
