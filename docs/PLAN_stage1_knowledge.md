@@ -15,8 +15,8 @@ the queue for using it.
 | 01 B to E, 05 section 2 | Block-character profiles: R-G block + M + D-N block, explainable | Every melakarta carries its blocks and their character, rendered by `block_summary()` and used in the reason a suggestion gives (S1); no scoring from them yet |
 | 05 sections 1, 3, 5 | Brief to emotion vector; weighted scoring with contradiction penalties; diversity in the top five | Built (S2): `raaga/emotion.py`, used by both ranking paths. A semantic classifier for the target vector is still to come; the deterministic reader is the fallback it will fall back to |
 | 05 section 6 | Selection feedback as learned weights, separate from grammar | Built (S3): `selection_weights` in knowledge.db, per raaga and per emotion dimension, read only by the ranking |
-| 05 section 7, 06 E | Audition: play arohanam then avarohanam, eight events each, changing pitch | The practice engine renders scales for itself; no audition control in MAIN |
-| 06 | Startup validation; mandatory tests A to E | A to C run against the pack files, C also against the live library; D and E await the engine and the audition |
+| 05 section 7, 06 E | Audition: play arohanam then avarohanam, eight events each, changing pitch | Built (S4): `raaga/audition.py`, `AppController.audition_raaga`, "Hear the scale" in the raaga panel |
+| 06 | Startup validation; mandatory tests A to E | All five run: A to C against the pack files and the live library, D in `test_emotion_selection.py`, E in `test_audition.py` |
 
 ## Design, in brief
 
@@ -48,7 +48,7 @@ the queue for using it.
 | S1 | Load and validate the 72 records; library precedence; a melakarta-only raaga composes from its scale | pack validation at startup; test C on live data | done |
 | S2 | Block profiles and the emotion-vector scorer; explainable reasons; diversity | pack test D on the sad, romantic, lonely, warm brief; no single default raaga | done |
 | S3 | Selection feedback as learned weights | a rejected suggestion ranks lower next time; grammar unchanged | done |
-| S4 | Audition control and playback test | pack test E | open |
+| S4 | Audition control and playback test | pack test E | done |
 
 Each is one branch and one PR, verified live before it is offered.
 
@@ -106,3 +106,27 @@ What S4 inherits: `MusicAgent.audition_raaga` already exists and sends the
 pack's +0.2 signal; the audition control has only to call it after playing
 the arohanam and avarohanam (pack document 05 section 7 steps C to E, and
 document 06's test E).
+
+## Stage 1, complete
+
+All four queue items are built and the pack's five mandatory tests are named
+in the suite:
+
+| Pack test | Where |
+|---|---|
+| A - Keeravani is #21 | `tests/unit/test_stage1_pack.py::test_a_keeravani_is_number_21` |
+| B - swara overlaps | `tests/unit/test_stage1_pack.py::test_b_swara_overlaps_share_a_pitch_but_keep_their_labels` |
+| C - melakarta endpoints | `test_c_melakarta_endpoints`, and `test_pack_test_c_endpoints_are_live_library_entries` against the loaded library |
+| D - brief selection | `tests/unit/test_emotion_selection.py::test_d_brief_selection_smoke_test` |
+| E - playback | `tests/unit/test_audition.py::test_e_playback_smoke_test` |
+
+What Stage 1 does not claim: that a parent scale is a lived raga.  The pack
+says so itself, and the application says so too - a melakarta nobody curated
+is offered at lower confidence, describes itself as a scale, and composes
+from that scale alone.  Gamaka, characteristic prayoga, nyasa and phrase
+grammar remain the agent's to learn.
+
+Open afterwards, and not Stage 1's business: the calibration numbers this
+work chose rather than measured - `LEARNED_BONUS_CAP`, the selection signal
+strengths, and the diversity weight - all of which now have the machinery to
+be settled from real use.

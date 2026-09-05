@@ -884,9 +884,30 @@ they just said is visible rather than waiting for the next Apply Brief.
 same as one never held, and a creator looking at why a ranking changed should
 be able to see which happened.
 
-**Still to come:** arohanam/avarohanam audition
-(`docs/PLAN_stage1_knowledge.md` S4, with pack test E). `MusicAgent.audition_raaga`
-exists and sends the pack's +0.2, and nothing calls it yet.
+**An audition plays what the library stores, and nothing else.** S4, pack
+document 05 section 7. No phrase, no ornament, no chosen register: the exact
+arohanam then the exact avarohanam, so that when the creator says "that is
+not the raaga I meant" the disagreement is about the raaga rather than about
+the performance. The plan is built as data (`raaga/audition.py`) and rendered
+separately, which is why every claim the pack makes about playback - the
+functional labels, the pitch classes, both directions present, and never one
+repeated note - is checkable without an audio device.
+
+**A janya is auditioned as itself.** Pack test E counts eight events each
+way because Keeravani has seven swaras; Mohanam has five and gets six events.
+Padding a janya out to eight to satisfy the test would be playing a scale the
+raaga does not have.
+
+**Hearing is a weaker signal than choosing** (auditioned +0.2 against
+accepted +1.0, the pack's own weights), and it follows the same rule as the
+rest of the selection feedback: it is only learned from when we know which
+brief it answers. Auditioning a raaga we did not suggest still plays it -
+hearing a raaga is always allowed; it is the learning that stands down.
+
+**Stage 1 is complete with this.** The pack's five mandatory tests are
+`tests/unit/test_stage1_pack.py` (A, B, C),
+`tests/unit/test_emotion_selection.py::test_d_brief_selection_smoke_test` (D)
+and `tests/unit/test_audition.py::test_e_playback_smoke_test` (E).
 
 ## Local-first routing
 

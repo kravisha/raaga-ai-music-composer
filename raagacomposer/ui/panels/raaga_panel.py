@@ -41,6 +41,14 @@ class RaagaPanel(QGroupBox):
         accept_btn.clicked.connect(self.accept_selected)
         compare_btn = QPushButton("Compare with selected")
         compare_btn.clicked.connect(self.compare_with_current)
+        # The pack's audition step (document 05 section 7): hear the scale
+        # before composing in it.  A ranked list with a reason attached is an
+        # argument; the arohanam and avarohanam played are the evidence.
+        self.audition_btn = QPushButton("Hear the scale")
+        self.audition_btn.setToolTip(
+            "Play this raaga's arohanam and avarohanam, exactly as the "
+            "library stores them.")
+        self.audition_btn.clicked.connect(self.audition_selected)
         # Saying no is a training signal the pack asks us to learn from
         # (Stage 1 pack document 05 section 6); without a control for it the
         # creator could only ever teach the agent by agreeing with it.
@@ -50,21 +58,26 @@ class RaagaPanel(QGroupBox):
             "The raaga itself is unchanged.")
         self.reject_btn.clicked.connect(self.reject_selected)
 
+        # Two to a row: this panel is a narrow column, and four controls
+        # across it clip the last one out of reach.
         row1 = QHBoxLayout()
         row1.addWidget(suggest_btn)
         row1.addWidget(accept_btn)
         row2 = QHBoxLayout()
+        row2.addWidget(self.audition_btn)
         row2.addWidget(self.reject_btn)
-        row2.addWidget(compare_btn)
-        row2.addWidget(self.lock_box)
+        row3 = QHBoxLayout()
+        row3.addWidget(compare_btn)
+        row3.addWidget(self.lock_box)
 
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel("Suggested for this brief:"))
         layout.addWidget(self.suggestions)
         layout.addLayout(row1)
+        layout.addLayout(row2)
         layout.addWidget(QLabel("Or choose any raaga:"))
         layout.addWidget(self.all_raagas)
-        layout.addLayout(row2)
+        layout.addLayout(row3)
         layout.addWidget(self.details)
         layout.addWidget(self.selected_label)
         self.refresh()
@@ -119,6 +132,16 @@ class RaagaPanel(QGroupBox):
             return
         self.refresh()
         self.changed.emit()
+
+    def audition_selected(self) -> None:
+        """Play the highlighted raaga's scale, whichever way it was picked."""
+        name = self._current_name()
+        if not name:
+            return
+        try:
+            self.app.audition_raaga(name)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, "Raaga", str(exc))
 
     def reject_selected(self) -> None:
         """Turn a suggestion down, and re-rank with that taken into account."""
