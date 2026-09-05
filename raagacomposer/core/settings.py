@@ -126,6 +126,13 @@ class Settings:
     llm_local_timeout: float = 180.0
     llm_refresh_seconds: float = 30.0   # how often to notice a key being added
     stt_provider: str = "auto"          # auto | none | vosk | whisper
+    # Which Whisper to use.  Measured on this machine, transcribing a
+    # three-second phrase on the CPU: tiny 0.8s, base 10.6s.  A voice
+    # command you wait ten seconds for is not a voice command, and a
+    # misheard one you can simply repeat, so the small fast model is the
+    # default.  Raise it to "base" or "small" if accuracy matters more than
+    # waiting - dictating lyrics, say, rather than saying "add a violin".
+    stt_model_size: str = "tiny"        # tiny | base | small | medium
     #: What the tune and the audition are heard on when the brief does
     #: not name a lead instrument.  Any catalog key with a "lead"
     #: role: veena, violin, flute, sitar, sarod, santoor, piano...

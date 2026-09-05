@@ -163,28 +163,61 @@ class WhisperSTT(STTAdapter):
     streaming = False
 
     def __init__(self, model_size: str = "base") -> None:
+        """Find a Whisper, but do not load it yet.
+
+        ``build_adapter`` constructs every candidate backend to ask which
+        one works, and it runs while the application is starting.  Loading
+        the model here cost fifteen seconds of startup for everyone,
+        whether or not they ever pressed the microphone - and a creator who
+        never uses voice paid it every time.
+
+        So this only establishes that a Whisper is *installed*.  The model
+        itself is loaded on the first phrase, on the capture thread, where
+        a pause is expected because you have just finished speaking.
+        """
         self._model = None
+        self._model_size = model_size
         self._kind = ""
         self._error = ""
         self._buffer: List[np.ndarray] = []
         self._sr = 16000
         try:
-            from faster_whisper import WhisperModel  # type: ignore
-            self._model = WhisperModel(model_size, device="cpu", compute_type="int8")
+            import faster_whisper  # type: ignore  # noqa: F401
             self._kind = "faster-whisper"
         except Exception:
             try:
-                import whisper  # type: ignore
-                self._model = whisper.load_model(model_size)
+                import whisper  # type: ignore  # noqa: F401
                 self._kind = "openai-whisper"
             except Exception as exc:  # noqa: BLE001
                 self._error = f"Whisper unavailable: {exc}"
-        if self._model is not None:
-            log.info("whisper loaded (%s, %s)", self._kind, model_size)
+        if self._kind:
+            log.info("whisper available (%s, %s); the model loads on the "
+                     "first phrase", self._kind, model_size)
+
+    def _ensure_model(self):
+        """Load on first use.  A failure here is reported, never raised."""
+        if self._model is not None or not self._kind:
+            return self._model
+        try:
+            if self._kind == "faster-whisper":
+                from faster_whisper import WhisperModel  # type: ignore
+                self._model = WhisperModel(self._model_size, device="cpu",
+                                           compute_type="int8")
+            else:
+                import whisper  # type: ignore
+                self._model = whisper.load_model(self._model_size)
+            log.info("whisper model loaded (%s, %s)", self._kind,
+                     self._model_size)
+        except Exception as exc:  # noqa: BLE001
+            self._error = f"Whisper model could not be loaded: {exc}"
+            log.error(self._error)
+            self._kind = ""
+        return self._model
 
     @property
     def available(self) -> bool:
-        return self._model is not None
+        """Whether a Whisper is installed - not whether it is loaded."""
+        return bool(self._kind)
 
     def reset(self) -> None:
         self._buffer.clear()
@@ -195,7 +228,8 @@ class WhisperSTT(STTAdapter):
         return None
 
     def finish(self) -> Optional[Transcript]:
-        if not self._buffer or self._model is None:
+        if not self._buffer or self._ensure_model() is None:
+            self._buffer.clear()
             return None
         audio = np.concatenate(self._buffer)
         self._buffer.clear()
@@ -212,8 +246,10 @@ class WhisperSTT(STTAdapter):
         return Transcript(text, True, source=self.name) if text else None
 
     def status(self) -> str:
-        return f"whisper: ready ({self._kind})" if self.available else \
-            f"whisper: {self._error}"
+        if not self.available:
+            return f"whisper: {self._error}"
+        loaded = "ready" if self._model is not None else "ready, loads on first use"
+        return f"whisper: {loaded} ({self._kind})"
 
 
 def _resample(audio: np.ndarray, src: int, dst: int) -> np.ndarray:
@@ -241,7 +277,8 @@ def build_adapter(settings: Optional[Settings] = None) -> STTAdapter:
     if choice in ("auto", "vosk"):
         candidates.append(VoskSTT())
     if choice in ("auto", "whisper"):
-        candidates.append(WhisperSTT())
+        candidates.append(WhisperSTT(
+            str(getattr(settings, "stt_model_size", "tiny") or "tiny")))
     for adapter in candidates:
         if adapter.available:
             log.info("speech backend: %s", adapter.status())
