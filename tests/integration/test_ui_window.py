@@ -115,6 +115,91 @@ def test_the_transport_and_menus_exist(window):
     assert "&File" in titles and "&Compose" in titles
 
 
+def _visible_menus(window):
+    return [a.text() for a in window.menuBar().actions() if a.isVisible()]
+
+
+def _live_shortcuts(window):
+    """Every shortcut that would actually fire in the current workspace."""
+    live = set()
+    for menu_action in window.menuBar().actions():
+        menu = menu_action.menu()
+        if menu is None or not menu_action.isVisible():
+            continue
+        for action in menu.actions():
+            if action.isEnabled() and action.shortcut().toString():
+                live.add(action.shortcut().toString())
+    return live
+
+
+def test_each_workspace_gets_only_its_own_menus(window):
+    """MAIN and LEARN are separate top-level workspaces.
+
+    File is a *project's* file, Edit is a project's undo stack, Compose
+    makes a project's music - and LEARN is not part of any project, so
+    none of those belong to it.  What LEARN does benefits the agent and
+    touches only the knowledge store.
+    """
+    window.set_workspace("MAIN")
+    assert _visible_menus(window) == \
+        ["&File", "&Edit", "&View", "&Compose", "&Voice control", "&Help"]
+
+    window.set_workspace("LEARN")
+    assert _visible_menus(window) == \
+        ["&Learn", "&View", "&Voice control", "&Help"]
+
+    window.set_workspace("MAIN")
+    assert "&File" in _visible_menus(window)
+
+
+def test_a_hidden_menus_shortcuts_do_not_still_fire(window):
+    """Hiding a menu leaves its shortcuts armed - so they are disabled too.
+
+    Otherwise Ctrl+T would generate a tune while you were reading the
+    agent's curriculum.
+    """
+    window.set_workspace("LEARN")
+    live = _live_shortcuts(window)
+    for dead in ("Ctrl+T", "Ctrl+S", "Ctrl+M", "Ctrl+N", "Ctrl+L"):
+        assert dead not in live, f"{dead} still fires from the LEARN screen"
+    # What the application owns stays reachable from both.
+    for alive in ("Ctrl+,", "Ctrl+1", "Ctrl+2", "Ctrl+Space"):
+        assert alive in live, f"{alive} should still work in LEARN"
+    assert "Ctrl+Shift+L" in live
+
+    window.set_workspace("MAIN")
+    back = _live_shortcuts(window)
+    assert "Ctrl+T" in back and "Ctrl+S" in back
+
+
+def test_undo_does_not_come_back_on_the_next_timer_tick(window, qt_app):
+    """refresh() runs on a timer and used to re-enable Undo unconditionally."""
+    window.app.update_brief(situation="a terrace after midnight")
+    window.set_workspace("MAIN")
+    window.refresh()
+    assert window.app.undo.can_undo
+    assert window.undo_action.isEnabled()
+
+    window.set_workspace("LEARN")
+    window.refresh()
+    _pump(qt_app, 0.1)
+    assert not window.undo_action.isEnabled(), "Ctrl+Z came back in LEARN"
+
+    window.set_workspace("MAIN")
+    window.refresh()
+    assert window.undo_action.isEnabled()
+
+
+def test_the_project_readout_is_hidden_where_there_is_no_project(window):
+    window.set_workspace("MAIN")
+    assert window.project_status_label.isVisible()
+    window.set_workspace("LEARN")
+    assert not window.project_status_label.isVisible()
+    # The transport stays in both - an ear test may need to play something.
+    assert window.play_btn.isVisible()
+    window.set_workspace("MAIN")
+
+
 def test_project_management_lives_in_the_file_menu(window):
     """The Project panel was removed from the left column on purpose.
 
