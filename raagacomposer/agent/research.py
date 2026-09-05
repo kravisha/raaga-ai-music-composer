@@ -28,7 +28,7 @@ from ..core.settings import Settings
 from ..music import instruments as catalog
 from ..music.synth import render_notes
 from ..raaga.library import (SWARA_SEMITONES, Raaga, RaagaLibrary, parse_swara)
-from . import analysis, preprocess
+from . import analysis, kb_bridge, preprocess
 from .knowledge import Fact, KnowledgeRepository, Phrase, Source
 
 log = get_logger("agent.research")
@@ -58,6 +58,11 @@ class SourceCandidate:
     tonic_midi: Optional[float] = None
     audio_loader: Optional[Callable[[], Tuple[np.ndarray, int]]] = None
     ingestable: bool = True
+    #: ``True``/``False`` to insist on preparation or refuse it; ``None``
+    #: to let the provider decide as before.  A manifest sets this, because
+    #: a collection holds both lessons over a tanpura and produced
+    #: recordings, and they want opposite treatment.
+    prepare: Optional[bool] = None
 
     def describe(self) -> str:
         return f"[{self.provider}] {self.title} ({self.rights_status})"
@@ -71,6 +76,9 @@ class IngestionResult:
     phrases_learned: int = 0
     phrases_rejected: int = 0
     facts_learned: int = 0
+    #: Items this recording added to the durable Knowledge Base.  Zero when
+    #: no Knowledge Base was supplied, which is not a failure.
+    kb_items: int = 0
     confidence: float = 0.0
     error: str = ""
     result: Optional[analysis.AnalysisResult] = None
@@ -195,12 +203,14 @@ class LocalCorpusProvider(SourceProvider):
             audio = entry.audio_path()
             if audio is None:              # video not extracted yet
                 continue
+            prepare = (None if entry.prepare == manifest_module.PREPARE_AUTO
+                       else entry.prepare == manifest_module.PREPARE_YES)
             candidates.append(SourceCandidate(
                 locator=str(audio), title=entry.path.stem, provider=self.name,
                 raaga=raaga.name, content_type="audio",
                 rights_status=self.rights_status, quality=0.8,
                 notes=entry.notes or f"from {self.folder}",
-                audio_loader=self._loader(audio)))
+                audio_loader=self._loader(audio), prepare=prepare))
             if len(candidates) >= limit:
                 break
         return candidates
@@ -309,9 +319,14 @@ class WebLeadProvider(SourceProvider):
 # --------------------------------------------------------------------------
 class ResearchAgent:
     def __init__(self, repository: KnowledgeRepository, library: RaagaLibrary,
-                 settings: Optional[Settings] = None, llm=None) -> None:
+                 settings: Optional[Settings] = None, llm=None, kb=None) -> None:
         self.repo = repository
         self.library = library
+        # The durable Knowledge Base, when the application has opened one.
+        # Passed in rather than opened here on purpose: whatever writes to
+        # the permanent memory should be handed it deliberately, not find
+        # it by looking for a default path.
+        self.kb = kb
         self.settings = settings or Settings.load()
         corpus = getattr(self.settings, "learning_corpus_dir", "")
         self.providers: List[SourceProvider] = [
@@ -359,8 +374,11 @@ class ResearchAgent:
         """
         if not getattr(self.settings, "learning_preprocess_recordings", True):
             return False
-        return (candidate.content_type == "audio"
-                and candidate.rights_status == "user-supplied")
+        automatic = (candidate.content_type == "audio"
+                     and candidate.rights_status == "user-supplied")
+        # A manifest knows what the provider cannot: whether this particular
+        # file is a lesson over a tanpura or a produced recording.
+        return automatic if candidate.prepare is None else candidate.prepare
 
     def ingest(self, candidate: SourceCandidate,
                max_seconds: Optional[float] = None) -> IngestionResult:
@@ -445,12 +463,20 @@ class ResearchAgent:
             analysed = analysis.analyse(audio, sr, raaga, tonic_hint,
                                         fixed_tonic_midi=fixed_tonic,
                                         constrain_to_raaga=trusted)
-            if not trusted and raaga is not None:
-                # Named freely above, so a foreign note keeps a foreign
-                # name.  This gives back the raaga's own name to anything
-                # within a gamaka's reach of it, so ornament survives and
-                # only what is really outside stays outside.
-                analysis.relabel_within_raaga(analysed, raaga)
+            if not trusted:
+                # A real recording carries octave errors; a render the
+                # application made does not, so this only runs on material
+                # from outside.
+                moved = analysis.repair_octaves(analysed)
+                if moved:
+                    log.info("octave-corrected %d note(s) in %s",
+                             moved, candidate.title)
+                if raaga is not None:
+                    # Named freely above, so a foreign note keeps a foreign
+                    # name.  This gives back the raaga's own name to anything
+                    # within a gamaka's reach of it, so ornament survives and
+                    # only what is really outside stays outside.
+                    analysis.relabel_within_raaga(analysed, raaga)
         except Exception as exc:  # noqa: BLE001
             self.repo.update_source(stored.id, status="failed", error=str(exc))
             result.error = f"analysis failed: {exc}"
@@ -475,10 +501,17 @@ class ResearchAgent:
             result.error = "nothing musical was heard"
             return result
 
-        learned, rejected, facts = self._extract(stored, candidate, analysed, raaga)
+        learned, rejected, facts, kept, observed = self._extract(
+            stored, candidate, analysed, raaga)
         result.phrases_learned = learned
         result.phrases_rejected = rejected
         result.facts_learned = facts
+        # And into the permanent memory.  Until now everything heard stopped
+        # at the agent's own repository, so the Knowledge Base held 222 items
+        # and not one of them came from listening.
+        if self.kb is not None and raaga is not None:
+            result.kb_items = kb_bridge.publish(
+                self.kb, stored, raaga.name, kept, observed, run_id=stored.id)
         self.repo.update_source(stored.id, status="analysed",
                                 confidence=analysed.confidence)
         self.repo.log_event(
@@ -490,11 +523,19 @@ class ResearchAgent:
     # -- knowledge extraction ---------------------------------------------
     def _extract(self, source: Source, candidate: SourceCandidate,
                  analysed: analysis.AnalysisResult,
-                 raaga: Optional[Raaga]) -> Tuple[int, int, int]:
+                 raaga: Optional[Raaga]
+                 ) -> Tuple[int, int, int, List[Phrase], List[Fact]]:
+        """Returns the counts, and the records themselves.
+
+        The records come back so the Knowledge Base bridge can publish
+        exactly what this recording taught, rather than re-reading the whole
+        repository and republishing everything already in it.
+        """
         min_confidence = float(getattr(self.settings,
                                        "learning_min_confidence", 0.35))
         allowed = set(raaga.allowed) if raaga else set()
         learned = rejected = 0
+        kept: List[Phrase] = []
 
         for phrase in analysed.phrases:
             # A held note arrives from the tracker as a run of identical swaras.
@@ -502,6 +543,13 @@ class ResearchAgent:
             # anything is remembered as a phrase.
             swaras, durations = _collapse_repeats(phrase.swaras, phrase.durations)
             if len(swaras) < 3 or len(set(swaras)) < 3:
+                rejected += 1
+                continue
+            # Still leaping after octave correction, so the octaves were not
+            # the problem: the tracker lost the line.  Every swara in it can
+            # be a real swara of the raaga and the shape still be one nobody
+            # played, which is precisely what the scale gate cannot see.
+            if analysis.widest_leap(phrase) > analysis.OCTAVE_LEAP_SEMITONES:
                 rejected += 1
                 continue
             confidence = round(phrase.confidence * 0.5
@@ -522,11 +570,13 @@ class ResearchAgent:
                 notes=candidate.title[:120])
             _, is_new = self.repo.add_phrase(record)
             learned += int(is_new)
+            if is_new:
+                kept.append(record)
 
-        facts = 0
+        observed: List[Fact] = []
         if raaga is not None and analysed.notes:
-            facts += self._observe_facts(source, analysed, raaga)
-        return learned, rejected, facts
+            observed = self._observe_facts(source, analysed, raaga)
+        return learned, rejected, len(observed), kept, observed
 
     @staticmethod
     def _function(phrase: analysis.AnalysedPhrase) -> str:
@@ -534,12 +584,17 @@ class ResearchAgent:
         return {"rise": "ascent", "fall": "descent"}.get(shape, shape or "phrase")
 
     def _observe_facts(self, source: Source, analysed: analysis.AnalysisResult,
-                       raaga: Raaga) -> int:
-        """Write down what was actually heard, with its provenance."""
-        facts = 0
+                       raaga: Raaga) -> List[Fact]:
+        """Write down what was actually heard, with its provenance.
+
+        Returns the facts themselves, not a count, so the Knowledge Base
+        bridge can publish this recording's observations rather than every
+        observation ever made about the raaga.
+        """
+        made: List[Fact] = []
         heard = [parse_swara(n.swara)[0] for n in analysed.notes]
         if not heard:
-            return 0
+            return made
 
         ascending = [b for a, b in zip(analysed.notes, analysed.notes[1:])
                      if b.midi > a.midi]
@@ -555,19 +610,19 @@ class ResearchAgent:
             return sorted(seen, key=lambda s: SWARA_SEMITONES.get(s, 0))
 
         confidence = round(min(0.9, analysed.confidence * source.quality + 0.1), 3)
+
+        def remember(key: str, value: str, strength: float, note: str) -> None:
+            fact = Fact(raaga=source.raaga, key=key, value=value,
+                        confidence=strength, source_id=source.id, notes=note)
+            self.repo.add_fact(fact)
+            made.append(fact)
+
         if len(ascending) >= 3:
-            self.repo.add_fact(Fact(
-                raaga=source.raaga, key="observed_ascent",
-                value=" ".join(order(ascending)), confidence=confidence,
-                source_id=source.id,
-                notes=f"heard in {source.title}"))
-            facts += 1
+            remember("observed_ascent", " ".join(order(ascending)), confidence,
+                     f"heard in {source.title}")
         if len(descending) >= 3:
-            self.repo.add_fact(Fact(
-                raaga=source.raaga, key="observed_descent",
-                value=" ".join(order(descending)), confidence=confidence,
-                source_id=source.id, notes=f"heard in {source.title}"))
-            facts += 1
+            remember("observed_descent", " ".join(order(descending)), confidence,
+                     f"heard in {source.title}")
 
         endings = [parse_swara(p.swaras[-1])[0] for p in analysed.phrases
                    if p.swaras]
@@ -576,19 +631,12 @@ class ResearchAgent:
             for swara in endings:
                 counts[swara] = counts.get(swara, 0) + 1
             resting = sorted(counts, key=counts.get, reverse=True)[:3]
-            self.repo.add_fact(Fact(
-                raaga=source.raaga, key="observed_resting_notes",
-                value=" ".join(resting), confidence=confidence,
-                source_id=source.id,
-                notes=f"phrase endings in {source.title}"))
-            facts += 1
+            remember("observed_resting_notes", " ".join(resting), confidence,
+                     f"phrase endings in {source.title}")
         if analysed.tempo_bpm:
-            self.repo.add_fact(Fact(
-                raaga=source.raaga, key="observed_tempo",
-                value=f"{analysed.tempo_bpm:.0f}", confidence=confidence * 0.7,
-                source_id=source.id, notes=source.title))
-            facts += 1
-        return facts
+            remember("observed_tempo", f"{analysed.tempo_bpm:.0f}",
+                     confidence * 0.7, source.title)
+        return made
 
     # -- structural seeding ------------------------------------------------
     def seed_structural_knowledge(self, raaga_name: str) -> int:

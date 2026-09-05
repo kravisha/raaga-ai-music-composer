@@ -18,9 +18,10 @@ pytestmark = pytest.mark.unit
 
 def _write(root, rows, name="training_manifest.csv"):
     path = root / name
+    fields = ["file", "raaga", "kind", "prepare", "source", "notes"]
+    rows = [{**{f: "" for f in fields}, **row} for row in rows]
     with path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(
-            handle, fieldnames=["file", "raaga", "kind", "source", "notes"])
+        writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
         for row in rows:
             writer.writerow(row)
@@ -115,6 +116,46 @@ def test_an_unfilled_raaga_matches_nothing_rather_than_everything(tmp_path):
     assert entries[0].raaga == ""
     assert manifest.music_for(tmp_path, "Hamsadhwani") == []
     assert manifest.music_for(tmp_path, "") == []
+
+
+def test_a_produced_recording_can_refuse_preparation(tmp_path):
+    """The drone notch and speech gate suit a lesson, not a film song.
+
+    Applied to a produced recording - no tanpura to notch, sung all the
+    way through - they cut a 120-second excerpt to 31 seconds.
+    """
+    _media(tmp_path, "Hamsadhwani/lesson.mp3")
+    _media(tmp_path, "Hamsadhwani/filmsong.mp3")
+    _media(tmp_path, "Hamsadhwani/whoknows.mp3")
+    _write(tmp_path, [
+        {"file": "Hamsadhwani/lesson.mp3", "raaga": "Hamsadhwani",
+         "kind": "music", "prepare": "yes"},
+        {"file": "Hamsadhwani/filmsong.mp3", "raaga": "Hamsadhwani",
+         "kind": "music", "prepare": "no"},
+        {"file": "Hamsadhwani/whoknows.mp3", "raaga": "Hamsadhwani",
+         "kind": "music", "prepare": "auto"}])
+
+    by_name = {e.path.name: e for e in manifest.load(tmp_path)}
+    # "yes" and "no" override whatever the provider would have decided;
+    # "auto" defers to it, either way.
+    assert by_name["lesson.mp3"].wants_preparation(False) is True
+    assert by_name["filmsong.mp3"].wants_preparation(True) is False
+    assert by_name["whoknows.mp3"].wants_preparation(True) is True
+    assert by_name["whoknows.mp3"].wants_preparation(False) is False
+
+
+def test_a_missing_prepare_column_still_defers_to_the_provider(tmp_path):
+    """Manifests written before the column existed keep working."""
+    _media(tmp_path, "Kalyani/song.mp3")
+    path = tmp_path / "training_manifest.csv"
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["file", "raaga", "kind"])
+        writer.writeheader()
+        writer.writerow({"file": "Kalyani/song.mp3", "raaga": "Kalyani",
+                         "kind": "music"})
+    entry = manifest.load(tmp_path)[0]
+    assert entry.prepare == manifest.PREPARE_AUTO
+    assert entry.wants_preparation(True) is True
 
 
 def test_an_unknown_kind_is_treated_as_music_and_logged(tmp_path):

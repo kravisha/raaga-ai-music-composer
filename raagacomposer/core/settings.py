@@ -149,7 +149,13 @@ class Settings:
     learning_allow_web: bool = False       # record leads only; never fetches
     learning_autostart: bool = False
     learning_max_sources_per_lesson: int = 4
-    learning_max_audio_seconds: float = 120.0
+    # A whole recording, not the first two minutes of one.  At 120s a
+    # 15.7-minute concert or film-song mashup was 87% unheard, and what
+    # survived was whatever happened to be at the start - an introduction,
+    # an announcement, a title card.  The cost of listening to the rest is
+    # analysis time, about a minute of CPU per recording, not storage.
+    # Set it to 0 to place no limit at all.
+    learning_max_audio_seconds: float = 1800.0
     learning_max_steps_per_session: int = 200
     learning_step_pause: float = 0.5
     learning_min_confidence: float = 0.35

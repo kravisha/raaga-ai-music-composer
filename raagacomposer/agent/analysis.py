@@ -471,6 +471,70 @@ def analyse(audio: np.ndarray, sr: int, raaga: Optional[Raaga] = None,
     return result
 
 
+#: A melodic line does not leap this far between consecutive notes.  An
+#: autocorrelation tracker, on the other hand, does it constantly on a dense
+#: mix: it locks onto a harmonic for a frame or two and reports a note an
+#: octave or two away from the one being sung.  Measured on a film-song
+#: mashup, half the phrases carried a leap of an octave or more and a third
+#: exceeded two - "S- S++ S- S++ G3 S++" is the tracker flip-flopping, not
+#: a singer.
+OCTAVE_LEAP_SEMITONES = 12.0
+
+
+def _shift_octave(swara: str, steps: int) -> str:
+    """Move a swara name by whole octaves, keeping which swara it is."""
+    base = swara.rstrip("+-")
+    marks = swara[len(base):]
+    octave = marks.count("+") - marks.count("-") + steps
+    return base + ("+" * octave if octave > 0 else "-" * (-octave))
+
+
+def repair_octaves(result: AnalysisResult) -> int:
+    """Fold notes the tracker put in the wrong octave back into the line.
+
+    The pitch *class* is the part autocorrelation gets right - the swara is
+    a real swara - and the octave is the part it gets wrong.  So this moves
+    a stray note by whole octaves towards the middle of its own phrase,
+    which changes the register without inventing a note that was not sung.
+
+    A phrase that is still leaping after this cannot be repaired by moving
+    octaves around, and ``research.py`` refuses it rather than teaching the
+    composer a contour nobody played.
+
+    Returns the number of notes moved.  Mutates in place; phrases and
+    ``result.notes`` hold the same objects.
+    """
+    import statistics
+
+    moved = 0
+    for phrase in result.phrases:
+        notes = phrase.notes
+        if len(notes) < 2:
+            continue
+        middle = statistics.median(n.midi for n in notes)
+        for note in notes:
+            if abs(note.midi - middle) <= OCTAVE_LEAP_SEMITONES:
+                continue
+            # Move it to whichever octave sits closest to the middle of the
+            # phrase, rather than only just inside an octave of it: a note
+            # two octaves out is not repaired by bringing it one closer.
+            steps = int(round((middle - note.midi) / 12.0))
+            if not steps:
+                continue
+            note.midi += 12.0 * steps
+            note.swara = _shift_octave(note.swara, steps)
+            moved += 1
+    return moved
+
+
+def widest_leap(phrase: AnalysedPhrase) -> float:
+    """The largest step between consecutive notes, in semitones."""
+    notes = phrase.notes
+    if len(notes) < 2:
+        return 0.0
+    return max(abs(b.midi - a.midi) for a, b in zip(notes, notes[1:]))
+
+
 #: How far a note may sit from one of the raaga's swaras and still be that
 #: swara.  Carnatic phrasing is not a sequence of held pitches: a gamaka
 #: swings well past a quarter tone, so judging by the nearest of twelve

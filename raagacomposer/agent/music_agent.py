@@ -113,7 +113,7 @@ class MusicAgent:
     def __init__(self, settings: Optional[Settings] = None,
                  library: Optional[RaagaLibrary] = None,
                  repository: Optional[KnowledgeRepository] = None,
-                 llm=None) -> None:
+                 llm=None, kb=None) -> None:
         self.settings = settings or Settings.load()
         self.library = library or default_library()
         configured_db = getattr(self.settings, "knowledge_db", "")
@@ -122,7 +122,12 @@ class MusicAgent:
         self.curriculum = CurriculumEngine(
             self.repo, pilot_raaga=getattr(self.settings, "pilot_raaga",
                                            "Keeravani"))
-        self.research = ResearchAgent(self.repo, self.library, self.settings, llm)
+        # ``kb`` is the durable Knowledge Base.  Without one the agent still
+        # learns into its own repository; with one, what it hears also
+        # becomes part of the application's permanent memory.
+        self.kb = kb
+        self.research = ResearchAgent(self.repo, self.library, self.settings,
+                                      llm, kb=kb)
         self.practice = PracticeEngine(self.repo, self.library, self.settings)
 
         self.current_activity = "idle"
