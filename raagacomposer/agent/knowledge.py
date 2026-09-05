@@ -483,6 +483,34 @@ class KnowledgeRepository:
                     (limit,)).fetchall()
             return [self._row_to_source(r) for r in rows]
 
+    def forget_source(self, source_id: str) -> int:
+        """Remove a source and everything derived from it.
+
+        The agent could learn but never unlearn, and that is untenable once
+        the code that does the hearing changes: a phrase is not knowledge
+        about a raaga, it is knowledge about a raaga *as heard by a
+        particular version of the ears*.  When those change, what they
+        produced has to be re-derived, and re-deriving means first removing
+        what the old version left behind.
+
+        Only what came from this recording goes.  The recording itself is
+        untouched - it is on disk, it is the thing of record, and it can be
+        listened to again.  Returns how many rows were removed, the source
+        row included.
+        """
+        with self._lock:
+            removed = 0
+            for table in ("phrases", "raaga_facts"):
+                cur = self._conn.execute(
+                    f"DELETE FROM {table} WHERE source_id=?", (source_id,))
+                removed += cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+            cur = self._conn.execute("DELETE FROM sources WHERE id=?",
+                                     (source_id,))
+            removed += cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+            self._conn.commit()
+        log.info("forgot source %s and %d derived row(s)", source_id, removed)
+        return removed
+
     def has_source(self, provider: str, locator: str) -> bool:
         with self._lock:
             fp = fingerprint([provider, locator])

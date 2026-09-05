@@ -24,7 +24,21 @@ from ..raaga.library import Raaga, SWARA_SEMITONES
 
 log = get_logger("agent.analysis")
 
-ANALYSIS_VERSION = "pitch-autocorr-1"
+#: What the ears are, as a version.  Every source row records the version
+#: that derived it, so knowledge made by code that no longer exists can be
+#: found and rebuilt rather than trusted.
+#:
+#: **Bump this whenever the extraction changes what it produces.**  Not for
+#: a refactor, a rename or a speed-up - for anything that would make the
+#: same recording yield different phrases.  Leaving it still is how a
+#: knowledge base quietly becomes a mixture of several codebases.
+#:
+#: 1 -> 2: swara naming may range over all twelve for material from outside
+#: (``constrain_to_raaga``), notes within a gamaka's reach are given the
+#: raaga's own name (``relabel_within_raaga``), octave slips are folded back
+#: into the phrase (``repair_octaves``), and a phrase still leaping more
+#: than an octave is refused.
+ANALYSIS_VERSION = "pitch-autocorr-2"
 
 DEFAULT_SR = 22050
 FRAME_SECONDS = 0.046

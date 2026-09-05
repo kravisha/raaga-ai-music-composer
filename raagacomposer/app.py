@@ -161,6 +161,12 @@ class AppController:
         self.dirty = False
         self._last_autosave = time.time()
         self._renders: Dict[str, RenderedAudio] = {}
+        #: The exact render currently sitting in the playback engine, as an
+        #: object rather than a name.  ``_cache_render`` makes a new
+        #: ``RenderedAudio`` every time, so identity distinguishes "this is
+        #: the audition you are already hearing" from "this is a different
+        #: audition that happens to also be called 'audition'".
+        self._loaded_render: Optional[RenderedAudio] = None
         self.status_text = "Ready"
         self.selection: Optional[Tuple[float, float]] = None
         self._playhead = 0.0
@@ -1918,8 +1924,21 @@ class AppController:
         if rendered is None:
             self.status(f"The {kind} has not been rendered yet.")
             return False
-        if self.playback.source_name != kind:
+        # Compare the render, not its name.  The engine's ``source_name`` is
+        # the *kind* - "audition", "tune", "full" - and a second audition is
+        # still called "audition", so a name check said "already loaded" and
+        # replayed the previous raaga's scale.  Auditioning Hamsadhwani then
+        # Mohanam played Hamsadhwani twice; re-rendering a mix and pressing
+        # play gave you the version before it.
+        #
+        # The guard is still worth having: ``load`` stops playback and
+        # rewinds, so reloading the render already playing would break
+        # pausing and playing a range of it.  Identity keeps that and fixes
+        # the rest, because a re-render is always a new object.
+        if self._loaded_render is not rendered \
+                or self.playback.source_name != kind:
             self.playback.load(rendered.audio, rendered.sample_rate, kind)
+            self._loaded_render = rendered
         start, end = (play_range or (None, None))
         ok = self.playback.play(start, end, loop)
         if not ok:

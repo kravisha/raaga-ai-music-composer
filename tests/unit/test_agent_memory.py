@@ -363,3 +363,38 @@ def test_the_agent_can_say_what_it_knows_and_where_from(repo, raagas):
     assert "reference book" in text
     assert "confidence" in text
     assert "have not learned" in describe_knowledge(repo, "Todi")
+
+
+# --------------------------------------------------------------------------
+# unlearning, so a changed ear can be rebuilt from the audio
+# --------------------------------------------------------------------------
+def test_forgetting_a_source_removes_what_came_from_it(repo):
+    """A phrase is not knowledge about a raaga - it is knowledge about a
+    raaga *as heard by a particular version of the ears*.  When those
+    change it has to be re-derived, and that starts with removing what the
+    old version left behind."""
+    kept, _ = repo.add_source(Source(locator="keep://one", provider="corpus",
+                                     raaga="Keeravani"))
+    doomed, _ = repo.add_source(Source(locator="stale://two", provider="corpus",
+                                       raaga="Keeravani"))
+    for source, swaras in ((kept, ["S", "R2", "G2"]),
+                           (doomed, ["G2", "M1", "P"])):
+        repo.add_phrase(Phrase(raaga="Keeravani", swaras=swaras,
+                               source_id=source.id, confidence=0.7))
+    repo.add_fact(Fact(raaga="Keeravani", key="observed_tempo", value="88",
+                       confidence=0.6, source_id=doomed.id))
+
+    removed = repo.forget_source(doomed.id)
+    assert removed >= 3, "the phrase, the fact and the source row"
+
+    left = repo.phrases(raaga="Keeravani", limit=50)
+    assert [p.source_id for p in left] == [kept.id], \
+        "forgetting one source took another's phrases with it"
+    assert all(s.id != doomed.id for s in repo.sources())
+    assert not [f for f in repo.facts("Keeravani") if f.source_id == doomed.id]
+
+
+def test_forgetting_something_that_is_not_there_is_harmless(repo):
+    before = len(repo.phrases(limit=50))
+    assert repo.forget_source("src_nonexistent") == 0
+    assert len(repo.phrases(limit=50)) == before

@@ -4,6 +4,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from raagacomposer.core.models import Stage
@@ -380,3 +381,62 @@ def test_save_as_is_how_a_song_is_renamed(app, tmp_path):
     # and it survives the round trip to disk
     reopened = app.store.open(app.project_dir)
     assert reopened.title == "Kaadhal Tholvi"
+
+
+# --------------------------------------------------------------------------
+# playing back the render you just made, and not the one before it
+# --------------------------------------------------------------------------
+def _loaded(app):
+    """The audio actually sitting in the playback engine."""
+    return app.playback._buffer.copy()
+
+
+def test_auditioning_a_second_raaga_plays_the_second_raaga(app):
+    """Reported from the app: pick Hamsadhwani, hear it; pick Mohanam, hear
+    Hamsadhwani again.
+
+    ``play_render`` skipped loading when the engine's ``source_name`` already
+    matched - but that name is the *kind*, and a second audition is still
+    called "audition".  Two different scales, one name, and the first one
+    kept playing.
+    """
+    first = app.audition_raaga("Hamsadhwani", play=True)
+    assert first is not None
+    hamsadhwani = _loaded(app)
+    assert len(hamsadhwani), "nothing was loaded for the first audition"
+
+    second = app.audition_raaga("Mohanam", play=True)
+    assert second is not None
+    mohanam = _loaded(app)
+
+    assert mohanam.shape != hamsadhwani.shape or \
+        not np.array_equal(mohanam, hamsadhwani), \
+        "the second audition replayed the first raaga's scale"
+
+
+def test_replaying_the_same_audition_does_not_reload_it(app):
+    """The guard being fixed is worth keeping: ``load`` stops and rewinds,
+    so replaying what is already loaded must not restart it."""
+    app.audition_raaga("Hamsadhwani", play=True)
+    loaded = app._loaded_render
+    app.play_render("audition")
+    assert app._loaded_render is loaded, "the same render was reloaded"
+
+
+def test_a_re_rendered_tune_is_the_one_you_hear(ready, settle):
+    """The same fault, on the path that matters more than the audition."""
+    app = ready
+    before = _loaded(app) if app.playback.source_name else None
+    app.render("instrumental", autoplay=True)
+    settle()
+    first = _loaded(app)
+    assert len(first)
+
+    app.generate_tune(seed=99)
+    settle()
+    app.render("instrumental", autoplay=True)
+    settle()
+    second = _loaded(app)
+
+    assert second.shape != first.shape or not np.array_equal(second, first), \
+        "the re-rendered mix played the previous version"
