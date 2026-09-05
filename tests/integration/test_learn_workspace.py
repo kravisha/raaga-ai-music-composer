@@ -119,6 +119,43 @@ def test_start_then_stop_learning_updates_the_dashboard(window, qt_app):
     assert dash._dash_values["activity_state"].text() in ("idle", "paused")
 
 
+def test_the_dashboard_owns_the_learner_controls(window):
+    """One row runs the learner, not two inches apart in the same column.
+
+    The Dashboard re-homes the agent panel's control group directly under
+    its own Start / Pause / Resume / Stop row.  That group used to bring
+    its own Stop and its own tri-state Start/Pause/Resume toggle along as
+    passengers, so the screen offered the same actions twice.  The
+    dashboard's row is the one that survives; the group keeps what is its
+    own - choosing what to study, and studying one lesson by hand.
+    """
+    from PySide6.QtWidgets import QPushButton
+
+    window.set_workspace("LEARN")
+    window.learn_workspace.show_area("Dashboard")
+    onscreen = [b for b in window.learn_workspace.findChildren(QPushButton)
+                if b.isVisible()]
+    for label in ("Stop", "Start"):
+        found = [b for b in onscreen if b.text() == label]
+        assert len(found) == 1, f"{len(found)} {label!r} buttons on LEARN"
+    assert [b for b in onscreen if b.text() == "Stop"][0] is \
+        window.learn_workspace.dash_stop_btn
+    assert [b for b in onscreen if b.text() == "Start"][0] is \
+        window.learn_workspace.dash_start_btn
+
+    # The group's own toggle is gone, under every label it used to wear.
+    for label in ("Start learning", "Pause learning", "Resume learning"):
+        assert not [b for b in onscreen if b.text() == label], \
+            f"{label!r} is still on the LEARN screen"
+
+    # Both are still reachable without the mouse.
+    learn_menu = next(a.menu() for a in window.menuBar().actions()
+                      if a.text() == "&Learning")
+    labels = [a.text() for a in learn_menu.actions()]
+    assert "Stop learning" in labels
+    assert "Start / pause learning" in labels
+
+
 # --------------------------------------------------------------------------
 # B. Curriculum
 # --------------------------------------------------------------------------

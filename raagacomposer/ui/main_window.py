@@ -293,7 +293,9 @@ class MainWindow(QMainWindow):
                      self.agent_panel._toggle_learning)
         self._action(learn_menu, "Study one lesson now", None,
                      self.agent_panel._step)
-        self._action(learn_menu, "Stop learning", None, self.app.stop_learning)
+        # Through the panel, like its siblings above, so the controls repaint
+        # at once instead of waiting for the next refresh tick.
+        self._action(learn_menu, "Stop learning", None, self.agent_panel._stop)
         learn_menu.addSeparator()
         self._action(learn_menu, "Mark the current tune", None,
                      self.agent_panel._critique)

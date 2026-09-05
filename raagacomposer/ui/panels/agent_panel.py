@@ -58,13 +58,19 @@ class AgentPanel(QWidget):
         study_btn = QPushButton("Study this raaga")
         study_btn.clicked.connect(self._study)
 
-        self.start_btn = QPushButton("Start learning")
-        self.start_btn.setObjectName("primary")
-        self.start_btn.clicked.connect(self._toggle_learning)
         step_btn = QPushButton("One lesson")
+        step_btn.setObjectName("primary")
         step_btn.clicked.connect(self._step)
-        stop_btn = QPushButton("Stop")
-        stop_btn.clicked.connect(self._stop)
+        # No Start / Pause / Resume / Stop here.  The LEARN dashboard
+        # re-homes this whole group directly beneath its own Start / Pause /
+        # Resume / Stop row, so running the learner from here put the same
+        # actions twice in one column, inches apart - a tri-state toggle
+        # beside the four buttons it duplicates.  The dashboard's row is the
+        # one that survives; this group keeps what is its own, which is
+        # choosing what to study and studying one lesson by hand.
+        # ``_toggle_learning`` and ``_stop`` stay - the Learning menu calls
+        # them, and they refresh the panel where the raw controller calls
+        # would leave it stale.
         corpus_btn = QPushButton("Choose my learning folder...")
         corpus_btn.clicked.connect(self._choose_corpus)
 
@@ -72,9 +78,8 @@ class AgentPanel(QWidget):
         row1.addWidget(self.raaga_box, 1)
         row1.addWidget(study_btn)
         row2 = QHBoxLayout()
-        row2.addWidget(self.start_btn)
         row2.addWidget(step_btn)
-        row2.addWidget(stop_btn)
+        row2.addStretch(1)
         row3 = QHBoxLayout()
         row3.addWidget(corpus_btn)
         self.corpus_label = QLabel("no folder chosen")
@@ -230,8 +235,6 @@ class AgentPanel(QWidget):
         status = self.app.agent_status()
         learning = status["learning"]
         paused = status["paused"]
-        self.start_btn.setText("Pause learning" if learning else
-                               ("Resume learning" if paused else "Start learning"))
         self.headline.setText(
             f"Stage {status['stage']} - studying {status['current_raaga']}\n"
             f"Next: {status['next_goal']}")
