@@ -135,7 +135,10 @@ class AppController:
         try:
             self.training = TrainingController(
                 self.settings, self.raagas, agent_repo=self.agent.repo,
-                curriculum=self.agent.curriculum, kb=self.kb)
+                curriculum=self.agent.curriculum, kb=self.kb,
+                # What a studied source taught becomes lessons the agent can
+                # be examined on, rather than sitting unread in a report.
+                on_report=self._file_stated_lessons)
         except Exception as exc:  # noqa: BLE001 - never block startup on it
             log.warning("the training system is unavailable: %s", exc)
             self.training = None
@@ -804,6 +807,19 @@ class AppController:
         if status.state == ActionState.COMPLETED:
             self._store_brief_suggestions(suggestions)
         return suggestions
+
+    def _file_stated_lessons(self, report) -> None:
+        """A completed source becomes lessons; never a reason to fail a run."""
+        if self.agent is None:
+            return
+        try:
+            made = self.agent.file_stated_lessons(report)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("could not file lessons from the report: %s", exc)
+            return
+        if made:
+            self.status(f"{len(made)} lesson(s) to be examined on from "
+                        f"{getattr(report.source, 'title', 'the source')}")
 
     def _feedback_brief(self, name: str) -> Optional[CreativeBrief]:
         """The brief this raaga was suggested for, if we actually know.

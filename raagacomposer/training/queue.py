@@ -43,10 +43,17 @@ class TrainingQueueService:
     """Works the queue one source at a time, and survives being closed."""
 
     def __init__(self, store: TrainingStore, pipeline: LearningPipeline,
-                 on_change: Optional[Callable[[], None]] = None) -> None:
+                 on_change: Optional[Callable[[], None]] = None,
+                 on_report: Optional[Callable[[LearningReport], None]] = None
+                 ) -> None:
         self.store = store
         self.pipeline = pipeline
         self.on_change = on_change
+        #: Called with each completed report, so what a source taught can be
+        #: turned into lessons the agent is examined on
+        #: (``training/lessons.py``).  Never allowed to fail a run: a source
+        #: was still studied even if nothing downstream could use it.
+        self.on_report = on_report
 
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
@@ -214,6 +221,12 @@ class TrainingQueueService:
                 on_progress=lambda *_: self._changed(),
                 cancelled=lambda: (self._cancel_current.is_set()
                                    or self._stop.is_set()))
+            if report is not None and self.on_report is not None:
+                try:
+                    self.on_report(report)
+                except Exception as exc:                     # noqa: BLE001
+                    log.warning("could not file lessons for run %s: %s",
+                                run.run_id, exc)
             return report
         except Exception as exc:  # noqa: BLE001 - one bad source is not fatal
             self.last_error = str(exc)

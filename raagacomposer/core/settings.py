@@ -42,6 +42,7 @@ ENV_KEYS = {
     "openai_api_key": "OPENAI_API_KEY",
     "elevenlabs_api_key": "ELEVENLABS_API_KEY",
     "deepgram_api_key": "DEEPGRAM_API_KEY",
+    "youtube_api_key": "YOUTUBE_API_KEY",
 }
 
 
