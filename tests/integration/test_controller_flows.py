@@ -370,6 +370,55 @@ def test_a_percussion_preference_does_not_take_over_the_melody(app):
     assert "lead" in app.tune_instrument().roles
 
 
+def test_the_audition_and_the_arrangement_cast_the_same_lead(ready, settle):
+    """No drift: one brief, one lead, whichever path asks.
+
+    These decided separately - the audition fell back to the veena and
+    ignored the feel of the brief, the arrangement fell back to the flute
+    and weighed it - so the same brief could be auditioned on one
+    instrument and arranged around another.
+    """
+    from raagacomposer.music import arrangement as arranger
+
+    app = ready
+    for preferred in ([], ["violin"], ["mridangam"], ["flute"]):
+        app.update_brief(instruments_preferred=preferred)
+        auditioned = app.cast_lead()
+
+        # A fresh arrangement, so earlier versions' tracks are not carried
+        # forward and confused with this one's casting.
+        built = arranger.auto_arrange(
+            app.project.melody(), app.require_raaga(), app.project.brief,
+            previous=None, lead=auditioned.instrument)
+        leads = {t.instrument for t in built.tracks if t.role == "lead"}
+        assert leads == {auditioned.instrument.key}, (
+            f"preferred={preferred}: auditioned "
+            f"{auditioned.instrument.key!r} but arranged {sorted(leads)}")
+
+    # And the controller hands that same casting down rather than letting
+    # the arranger decide again from less information.
+    app.update_brief(instruments_preferred=["violin"])
+    app.auto_arrange()
+    settle()
+    fresh = app.project.arrangement()
+    assert any(t.instrument == "violin" and t.role == "lead"
+               for t in fresh.tracks), \
+        "the controller's casting did not reach the arrangement"
+
+
+def test_the_choice_of_lead_can_explain_itself(app):
+    """Specification 13: show which instrument, and why it was chosen."""
+    app.update_brief(instruments_preferred=["violin"])
+    chosen = app.cast_lead()
+    assert chosen.instrument.name.lower() == "violin"
+    assert chosen.chosen_by_the_creator
+    assert "asked for" in chosen.reason
+
+    app.update_brief(instruments_preferred=[])
+    fallback = app.cast_lead()
+    assert fallback.reason and not fallback.chosen_by_the_creator
+
+
 def test_save_as_is_how_a_song_is_renamed(app, tmp_path):
     """There is no name field on screen; the folder you choose is the name."""
     app.new_project("Untitled Song")
@@ -381,6 +430,59 @@ def test_save_as_is_how_a_song_is_renamed(app, tmp_path):
     # and it survives the round trip to disk
     reopened = app.store.open(app.project_dir)
     assert reopened.title == "Kaadhal Tholvi"
+
+
+# --------------------------------------------------------------------------
+# the tune is hummed, not played
+# --------------------------------------------------------------------------
+def test_the_tune_is_hummed_rather_than_played_on_an_instrument(ready, settle):
+    """Specification 10.1-10.3: judge the line before the instrument.
+
+    Previewing a tune on an instrument asked the creator to judge two
+    things at once, and every instrument here is additive synthesis - a
+    "violin" is seven harmonics and an envelope, which is why it sounded
+    like a keyboard.  A singer with no words sings on "aa".
+    """
+    app = ready
+    app.render("tune", autoplay=False)
+    settle()
+    rendered = app.rendered("tune")
+    assert rendered is not None, "no tune render"
+    assert len(rendered.audio), "the hum is empty"
+
+
+def test_the_hum_covers_the_instrumental_sections_too(ready, settle):
+    """A sung take skips the interlude; hearing the tune must not.
+
+    ``plan_segments`` drops instrumental sections by default, which left
+    20 of 53 notes silent - holes exactly where the prelude, interlude and
+    outro are.
+    """
+    from raagacomposer.voice import renderer
+
+    melody = ready.project.melody()
+    instrumental = [s for s in melody.sections if s.kind.instrumental]
+    assert instrumental, "this tune has no instrumental section to check"
+
+    sung_only = renderer.plan_segments(melody, None)
+    everything = renderer.plan_segments(melody, None, vocal_sections_only=False)
+    assert len(everything) > len(sung_only), \
+        "the fixture no longer exercises the case this guards"
+    assert len(everything) == len(melody.notes)
+
+    ready.render("tune", autoplay=False)
+    settle()
+    audio = ready.rendered("tune").audio
+    mono = audio.mean(axis=1) if audio.ndim > 1 else audio
+    sr = ready.sample_rate
+    for section in instrumental:
+        start, end = int(section.start * sr), int(min(section.end, melody.duration) * sr)
+        block = mono[start:end]
+        if len(block) < sr // 4:
+            continue
+        level = float(np.sqrt(np.mean(block ** 2)))
+        assert level > 0.005, \
+            f"{section.kind.name} is silent in the hum (rms {level:.4f})"
 
 
 # --------------------------------------------------------------------------

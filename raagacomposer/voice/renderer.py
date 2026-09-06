@@ -323,7 +323,17 @@ def _add_consonant(buf: np.ndarray, cons: str, at: int, sr: int,
 def render_melody(melody: MelodyVersion, lyrics: Optional[LyricsVersion],
                   profile: VoiceProfile, direction: VocalDirection,
                   sr: int = 44100, total_seconds: Optional[float] = None,
-                  seed: int = 11) -> np.ndarray:
-    segments = plan_segments(melody, lyrics)
+                  seed: int = 11,
+                  vocal_sections_only: bool = True) -> np.ndarray:
+    """Sing a melody, with words or without them.
+
+    ``vocal_sections_only`` is right for a take with lyrics - nobody sings
+    over the interlude - and wrong for hearing the tune itself, where every
+    note has to sound.  On a 53-note tune it was the difference between the
+    whole line and 33 notes with holes where the prelude, interlude and
+    outro should be.
+    """
+    segments = plan_segments(melody, lyrics,
+                             vocal_sections_only=vocal_sections_only)
     return render(segments, profile, direction, sr,
                   total_seconds or (melody.duration + 1.0), seed)
