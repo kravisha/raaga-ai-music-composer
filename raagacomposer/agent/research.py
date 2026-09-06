@@ -99,6 +99,39 @@ class IngestionResult:
 # --------------------------------------------------------------------------
 # providers
 # --------------------------------------------------------------------------
+#: Where each provider's material actually comes from (training
+#: specification 2.5).  This used to be hardcoded to INTERNET on the one
+#: ingest path every provider shares, which meant a recording from the
+#: creator's own folder was filed as internet-sourced - and, far worse,
+#: the application's own renders were filed as *trainable*.
+#:
+#: An unlisted provider gets UNKNOWN, which is *not* trainable.  An
+#: earlier version of this defaulted to INTERNET on the reasoning that
+#: unknown material is somebody else's - an assumption nothing had
+#: established, and one that quietly admitted unmapped providers into the
+#: learned pool.  ``may_be_learned_from`` already refuses an origin nobody
+#: recognises; the default here now agrees with it.
+PROVIDER_ORIGINS = {
+    "corpus": provenance.HUMAN,          # the creator's own recordings
+    "library": provenance.REFERENCE,     # the structural library, as a book
+    "reference": provenance.REFERENCE,   # that library, rendered for practice
+    "project": provenance.GENERATED,     # the application listening to itself
+    "web": provenance.INTERNET,
+}
+
+
+def origin_for_provider(name: str) -> str:
+    """Where material from this provider came from.
+
+    Derived rather than assumed.  ``project`` is the one that matters most:
+    those are the application's own renders, and filing them as anything
+    trainable would let the agent learn from music it wrote itself, which
+    is exactly what specification 2.4 forbids.
+    """
+    return PROVIDER_ORIGINS.get((name or "").strip().lower(),
+                                provenance.UNKNOWN)
+
+
 class SourceProvider:
     name = "provider"
     rights_status = "unknown"
@@ -391,7 +424,8 @@ class ResearchAgent:
             content_type=candidate.content_type,
             rights_status=candidate.rights_status, provider=candidate.provider,
             quality=candidate.quality, extraction_version=analysis.ANALYSIS_VERSION,
-            origin=provenance.INTERNET, notes=candidate.notes)
+            origin=origin_for_provider(candidate.provider),
+            notes=candidate.notes)
         stored, is_new = self.repo.add_source(source)
         result.source_id = stored.id
         if not is_new:
@@ -656,7 +690,7 @@ class ResearchAgent:
             content_type="structural", rights_status="internally-generated",
             provider="library", quality=0.9, confidence=0.9, status="analysed",
             extraction_version=analysis.ANALYSIS_VERSION,
-            origin=provenance.HUMAN,
+            origin=provenance.REFERENCE,
             notes="the structural definition the application ships with")
         stored, _ = self.repo.add_source(source)
 
