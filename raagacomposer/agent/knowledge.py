@@ -800,7 +800,12 @@ class KnowledgeRepository:
                     self._conn.execute(
                         "UPDATE unresolved_terms SET occurrences=occurrences+1,"
                         " last_seen=? WHERE term=?", (now, term))
-                    if row["status"] != vocabulary.RESOLVED:
+                    # Resolved means understood; dismissed means judged and
+                    # rejected.  Neither is outstanding - reporting a
+                    # dismissed word as "still working out" would promise
+                    # work that is deliberately not happening.
+                    if row["status"] not in (vocabulary.RESOLVED,
+                                             vocabulary.DISMISSED):
                         outstanding.append(term)
         if outstanding:
             log.info("brief used %d term(s) the engine cannot read: %s",
@@ -847,6 +852,38 @@ class KnowledgeRepository:
                 out[row["term"]] = words
         return out
 
+    def dismiss_term(self, term: str, note: str = "") -> None:
+        """Reject a meaning, and stop the system proposing it again.
+
+        The reversal half of "evaluated, corrected, or reversed".  A
+        dismissed term keeps its row - the history is the point - but drops
+        out of ``resolutions``, so nothing it was influencing is influenced
+        any more, and ``record_investigation`` will not quietly revive it.
+        """
+        term = str(term).strip().lower()
+        with self._lock:
+            with self._conn:
+                self._conn.execute(
+                    "UPDATE unresolved_terms SET status=?, mapped_to='[]',"
+                    " confidence=0, note=? WHERE term=?",
+                    (vocabulary.DISMISSED, note, term))
+        log.info("dismissed the reading of %r%s", term,
+                 f": {note}" if note else "")
+
+    def unconfirmed_readings(self) -> List[Tuple[str, List[str]]]:
+        """Resolved meanings that no person has confirmed.
+
+        Kept apart from ``resolutions`` because the two answer different
+        questions: that one is "what should the engine read", this one is
+        "what is the creator entitled to be told about".
+        """
+        out: List[Tuple[str, List[str]]] = []
+        for term in self.unresolved_terms(status=vocabulary.RESOLVED,
+                                          limit=500):
+            if term.mapped_to and not provenance.may_be_learned_from(term.origin):
+                out.append((term.term, list(term.mapped_to)))
+        return out
+
     def set_term_status(self, term: str, status: str, *, note: str = "") -> None:
         with self._lock:
             with self._conn:
@@ -866,8 +903,14 @@ class KnowledgeRepository:
         term = str(term).strip().lower()
         with self._lock:
             row = self._conn.execute(
-                "SELECT attempts FROM unresolved_terms WHERE term=?",
+                "SELECT attempts, status FROM unresolved_terms WHERE term=?",
                 (term,)).fetchone()
+            # A dismissed reading stays dismissed.  Without this the
+            # investigator could propose the same rejected meaning on its
+            # next sweep and quietly undo the rejection.
+            if row is not None and row["status"] == vocabulary.DISMISSED:
+                log.debug("%r was dismissed; not re-proposing", term)
+                return vocabulary.DISMISSED
             attempts = int(row["attempts"] if row else 0) + 1
             words = list(mapped_to or ())
             if words:

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import copy
 import queue
+import re
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -617,6 +618,7 @@ class AppController:
         # already worked out is substituted in first, so a resolution
         # reaches every reader of the brief at once.
         deferred = self.note_unreadable_words(brief)
+        readings = self.readings_in_use(brief)
         brief = self.readable_brief(brief)
         try:
             self._action("apply_brief", ActionState.WORKING,
@@ -719,6 +721,13 @@ class AppController:
             if deferred:
                 message += (f" Still working out {', '.join(deferred)} - "
                             f"not used yet.")
+            # A guess that is shaping the result says so.  It used to
+            # succeed silently: the deferral line simply disappeared and
+            # nothing replaced it, so a creator could not tell that a
+            # model's reading of their word had done the ranking.
+            for term, words in readings:
+                message += (f" Reading {term} as {' and '.join(words)} "
+                            f"(unconfirmed).")
             if agent_failed:
                 message += " (the agent was unavailable; used the shipped " \
                           "raaga library)"
@@ -904,6 +913,26 @@ class AppController:
             situation=vocabulary.resolve_text(brief.situation, table),
             notes=vocabulary.resolve_text(brief.notes, table))
         return clone
+
+    def readings_in_use(self, brief=None) -> List[Tuple[str, List[str]]]:
+        """Unconfirmed meanings this brief is actually relying on.
+
+        Only the ones whose word appears in the brief: telling a creator
+        about a guess that is not touching their song would be noise, and
+        the point of saying it at all is that a guess is shaping *this*
+        result.
+        """
+        brief = brief or self.project.brief
+        if self.agent is None:
+            return []
+        try:
+            readings = self.agent.repo.unconfirmed_readings()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("could not read unconfirmed meanings: %s", exc)
+            return []
+        blob = f"{brief.mood} {brief.feel}".lower()
+        return [(term, words) for term, words in readings
+                if re.search(rf"\b{re.escape(term)}\b", blob)]
 
     def vocabulary_report(self) -> str:
         """What became of the words the engine could not read."""
