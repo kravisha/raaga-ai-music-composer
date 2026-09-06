@@ -306,3 +306,55 @@ def test_project_archive_contains_the_files(tmp_path):
     assert "project.json" in names
     assert "mixes/full.wav" in names
     assert not any(n.endswith(".tmp") for n in names)
+
+
+# --------------------------------------------------------------------------
+# a hum is a closed mouth, not an open vowel
+# --------------------------------------------------------------------------
+def test_a_hum_is_darker_than_a_sung_vowel():
+    """Reported: the hummed tune still sounded like an instrument.
+
+    It was genuinely going through the voice renderer - but an open "aa"
+    through four strong formants is close to how you would synthesise a
+    reed, so it read as one.  A closed hum has a low first resonance and
+    almost nothing above it, and that is what the ear uses to tell a shut
+    mouth from an open one.
+    """
+    import numpy as np
+
+    from raagacomposer.core.models import VocalDirection
+    from raagacomposer.voice import renderer
+    from raagacomposer.voice.profiles import BUILTIN
+
+    profile = BUILTIN[0]
+    sr = 22050
+    notes = [renderer.SungSegment(start=i * 0.5, end=i * 0.5 + 0.45,
+                                  midi=60 + i, vowel="a")
+             for i in range(6)]
+    open_vowel = renderer.render(notes, profile, VocalDirection(), sr, 3.5, seed=5)
+    for seg in notes:
+        seg.vowel = "hum"
+    hummed = renderer.render(notes, profile, VocalDirection(), sr, 3.5, seed=5)
+
+    def above(x, hz):
+        spectrum = np.abs(np.fft.rfft(x)) ** 2
+        freqs = np.fft.rfftfreq(len(x), 1 / sr)
+        return float(spectrum[freqs > hz].sum() / max(spectrum.sum(), 1e-9))
+
+    assert above(hummed, 1000) < above(open_vowel, 1000) / 5, (
+        f"the hum is not appreciably darker: "
+        f"{above(hummed, 1000):.4f} vs {above(open_vowel, 1000):.4f}")
+    assert np.abs(hummed).max() > 0.01, "the hum is silent"
+
+
+def test_the_tune_is_hummed_with_a_closed_mouth(ready_melody=None):
+    """The tune render asks for the closed sound, not the open one."""
+    from raagacomposer.core.models import MelodyVersion, Note
+    from raagacomposer.voice import renderer
+
+    melody = MelodyVersion(notes=[Note(swara="S", midi=60, start=0.0,
+                                       duration=0.5)])
+    segments = renderer.plan_segments(melody, None, vocal_sections_only=False,
+                                      vowel="hum")
+    assert segments and all(s.vowel == "hum" for s in segments)
+    assert all(s.consonant == "" for s in segments), "a hum has no consonants"
