@@ -140,12 +140,23 @@ class ConversationContext:
         return turn
 
     def update_status(self, turn_id: str, status: str,
-                      targets: Optional[List[str]] = None) -> None:
+                      targets: Optional[List[str]] = None,
+                      action: str = "", reason: str = "") -> None:
+        """Record how a turn ended, and why.
+
+        ``reason`` is the part that was missing: a turn could reach
+        "failed" carrying no explanation, so the screen said something had
+        gone wrong without saying what.
+        """
         for t in self.turns:
             if t.id == turn_id:
                 t.status = status
                 if targets:
                     t.targets = list(targets)
+                if action:
+                    t.action = action
+                if reason:
+                    t.reason = reason
                 return
 
     def recent(self, n: int = 12) -> List[ConversationTurn]:

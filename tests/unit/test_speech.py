@@ -328,6 +328,44 @@ def test_whisper_does_not_load_its_model_to_say_it_is_installed():
         assert "loads on first use" in stt.status()
 
 
+def test_whisper_is_asked_before_vosk(settings):
+    """Whisper is the primary engine and Vosk the lightweight fallback.
+
+    ``build_adapter`` takes the first available candidate, so the order is
+    the policy: installing Vosk must not quietly demote Whisper.
+    """
+    import raagacomposer.speech.stt as stt
+
+    asked = []
+
+    class Fake:
+        def __init__(self, name, ok):
+            self.name, self._ok = name, ok
+
+        @property
+        def available(self):
+            asked.append(self.name)
+            return self._ok
+
+        def status(self):
+            return self.name
+
+    settings.stt_provider = "auto"
+    monkey = {"WhisperSTT": lambda *a, **k: Fake("whisper", True),
+              "VoskSTT": lambda *a, **k: Fake("vosk", True)}
+    original = {k: getattr(stt, k) for k in monkey}
+    try:
+        for k, v in monkey.items():
+            setattr(stt, k, v)
+        chosen = stt.build_adapter(settings)
+    finally:
+        for k, v in original.items():
+            setattr(stt, k, v)
+
+    assert asked[0] == "whisper", f"asked in the wrong order: {asked}"
+    assert chosen.name == "whisper"
+
+
 def test_build_adapter_falls_back_to_typed(settings):
     settings.stt_provider = "none"
     assert build_adapter(settings).name == "typed"

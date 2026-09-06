@@ -273,12 +273,16 @@ def build_adapter(settings: Optional[Settings] = None) -> STTAdapter:
     choice = (settings.stt_provider or "auto").lower()
     if choice in ("none", "typed"):
         return TypedSTT()
+    # Order matters: the first available candidate wins.  Whisper is the
+    # primary engine and Vosk the lightweight fallback, so Whisper is asked
+    # first - installing Vosk must not quietly demote it.  Naming either
+    # explicitly still picks that one.
     candidates: List[STTAdapter] = []
-    if choice in ("auto", "vosk"):
-        candidates.append(VoskSTT())
     if choice in ("auto", "whisper"):
         candidates.append(WhisperSTT(
             str(getattr(settings, "stt_model_size", "tiny") or "tiny")))
+    if choice in ("auto", "vosk"):
+        candidates.append(VoskSTT())
     for adapter in candidates:
         if adapter.available:
             log.info("speech backend: %s", adapter.status())

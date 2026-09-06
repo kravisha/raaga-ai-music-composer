@@ -57,7 +57,8 @@ from .raaga.selection import (RaagaSuggestion, expand_feel_words, infer_tempo,
                               suggest as suggest_raagas)
 from .speech.capture import CaptureState, VoiceInputManager
 from .speech.context import ConversationContext
-from .speech.intent import Command, interpret, unavailable_instrument
+from .speech.intent import (Command, describe, interpret,
+                            unavailable_instrument)
 from .speech.timeline_parser import TimeSpec
 from .voice import mastering
 from .voice.profiles import VoiceProfileManager
@@ -2173,24 +2174,34 @@ class AppController:
             missing = unavailable_instrument(text)
             if missing:
                 phrase, alternatives = missing
-                self.context.update_status(turn.id, "failed")
-                self.error("arrangement",
-                           f"I do not have a '{phrase}'. Closest available: "
-                           f"{', '.join(alternatives)}.")
+                reason = (f"I do not have a '{phrase}'. Closest available: "
+                          f"{', '.join(alternatives)}.")
+                self.context.update_status(turn.id, "failed",
+                                           action="add an instrument",
+                                           reason=reason)
+                self.error("arrangement", reason)
                 return cmd
         if not cmd.known:
-            self.context.update_status(turn.id, "ignored")
+            # "Not understood" is a result, and saying which part defeated
+            # it is the difference between a report and a shrug.
+            reason = (f"I could not tell what to do with {text!r}. Try naming "
+                      f"the action - generate a tune, add a violin, slower.")
+            self.context.update_status(turn.id, "ignored", reason=reason)
             self.status(f"I did not understand: {text!r}")
             return cmd
 
+        action = describe(cmd) or cmd.intent
         try:
             self.execute(cmd)
-            self.context.update_status(turn.id, "applied")
+            self.context.update_status(turn.id, "applied", action=action,
+                                       reason=self.status_text)
         except LockedContentError as exc:
-            self.context.update_status(turn.id, "failed")
+            self.context.update_status(turn.id, "failed", action=action,
+                                       reason=str(exc))
             self.error("locked", str(exc))
         except Exception as exc:  # noqa: BLE001
-            self.context.update_status(turn.id, "failed")
+            self.context.update_status(turn.id, "failed", action=action,
+                                       reason=f"{cmd.intent} failed: {exc}")
             self.error("command", f"{cmd.intent} failed: {exc}")
         self.context.remember(cmd)
         self._notify_conversation()

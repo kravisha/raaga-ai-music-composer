@@ -109,6 +109,70 @@ def test_the_window_fits_an_ordinary_screen(window):
     assert hint.height() <= 800, "the window demands too much height"
 
 
+def test_a_song_can_be_more_than_one_mood(window):
+    """Specification 9.1: mood is multi-select.
+
+    A song is rarely one feeling - "hopeful and romantic" is an ordinary
+    brief - and a single-choice box threw half of it away.
+    """
+    panel = window.brief_panel
+    panel.mood.setCurrentText("hopeful, romantic")
+    assert panel.mood.checked() == ["romantic", "hopeful"] or \
+        set(panel.mood.checked()) == {"hopeful", "romantic"}
+    assert "hopeful" in panel.mood.currentText()
+    assert "romantic" in panel.mood.currentText()
+
+    panel.apply()
+    assert "hopeful" in window.app.project.brief.mood
+    assert "romantic" in window.app.project.brief.mood
+
+    # Both feelings must reach the emotion vector, not just the first.
+    from raagacomposer.raaga import emotion
+    vector = emotion.target_vector(window.app.project.brief)
+    assert vector["romance"] > 0.2, "the romantic half was lost"
+    assert vector["brightness"] > 0.2, "the hopeful half was lost"
+
+    # A mood the list does not know is kept rather than dropped.
+    panel.mood.setCurrentText("wistful")
+    assert panel.mood.currentText() == "wistful"
+
+
+def test_a_new_brief_opens_on_a_real_situation(window):
+    """An empty box asks the creator to invent a starting point; a
+    sentence asks them to edit one."""
+    from raagacomposer.core.models import CreativeBrief
+
+    fresh = CreativeBrief()
+    assert "novice musician" in fresh.situation
+    assert "," in fresh.mood, "the default should show that moods are plural"
+
+
+def test_the_voice_pipeline_is_visible_stage_by_stage(window, qt_app):
+    """Spec: no silent "ready" state with no output.
+
+    A creator has to be able to tell a misheard phrase from one heard
+    correctly and not understood, and from one understood and refused.
+    """
+    app = window.app
+    panel = window.conversation
+
+    app.handle_utterance("hello how are you doing")
+    _pump(qt_app, 0.1)
+    panel.refresh()
+    assert panel.heard_label.text() == "hello how are you doing"
+    assert panel.intent_label.text() in ("unknown", "not recognised")
+    assert "Not understood" in panel.result_label.text()
+    assert "could not tell" in panel.result_label.text()
+
+    app.handle_utterance("add a theremin")
+    _pump(qt_app, 0.1)
+    panel.refresh()
+    assert "Failed" in panel.result_label.text()
+    assert "theremin" in panel.result_label.text()
+    # An instrument it does have takes a different path entirely.
+    assert panel.action_label.text() != "-"
+
+
 def test_the_transport_and_menus_exist(window):
     assert window.play_btn.text() == "Play"
     titles = [a.text() for a in window.menuBar().actions()]
