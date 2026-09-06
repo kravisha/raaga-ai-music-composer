@@ -1083,7 +1083,11 @@ class AppController:
         melody = self.project.melody()
         return MelodyOptions(
             tempo_bpm=melody.tempo_bpm if melody else tempo,
-            beats_per_cycle=melody.beats_per_cycle if melody else 8,
+            # The tune and the beat take their cycle from the same place,
+            # which is what keeps them synchronised (specification 11.3).
+            # A brief that names a tala wins over the tune's current cycle,
+            # because choosing one is how a creator changes it.
+            beats_per_cycle=self.current_tala().aksharas,
             tonic_midi=self.project.raaga.tonic_midi,
             voice_low=profile.range_low, voice_high=profile.range_high,
             intensity=0.6, seed=seed if seed is not None else int(time.time()) % 9999,

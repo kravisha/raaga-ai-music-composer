@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (QComboBox, QGroupBox, QHBoxLayout, QLabel,
                                QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget)
 
 from ...music import beat as beat_engine
+from ...music import tala as tala_module
 
 
 class TunePanel(QWidget):
@@ -37,6 +38,16 @@ class TunePanel(QWidget):
         self.beat_variation_btn.clicked.connect(
             lambda: self.app.beat_variation(self.beat_strength.currentText(),
                                             autoplay=True))
+        # Tala is chosen, not inferred (specification 11.4).  It sits with
+        # the beat controls because that is where a creator is thinking
+        # about rhythm, but it belongs to the song: the tune's sections
+        # are built on the same cycle.
+        self.tala = QComboBox()
+        self.tala.addItem("From the tune", "")
+        for name in tala_module.names():
+            self.tala.addItem(tala_module.require(name).describe(), name)
+        self.tala.activated.connect(self._tala_chosen)
+
         self.beat_strength = QComboBox()
         self.beat_strength.addItems(list(beat_engine.STRENGTHS))
         self.beat_strength.setCurrentText(beat_engine.DEFAULT_STRENGTH)
@@ -85,6 +96,8 @@ class TunePanel(QWidget):
         second.addWidget(tempo_btn)
 
         beat_row = QHBoxLayout()
+        beat_row.addWidget(QLabel("Tala:"))
+        beat_row.addWidget(self.tala)
         beat_row.addWidget(self.beat_btn)
         beat_row.addWidget(self.beat_variation_btn)
         beat_row.addWidget(self.beat_strength)
@@ -112,6 +125,11 @@ class TunePanel(QWidget):
         self.refresh()
 
     # -- actions -----------------------------------------------------------
+    def _tala_chosen(self, index: int) -> None:
+        """Changing the cycle changes the song, not only the beat."""
+        self.app.update_brief(tala=self.tala.itemData(index) or "")
+        self.changed.emit()
+
     def _accept(self) -> None:
         self.app.accept_tune(lock=True)
         self.changed.emit()
@@ -185,8 +203,18 @@ class TunePanel(QWidget):
         beat = project.beat()
         self.beat_variation_btn.setEnabled(beat is not None)
         self.play_beat_btn.setEnabled(self.app.rendered("beat") is not None)
-        self.beat_label.setText(
-            f"v{beat.version}: {beat.summary()}" if beat else "No beat yet")
+        # Say which instrument is playing it: the label named the tala and
+        # the tempo and left the creator guessing what they were hearing.
+        if beat is not None:
+            self.beat_label.setText(
+                f"v{beat.version}: {beat.summary()} on "
+                f"{self.app.beat_instrument().name}")
+        else:
+            self.beat_label.setText("No beat yet")
+        chosen = getattr(project.brief, "tala", "")
+        if not self.tala.hasFocus():
+            idx = self.tala.findData(chosen)
+            self.tala.setCurrentIndex(idx if idx >= 0 else 0)
 
         if melody is not None and not self.tempo.hasFocus():
             self.tempo.setValue(int(melody.tempo_bpm))

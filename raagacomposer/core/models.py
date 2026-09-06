@@ -56,6 +56,13 @@ class CreativeBrief:
     mood: str = "hopeful, romantic"
     feel: str = ""
     language: str = "Tamil"
+    #: The rhythmic cycle, by name.  Tala is a first-class dimension
+    #: alongside raga (specification 6.4), and it belongs to the song
+    #: rather than to the beat: the tune's sections and the percussion are
+    #: built on the same cycle, which is what keeps them synchronised.
+    #: Empty means "whatever the tune is already in", so an existing
+    #: project keeps its cycle.
+    tala: str = ""
     song_type: str = "film song"
     duration_target: float = 150.0
     tempo_preference: Optional[int] = None

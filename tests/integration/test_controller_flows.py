@@ -624,3 +624,33 @@ def test_without_a_beat_the_arrangement_still_plays_percussion(ready, settle):
     rhythm = [t for t in app.project.arrangement().tracks if t.role == "rhythm"]
     assert rhythm, "a song with no beat lost its percussion entirely"
     assert all(t.created_by == "auto" for t in rhythm)
+
+
+def test_choosing_a_tala_moves_the_tune_and_the_beat_together(app, settle):
+    """Specification 11.3/11.4: the cycle is chosen, and one cycle governs
+    both.  A tune in 8 with a beat in 7 would drift apart."""
+    app.new_project("Tala")
+    app.update_brief(mood="devotional", language="Tamil", duration_target=20.0)
+    app.select_raaga("Hamsadhwani")
+
+    for name, aksharas in (("Misra Chapu", 7), ("Khanda Chapu", 5), ("Adi", 8)):
+        app.update_brief(tala=name)
+        app.generate_tune(seed=4)
+        settle()
+        app.generate_beat()
+        settle()
+        assert app.current_tala().name == name
+        assert app.project.melody().beats_per_cycle == aksharas, \
+            f"{name}: the tune is not in {aksharas}"
+        assert app.project.beat().tala == name, \
+            f"{name}: the beat is in a different cycle from the tune"
+
+
+def test_an_unset_tala_keeps_the_cycle_the_tune_is_already_in(app, settle):
+    app.new_project("Inferred")
+    app.update_brief(mood="devotional", duration_target=20.0)
+    app.select_raaga("Hamsadhwani")
+    app.generate_tune(seed=4)
+    settle()
+    assert app.project.brief.tala == ""
+    assert app.current_tala().aksharas == app.project.melody().beats_per_cycle
