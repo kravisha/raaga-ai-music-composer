@@ -1,7 +1,8 @@
 """Creative brief panel (spec section 14B)."""
 from __future__ import annotations
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QStandardItem, QStandardItemModel
 from PySide6.QtWidgets import (QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox,
                                QLabel, QLineEdit, QPlainTextEdit, QPushButton,
                                QSpinBox, QVBoxLayout, QWidget)
@@ -25,6 +26,66 @@ _STATE_COLOR = {
 }
 
 
+class MoodChoice(QComboBox):
+    """Several moods at once, in the space of one combo box.
+
+    A song is rarely one feeling - "hopeful and romantic" is an ordinary
+    brief, and being made to choose between them threw half of it away.
+    The emotion engine already reads the mood as text and combines what it
+    finds, so the moods are joined with commas and everything downstream
+    works unchanged.
+
+    ``currentText`` and ``setCurrentText`` keep the shapes the panel used
+    when this was a single-choice box, so nothing else had to change.
+    """
+
+    def __init__(self, options, parent=None) -> None:
+        super().__init__(parent)
+        self.setEditable(True)
+        self.lineEdit().setReadOnly(True)
+        self.lineEdit().setPlaceholderText("Choose one or more")
+        self._model = QStandardItemModel(self)
+        self.setModel(self._model)
+        for text in options:
+            self._add(text)
+        self._model.itemChanged.connect(self._selection_changed)
+
+    def _add(self, text: str, checked: bool = False) -> None:
+        item = QStandardItem(text)
+        item.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
+        item.setData(Qt.Checked if checked else Qt.Unchecked, Qt.CheckStateRole)
+        self._model.appendRow(item)
+
+    def _selection_changed(self, _item) -> None:
+        self.lineEdit().setText(self.currentText())
+
+    def checked(self) -> list:
+        return [self._model.item(i).text()
+                for i in range(self._model.rowCount())
+                if self._model.item(i).checkState() == Qt.Checked]
+
+    def currentText(self) -> str:            # noqa: D102 - matches QComboBox
+        return ", ".join(self.checked())
+
+    def setCurrentText(self, text: str) -> None:   # noqa: N802 - Qt's name
+        """Tick whatever the brief says, adding moods it does not know."""
+        wanted = [part.strip() for part in str(text or "").split(",")
+                  if part.strip()]
+        lowered = {w.lower() for w in wanted}
+        seen = set()
+        self._model.blockSignals(True)
+        for row in range(self._model.rowCount()):
+            item = self._model.item(row)
+            on = item.text().lower() in lowered
+            item.setData(Qt.Checked if on else Qt.Unchecked, Qt.CheckStateRole)
+            seen.add(item.text().lower())
+        for word in wanted:
+            if word.lower() not in seen:
+                self._add(word, checked=True)
+        self._model.blockSignals(False)
+        self.lineEdit().setText(self.currentText())
+
+
 class BriefPanel(QGroupBox):
     changed = Signal()
 
@@ -40,9 +101,10 @@ class BriefPanel(QGroupBox):
         self.title.setPlaceholderText("Song title")
         self.situation = QLineEdit()
         self.situation.setPlaceholderText("Film situation, scene or character view")
-        self.mood = QComboBox()
-        self.mood.setEditable(True)
-        self.mood.addItems(MOODS)
+        # Several moods at once (specification 9.1): a song is rarely one
+        # feeling, and choosing between hopeful and romantic threw half
+        # the brief away.
+        self.mood = MoodChoice(MOODS)
         self.feel = QPlainTextEdit()
         self.feel.setPlaceholderText(
             "Describe the feel in your own words - \"lonely, late at night, but "

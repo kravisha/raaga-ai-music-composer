@@ -301,6 +301,41 @@ def test_speech_is_acted_on_by_the_thread_that_pumps(song, settle):
     assert app.project.arrangement().tracks_for_instrument("veena")
 
 
+def test_every_utterance_records_what_happened_to_it(song, settle):
+    """Three failures look identical unless the pipeline is written down.
+
+    Misheard, heard-but-not-understood, and understood-but-refused each
+    need a different remedy from the creator, and the panel could only say
+    what was heard.  Every turn now carries the action that ran and the
+    reason it ended as it did.
+    """
+    app = song
+
+    app.handle_utterance("add a violin")
+    settle()
+    applied = app.context.turns[-1]
+    assert applied.status == "applied"
+    assert applied.intent == "arrange.add"
+    assert applied.action, "no action was recorded for a command that ran"
+
+    app.handle_utterance("hello how are you doing")
+    settle()
+    puzzled = app.context.turns[-1]
+    assert puzzled.status == "ignored"
+    assert puzzled.reason, "not understood, with no reason given"
+    assert "hello how are you doing" in puzzled.reason
+
+    app.handle_utterance("add a theremin")
+    settle()
+    refused = app.context.turns[-1]
+    assert refused.status == "failed"
+    assert "theremin" in refused.reason
+    assert "Closest available" in refused.reason
+
+    # The three are told apart by their status, not only by their text.
+    assert len({applied.status, puzzled.status, refused.status}) == 3
+
+
 def test_a_phrase_that_cannot_be_acted_on_does_not_take_the_app_down(song, settle):
     """A microphone failure must never crash the whole application."""
     app = song

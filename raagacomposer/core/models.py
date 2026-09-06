@@ -45,8 +45,15 @@ class ApprovalState(str, Enum):
 @dataclass
 class CreativeBrief:
     title: str = ""
-    situation: str = ""
-    mood: str = "romantic"
+    #: A new project opens on a real situation rather than an empty box, so
+    #: the first thing a creator does is edit a starting point instead of
+    #: inventing one.
+    situation: str = ("a young novice musician is eager to impress his "
+                      "audience by belting out a new tune")
+    #: Moods, plural: the brief is read as text everywhere it is used, so
+    #: "hopeful, romantic" reaches the emotion vector as both feelings
+    #: rather than one of them (specification 9.1).
+    mood: str = "hopeful, romantic"
     feel: str = ""
     language: str = "Tamil"
     song_type: str = "film song"
@@ -359,6 +366,13 @@ class ConversationTurn:
     interpretation: str = ""
     status: str = "received"
     targets: List[str] = field(default_factory=list)
+    #: What the application actually did about this turn, and why it ended
+    #: the way it did.  The pipeline recorded what it *heard* and what it
+    #: *understood*, and then went quiet: a turn could sit at "failed" with
+    #: nothing saying which action failed or what went wrong, which is the
+    #: silent state the specification rules out.
+    action: str = ""
+    reason: str = ""
 
 
 @dataclass

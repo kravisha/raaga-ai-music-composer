@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (QGroupBox, QHBoxLayout, QLabel, QLineEdit,
-                               QListWidget, QListWidgetItem, QProgressBar,
-                               QPushButton, QTextEdit, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QFormLayout, QGroupBox, QHBoxLayout, QLabel,
+                               QLineEdit, QListWidget, QListWidgetItem,
+                               QProgressBar, QPushButton, QTextEdit,
+                               QVBoxLayout, QWidget)
 
 from .. import theme
 
@@ -48,6 +49,28 @@ class ConversationPanel(QWidget):
         self.history = QListWidget()
         self.history.setWordWrap(True)
 
+        # The pipeline, one line each, rather than a single line that said
+        # what was heard and then went quiet.  A creator could not tell a
+        # phrase that was misheard from one that was heard correctly and
+        # not understood, or from one understood and then refused - three
+        # different problems with three different remedies.
+        self.pipeline = QFormLayout()
+        self.pipeline.setContentsMargins(0, 0, 0, 0)
+        self.pipeline.setSpacing(2)
+        self.heard_label = QLabel("-")
+        self.understood_label = QLabel("-")
+        self.intent_label = QLabel("-")
+        self.action_label = QLabel("-")
+        self.result_label = QLabel("-")
+        for name, widget in (("Heard", self.heard_label),
+                             ("Understood", self.understood_label),
+                             ("Intent", self.intent_label),
+                             ("Action", self.action_label),
+                             ("Result", self.result_label)):
+            widget.setWordWrap(True)
+            widget.setObjectName("hint")
+            self.pipeline.addRow(name, widget)
+
         self.interpretation = QTextEdit()
         self.interpretation.setReadOnly(True)
         self.interpretation.setFixedHeight(64)
@@ -76,6 +99,7 @@ class ConversationPanel(QWidget):
         layout.addWidget(self.level)
         layout.addWidget(QLabel("Live transcript:"))
         layout.addWidget(self.partial)
+        layout.addLayout(self.pipeline)
         layout.addWidget(QLabel("What I understood:"))
         layout.addWidget(self.interpretation)
         layout.addWidget(QLabel("Command history:"))
@@ -108,6 +132,34 @@ class ConversationPanel(QWidget):
         self.changed.emit()
 
     # -- refresh -----------------------------------------------------------
+    def _show_pipeline(self, turn) -> None:
+        """The last instruction, stage by stage.
+
+        The three failures a creator has to tell apart are misheard, heard
+        but not understood, and understood but refused.  They look
+        identical when the only thing on screen is the phrase and a colour,
+        so each stage says what it has and "-" when it has nothing.
+        """
+        if turn is None:
+            for widget in (self.heard_label, self.understood_label,
+                           self.intent_label, self.action_label,
+                           self.result_label):
+                widget.setText("-")
+            return
+        self.heard_label.setText(turn.text or "-")
+        self.understood_label.setText(turn.interpretation or "-")
+        self.intent_label.setText(turn.intent or "not recognised")
+        self.action_label.setText(turn.action or "-")
+
+        outcome = {"applied": "Completed", "failed": "Failed",
+                   "ignored": "Not understood",
+                   "received": "Working"}.get(turn.status, turn.status)
+        if turn.reason:
+            outcome = f"{outcome} - {turn.reason}"
+        self.result_label.setText(outcome)
+        colour = STATUS_COLORS.get(turn.status)
+        self.result_label.setStyleSheet(f"color: {colour};" if colour else "")
+
     def refresh(self) -> None:
         state = self.app.voice_input.state
         listening = state.listening
@@ -126,6 +178,10 @@ class ConversationPanel(QWidget):
             text = f"{turn.text}"
             if turn.interpretation:
                 text += f"\n    -> {turn.interpretation}  [{turn.status}]"
+            # The reason a turn ended as it did belongs in the history, not
+            # only in a status bar message that the next one overwrites.
+            if turn.reason and turn.status in ("failed", "ignored"):
+                text += f"\n    {turn.reason}"
             item = QListWidgetItem(text)
             colour = STATUS_COLORS.get(turn.status)
             if colour:
@@ -135,6 +191,7 @@ class ConversationPanel(QWidget):
         self.history.scrollToBottom()
         if turns:
             self.interpretation.setPlainText(turns[-1].interpretation or "-")
+        self._show_pipeline(turns[-1] if turns else None)
 
         active = self.app.jobs.active_jobs()
         if active:
