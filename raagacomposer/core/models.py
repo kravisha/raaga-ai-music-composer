@@ -143,6 +143,36 @@ class Section:
 
 
 @dataclass
+class BeatVersion:
+    """One take of the percussion, versioned like a melody.
+
+    It carries its own settings rather than only its notes, so a variation
+    can be built from what this one *is* - its tala, its density, how hard
+    it is played - rather than by mutating the notes it happens to have.
+    """
+
+    version: int = 1
+    created_at: float = field(default_factory=now)
+    label: str = ""
+    tala: str = "Adi"
+    tempo_bpm: int = 72
+    density: str = "steady"
+    intensity: float = 0.6
+    duration: float = 0.0
+    seed: int = 0
+    notes: List[Note] = field(default_factory=list)
+    state: ApprovalState = ApprovalState.DRAFT
+    audio_path: str = ""
+    parent_version: Optional[int] = None
+    #: How far this take was allowed to move from its parent.
+    strength: str = ""
+
+    def summary(self) -> str:
+        return (f"{self.tala}, {self.tempo_bpm} bpm, {self.density}, "
+                f"{len(self.notes)} stroke(s)")
+
+
+@dataclass
 class MelodyVersion:
     version: int = 1
     created_at: float = field(default_factory=now)
@@ -435,6 +465,12 @@ class Project:
     vocal_renders: List[VocalRender] = field(default_factory=list)
     vocal_master_id: str = ""
 
+    #: Percussion, versioned like the melody and independent of it.  It is
+    #: written against the tala rather than the tune, so regenerating one
+    #: cannot disturb the other (specification 11.9).
+    beats: List[BeatVersion] = field(default_factory=list)
+    approved_beat: Optional[int] = None
+
     arrangements: List[ArrangementVersion] = field(default_factory=list)
     current_arrangement: Optional[int] = None
 
@@ -451,6 +487,12 @@ class Project:
         if v is None:
             return self.melodies[-1] if self.melodies else None
         return next((m for m in self.melodies if m.version == v), None)
+
+    def beat(self, version: Optional[int] = None) -> Optional["BeatVersion"]:
+        v = version if version is not None else self.approved_beat
+        if v is None:
+            return self.beats[-1] if self.beats else None
+        return next((b for b in self.beats if b.version == v), None)
 
     @property
     def locked_melody(self) -> Optional[MelodyVersion]:

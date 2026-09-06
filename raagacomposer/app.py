@@ -30,7 +30,8 @@ from .audio.playback import PlaybackEngine
 from .core.actions import ActionState, ActionStatus
 from .core.jobs import JobCancelled, JobContext, JobManager
 from .core.logging_setup import export_diagnostics, get_logger, setup_logging
-from .core.models import (ApprovalState, ArrangementVersion, CreativeBrief,
+from .core.models import (ApprovalState, ArrangementVersion, BeatVersion,
+                          CreativeBrief,
                           ErrorRecord, JobRecord, LyricsVersion, MelodyVersion,
                           MixVersion, Project, Section, Stage, VocalDirection,
                           VocalRender, VoiceProfile)
@@ -1175,6 +1176,153 @@ class AppController:
                          on_error=lambda e: self.error("tune", f"Tune generation failed: {e}"),
                          description=f"Compose a tune in {raaga.name}")
 
+    # ==================================================================
+    # beat (specification 11): percussion as its own layer
+    # ==================================================================
+    def current_tala(self):
+        """The cycle this song is in.
+
+        A melody records only ``beats_per_cycle``, so an existing tune says
+        which tala it was written in by its beat count.  A brief may name
+        one directly once there is a way to ask.
+        """
+        from .music import tala as tala_module
+
+        named = tala_module.find(getattr(self.project.brief, "tala", ""))
+        if named is not None:
+            return named
+        melody = self.project.melody()
+        if melody is not None:
+            return tala_module.for_beats(melody.beats_per_cycle)
+        return tala_module.require(tala_module.DEFAULT_TALA)
+
+    def generate_beat(self, density: str = "", seed: Optional[int] = None,
+                      autoplay: bool = False) -> None:
+        """Make a beat, without touching the tune (specification 11.9).
+
+        The beat is written against the tala rather than the melody's
+        notes, so the two line up by construction - same tempo, same
+        cycle - and either can be replaced without disturbing the other.
+        """
+        from .music import beat as beat_engine
+        from .music import tala as tala_module
+
+        melody = self.project.melody()
+        tala = self.current_tala()
+        tempo = melody.tempo_bpm if melody else infer_tempo(
+            self.project.brief, self.composing_raaga())
+        duration = (melody.duration if melody
+                    else float(self.project.brief.duration_target))
+        if duration <= 0:
+            self.status("Set a length or write a tune before making a beat.")
+            return
+
+        version = BeatVersion(
+            version=len(self.project.beats) + 1,
+            label="Beat", tala=tala.name, tempo_bpm=int(tempo),
+            density=density or tala_module.DEFAULT_DENSITY,
+            duration=float(duration),
+            seed=seed if seed is not None else int(time.time()) % 9999)
+        self.status(f"Laying down a beat in {tala.describe()}...")
+
+        def work(ctx: JobContext) -> BeatVersion:
+            ctx.progress(0.4, f"{tala.name} at {version.tempo_bpm} bpm")
+            return beat_engine.realise(version)
+
+        self.jobs.submit(
+            "beat.generate", "beat:all", work,
+            on_done=lambda b: self._beat_ready(b, "Beat", autoplay),
+            on_error=lambda e: self.error("beat", f"Beat generation failed: {e}"),
+            description=f"Lay down a {tala.name} beat")
+
+    def beat_variation(self, strength: str = "moderate",
+                       autoplay: bool = False) -> None:
+        """A different take on the same beat - never a different tala."""
+        from .music import beat as beat_engine
+
+        previous = self.project.beat()
+        if previous is None:
+            return self.generate_beat(autoplay=autoplay)
+        self.status(f"Varying the beat ({strength})...")
+
+        def work(ctx: JobContext) -> BeatVersion:
+            ctx.progress(0.4, "Reworking the strokes")
+            return beat_engine.realise(
+                beat_engine.vary(previous, strength=strength))
+
+        self.jobs.submit(
+            "beat.variation", "beat:all", work,
+            on_done=lambda b: self._beat_ready(b, "Beat variation", autoplay),
+            on_error=lambda e: self.error("beat", f"Beat variation failed: {e}"),
+            description="Vary the beat")
+
+    def _beat_ready(self, version: BeatVersion, what: str,
+                    autoplay: bool = False) -> None:
+        self.project.beats.append(version)
+        self.project.approved_beat = version.version
+        self._changed("beat.generate", f"{what} v{version.version}",
+                      undoable=True)
+        self.status(f"{what} v{version.version}: {version.summary()}")
+        self.render_beat(autoplay=autoplay)
+
+    def render_beat(self, autoplay: bool = False) -> None:
+        """Sound the beat on its own, so it can be judged on its own."""
+        version = self.project.beat()
+        if version is None or not version.notes:
+            self.status("There is no beat to play yet.")
+            return
+        instrument = self.beat_instrument()
+        sr = self.sample_rate
+        provider = self.providers.music
+
+        def work(ctx: JobContext) -> np.ndarray:
+            ctx.progress(0.3, f"Sounding the beat on {instrument.name}")
+            audio = provider.render_part(version.notes, instrument.key, sr,
+                                         total_seconds=version.duration + 0.5,
+                                         seed=version.seed)
+            from .audio import dsp
+            stereo = dsp.normalize_loudness(dsp.pan_mono(audio, 0.0), sr, -18.0)
+            return dsp.limiter(stereo, -1.0, sr)
+
+        def done(audio: np.ndarray) -> None:
+            path = self._write_artifact("audio", f"beat_v{version.version}.wav",
+                                        audio)
+            version.audio_path = str(path)
+            self._cache_render("beat", audio, str(path))
+            self.status(f"Beat ready - {version.summary()}")
+            if autoplay:
+                self.play_render("beat")
+
+        self.jobs.submit("render.beat", "render:beat", work, on_done=done,
+                         on_error=lambda e: self.error("beat",
+                                                       f"Beat render failed: {e}"),
+                         description="Render the beat")
+
+    def beat_instrument(self):
+        """Who plays the beat, through the one casting policy.
+
+        A South Indian song is kept on a mridangam unless the creator says
+        otherwise: ranking on feel alone put a tambourine under a Carnatic
+        tune because "celebration" scores well on one, which is true of the
+        word and wrong about the music.  The arrangement has always applied
+        this rule; stating it here keeps the two agreeing.
+        """
+        from .music import casting
+
+        brief = self.project.brief
+        words = sorted(expand_feel_words(brief.mood, brief.feel,
+                                         brief.situation, brief.notes))
+        carnatic = ("carnatic" in " ".join(words).lower()
+                    or brief.language.lower() in ("tamil", "telugu", "kannada",
+                                                  "malayalam", "sanskrit"))
+        preferred = list(brief.instruments_preferred)
+        if carnatic:
+            preferred.append("mridangam")
+        return casting.cast(
+            "rhythm", preferred=preferred,
+            avoided=brief.instruments_avoided, feel_words=words,
+            default="mridangam").instrument
+
     def make_variation(self, strength: float = 0.5) -> None:
         melody = self.project.melody()
         if melody is None:
@@ -1707,12 +1855,13 @@ class AppController:
         # hand the arrangement the answer.  The audition uses the same call,
         # so the two cannot disagree about who is playing the melody.
         lead = self.cast_lead()
+        beat = self.project.beat()
         self.status("Building a first arrangement...")
 
         def work(ctx: JobContext) -> ArrangementVersion:
             ctx.progress(0.3, f"Choosing instruments - {lead.describe()}")
             return arranger.auto_arrange(melody, raaga, brief, previous=previous,
-                                         lead=lead.instrument)
+                                         lead=lead.instrument, beat=beat)
 
         def done(arrangement: ArrangementVersion) -> None:
             self.project.arrangements.append(arrangement)

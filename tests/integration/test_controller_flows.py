@@ -542,3 +542,85 @@ def test_a_re_rendered_tune_is_the_one_you_hear(ready, settle):
 
     assert second.shape != first.shape or not np.array_equal(second, first), \
         "the re-rendered mix played the previous version"
+
+
+# --------------------------------------------------------------------------
+# the beat, as its own layer
+# --------------------------------------------------------------------------
+def test_a_beat_can_be_made_and_varied_without_touching_the_tune(ready, settle):
+    """Specification 11.9: regenerate the beat without changing the melody.
+
+    The beat is written against the tala rather than the melody's notes,
+    so the two cannot disturb each other.
+    """
+    app = ready
+    before = [(n.start, n.midi, n.velocity) for n in app.project.melody().notes]
+
+    app.generate_beat()
+    settle()
+    first = app.project.beat()
+    assert first is not None and first.notes, "no beat was made"
+    assert first.tala, "the beat does not know its tala"
+    assert app.rendered("beat") is not None, "the beat was never sounded"
+
+    app.beat_variation("moderate")
+    settle()
+    second = app.project.beat()
+    assert second.version == first.version + 1
+    assert second.tala == first.tala, "a variation must not change the tala"
+    assert len(app.project.beats) == 2, "earlier takes must be kept"
+
+    after = [(n.start, n.midi, n.velocity) for n in app.project.melody().notes]
+    assert after == before, "making a beat changed the tune"
+
+
+def test_the_beat_and_the_tune_share_a_tempo(ready, settle):
+    app = ready
+    app.generate_beat()
+    settle()
+    assert app.project.beat().tempo_bpm == app.project.melody().tempo_bpm
+
+
+def test_a_south_indian_song_keeps_its_mridangam(ready):
+    """Ranking on feel alone put a tambourine under a Carnatic tune,
+    because "celebration" scores well on one."""
+    app = ready
+    app.update_brief(mood="celebration", language="Tamil")
+    assert app.beat_instrument().key == "mridangam"
+
+    app.update_brief(instruments_preferred=["tabla"])
+    assert app.beat_instrument().key == "tabla", "an explicit request must win"
+
+
+def test_the_arrangement_uses_the_beat_you_made(ready, settle):
+    """Not a second one generated behind your back (specification 11.5).
+
+    ``auto_arrange`` wrote its own rhythm part, so a creator who made and
+    approved a beat got a different one in the mix.
+    """
+    app = ready
+    app.update_brief(language="Tamil")
+    app.generate_beat("busy")
+    settle()
+    beat = app.project.beat()
+
+    app.auto_arrange()
+    settle()
+    rhythm = [t for t in app.project.arrangement().tracks if t.role == "rhythm"]
+    assert rhythm, "no rhythm track in the arrangement"
+    assert all(t.created_by == "beat" for t in rhythm), \
+        "the arrangement generated its own percussion instead"
+    meta = [r.meta for t in rhythm for r in t.regions]
+    assert any(m.get("beat_version") == str(beat.version) for m in meta), \
+        "the arranged rhythm is not the beat that was approved"
+
+
+def test_without_a_beat_the_arrangement_still_plays_percussion(ready, settle):
+    """The old behaviour is intact for a song nobody made a beat for."""
+    app = ready
+    assert app.project.beat() is None
+    app.auto_arrange()
+    settle()
+    rhythm = [t for t in app.project.arrangement().tracks if t.role == "rhythm"]
+    assert rhythm, "a song with no beat lost its percussion entirely"
+    assert all(t.created_by == "auto" for t in rhythm)

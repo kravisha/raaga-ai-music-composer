@@ -124,10 +124,15 @@ class BriefPanel(QGroupBox):
         self.tempo.setRange(0, 200)
         self.tempo.setSpecialValueText("auto")
         self.tempo.setSuffix(" bpm")
+        # No instruments here (specification 9.4, 16.1).  The tune is
+        # hummed, so the melody needs no instrument to exist, and who
+        # plays it is a decision for the ensemble once there is a tune
+        # worth orchestrating.  Asking at the brief made a creator cast
+        # the band before writing the song.  The widgets stay unparented
+        # so the values still round-trip through apply() and refresh();
+        # the ensemble builder will fill them.
         self.prefer = QLineEdit()
-        self.prefer.setPlaceholderText("Instruments to use, comma separated")
         self.avoid = QLineEdit()
-        self.avoid.setPlaceholderText("Instruments to avoid")
         self.notes = QPlainTextEdit()
         self.notes.setPlaceholderText("Anything else")
         self.notes.setFixedHeight(46)
@@ -148,8 +153,6 @@ class BriefPanel(QGroupBox):
         more_form.addRow("Song type", self.song_type)
         more_form.addRow("Target length", self.duration)
         more_form.addRow("Tempo", self.tempo)
-        more_form.addRow("Prefer", self.prefer)
-        more_form.addRow("Avoid", self.avoid)
         more_form.addRow("Notes", self.notes)
 
         self.more = QWidget()
