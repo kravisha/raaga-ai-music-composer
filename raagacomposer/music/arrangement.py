@@ -523,9 +523,17 @@ def lock_range(arrangement: ArrangementVersion, start: float, end: float,
 # automatic first pass
 # --------------------------------------------------------------------------
 def auto_arrange(melody: MelodyVersion, raaga: Raaga, brief, seed: int = 5,
-                 previous: Optional[ArrangementVersion] = None
-                 ) -> ArrangementVersion:
-    """Build a complete, playable first arrangement from the tune."""
+                 previous: Optional[ArrangementVersion] = None,
+                 lead=None) -> ArrangementVersion:
+    """Build a complete, playable first arrangement from the tune.
+
+    ``lead`` is the instrument already cast for the melody.  The controller
+    passes the one the audition used, because it knows things this function
+    cannot - the configured preference, and a ranker that asks a language
+    model - and two places deciding the same thing from different
+    information is how the audition and the arrangement came to disagree.
+    Left out, the shared policy decides from the brief alone.
+    """
     from .instruments import find as find_instrument, suggest_for_feel
     from ..raaga.selection import expand_feel_words
 
@@ -537,11 +545,13 @@ def auto_arrange(melody: MelodyVersion, raaga: Raaga, brief, seed: int = 5,
                  if i is not None]
     avoid = list(brief.instruments_avoided)
 
-    lead_candidates = [i for i in preferred if i.supports("lead")]
-    if not lead_candidates:
-        ranked = suggest_for_feel(words, avoid, role="lead", limit=3)
-        lead_candidates = [i for i, _ in ranked] or [find_instrument("flute")]
-    lead = lead_candidates[0]
+    if lead is None:
+        # No lead handed down, so decide it here - through the same shared
+        # policy the controller uses, never a second one.
+        from .casting import cast
+
+        lead = cast("lead", preferred=brief.instruments_preferred,
+                    avoided=avoid, feel_words=words).instrument
 
     pad_ranked = suggest_for_feel(words, avoid + [lead.key], role="pad", limit=2)
     pad = pad_ranked[0][0] if pad_ranked else find_instrument("strings")

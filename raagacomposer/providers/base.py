@@ -94,7 +94,8 @@ class VoiceProvider(Provider):
 
     def render_vocal(self, melody: Any, lyrics: Any, profile: Any, direction: Any,
                      sample_rate: int, total_seconds: Optional[float] = None,
-                     seed: int = 0) -> np.ndarray:
+                     seed: int = 0,
+                     vocal_sections_only: bool = True) -> np.ndarray:
         raise NotImplementedError
 
     def voices(self) -> List[str]:

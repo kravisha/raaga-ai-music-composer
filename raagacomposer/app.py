@@ -937,26 +937,34 @@ class AppController:
         self._changed("raaga.reject", detail)
         return correction
 
-    def tune_instrument(self):
-        """Which instrument the tune and the audition are heard on.
+    def cast_lead(self):
+        """Who plays the lead, and why - through the one shared policy.
 
-        The creative brief already has a "Prefer" field, and until now
-        nothing read it: the tune was rendered on a hardcoded veena whatever
-        the creator asked for.  So the brief decides, then the setting, then
-        the veena that used to be the only answer.
-
-        Only an instrument that can carry a lead is taken from the brief - a
-        mridangam listed under "prefer" is a real preference about the
-        arrangement and not an offer to play the melody on it.
+        The tune itself is hummed now (specification 10.1), so this casts
+        the audition and the arrangement, which used to decide separately
+        and could disagree from the same brief.  ``music/casting.py`` holds
+        the order; this supplies the controller's richer ranking, which
+        asks a language model before the lexicon.
         """
-        for name in self.project.brief.instruments_preferred:
-            instrument = catalog.get(str(name).strip())
-            if instrument is not None and "lead" in instrument.roles:
-                return instrument
-        configured = catalog.get(getattr(self.settings, "tune_instrument", ""))
-        if configured is not None and "lead" in configured.roles:
-            return configured
-        return catalog.get("veena") or catalog.all_instruments()[0]
+        from .music import casting
+
+        return casting.cast(
+            "lead",
+            preferred=self.project.brief.instruments_preferred,
+            avoided=self.project.brief.instruments_avoided,
+            feel_words=sorted(expand_feel_words(
+                self.project.brief.mood, self.project.brief.feel,
+                self.project.brief.situation, self.project.brief.notes)),
+            configured=getattr(self.settings, "tune_instrument", ""),
+            # ``suggest_instruments`` reads the brief's avoided list itself,
+            # so the one the policy passes is dropped rather than passed
+            # twice - and the policy checks it again on the result anyway.
+            rank=lambda words, _avoid, role="lead", limit=3:
+                self.suggest_instruments(words, role=role, limit=limit))
+
+    def tune_instrument(self):
+        """The instrument alone, for callers that do not need the reason."""
+        return self.cast_lead().instrument
 
     def audition_raaga(self, name: str = "", play: bool = True):
         """Play a raaga's exact arohanam and avarohanam (pack section 7).
@@ -1695,11 +1703,16 @@ class AppController:
         raaga = self.require_raaga()
         brief = self.project.brief
         previous = self.project.arrangement()
+        # Cast on this thread, where the settings and the provider live, and
+        # hand the arrangement the answer.  The audition uses the same call,
+        # so the two cannot disagree about who is playing the melody.
+        lead = self.cast_lead()
         self.status("Building a first arrangement...")
 
         def work(ctx: JobContext) -> ArrangementVersion:
-            ctx.progress(0.3, "Choosing instruments")
-            return arranger.auto_arrange(melody, raaga, brief, previous=previous)
+            ctx.progress(0.3, f"Choosing instruments - {lead.describe()}")
+            return arranger.auto_arrange(melody, raaga, brief, previous=previous,
+                                         lead=lead.instrument)
 
         def done(arrangement: ArrangementVersion) -> None:
             self.project.arrangements.append(arrangement)
@@ -1864,14 +1877,31 @@ class AppController:
 
         def work(ctx: JobContext) -> Tuple[str, np.ndarray, dict]:
             if kind == "tune":
-                ctx.progress(0.2, "Sounding the tune")
-                inst = self.tune_instrument()
-                audio = provider.render_part(melody.notes, inst.key, sr,
-                                             total_seconds=total, seed=melody.seed)
+                # Hummed, not played (specification 10.1-10.3).  A tune was
+                # previewed on an instrument, which asked the creator to
+                # judge two things at once - the line and the timbre - and
+                # every instrument here is additive synthesis, so a "violin"
+                # is seven harmonics and an envelope.  It sounded like a
+                # keyboard because that is what it is, and the melody was
+                # blamed for the sound.
+                #
+                # A singer with no words sings on "aa" - akaaram - and the
+                # voice renderer already does exactly that when handed no
+                # lyrics.  The line is heard naked, before anyone decides
+                # what should play it.
+                ctx.progress(0.2, "Humming the tune")
+                audio = self.providers.voice.render_vocal(
+                    melody, None, self.current_voice(),
+                    self.project.vocal_direction, sr,
+                    total_seconds=total, seed=melody.seed,
+                    # Every note, including the prelude and interlude: this
+                    # is the tune being heard, not a take being sung over
+                    # an arrangement.
+                    vocal_sections_only=False)
                 from .audio import dsp
                 stereo = dsp.reverb(dsp.pan_mono(audio, 0.0), sr, 0.4, 0.16)
                 stereo = dsp.normalize_loudness(stereo, sr, -17.0)
-                return kind, dsp.limiter(stereo, -1.0, sr), {}
+                return kind, dsp.limiter(stereo, -1.0, sr), {"hummed": True}
 
             def prog(p: float, msg: str) -> None:
                 ctx.progress(0.1 + 0.8 * p, msg)
