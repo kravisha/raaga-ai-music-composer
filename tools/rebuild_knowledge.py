@@ -18,6 +18,15 @@ compares that against the code and reports, or rebuilds:
 
     python tools/rebuild_knowledge.py                 # what is stale
     python tools/rebuild_knowledge.py --rebuild       # re-derive it
+    python tools/rebuild_knowledge.py --rebuild --all # re-derive everything
+
+``--all`` is for the standing rule that the knowledge base is rebuilt when
+a major code issue is resolved.  Staleness only catches changes to the
+*ears* - a fix elsewhere can leave every extraction version current while
+still being a good reason to re-derive from the audio and see that the
+same recordings still yield the same phrases.  Forcing it is honest;
+bumping the ears' version number to trigger it would not be, because the
+ears would not have changed.
 
 Rebuilding deletes the phrases and facts of stale sources and ingests their
 audio again from the training manifest.  The audio is the thing of record;
@@ -79,11 +88,19 @@ def backup(paths) -> None:
             print(f"  backed up {path.name} -> {target.name}")
 
 
-def rebuild(settings: Settings, repo: KnowledgeRepository, kb) -> int:
-    stale = stale_sources(repo)
-    if not stale:
-        print("nothing to rebuild")
-        return 0
+def rebuild(settings: Settings, repo: KnowledgeRepository, kb,
+            everything: bool = False) -> int:
+    if everything:
+        stale = [(s, s.extraction_version or "?") for s in repo.sources()]
+        if not stale:
+            print("no sources recorded; nothing to re-derive")
+            return 0
+        print(f"re-deriving all {len(stale)} source(s), stale or not")
+    else:
+        stale = stale_sources(repo)
+        if not stale:
+            print("nothing to rebuild")
+            return 0
 
     # Locate the audio before deleting anything.  A rebuild that cannot find
     # the recordings must not be a rebuild that lost the phrases.
@@ -128,6 +145,8 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rebuild", action="store_true",
                         help="re-derive stale knowledge, not just report it")
+    parser.add_argument("--all", action="store_true", dest="everything",
+                        help="re-derive every source, not only stale ones")
     args = parser.parse_args(argv)
 
     settings = Settings.load()
@@ -140,7 +159,7 @@ def main(argv=None) -> int:
         print("BACKUPS")
         backup([home / "knowledge.db", home / "knowledge_base.db"])
         report(repo)
-        return rebuild(settings, repo, kb)
+        return rebuild(settings, repo, kb, everything=args.everything)
     finally:
         repo.close()
         kb.store.close()
