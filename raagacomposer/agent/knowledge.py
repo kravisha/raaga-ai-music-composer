@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from ..core import provenance
 from ..core.logging_setup import get_logger
 from ..core.settings import config_dir
 
@@ -38,7 +39,7 @@ log = get_logger("agent.knowledge")
 #: 3 adds ``selection_weights`` (Stage 1 pack document 05 section 6).  The
 #: table is created by the same ``IF NOT EXISTS`` script an older database
 #: already ran, so an existing knowledge.db gains it and keeps everything.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -60,7 +61,8 @@ CREATE TABLE IF NOT EXISTS sources (
     status TEXT DEFAULT 'pending',
     error TEXT DEFAULT '',
     fingerprint TEXT UNIQUE,
-    notes TEXT DEFAULT '');
+    notes TEXT DEFAULT '',
+    origin TEXT DEFAULT 'human');
 
 CREATE TABLE IF NOT EXISTS phrases (
     id TEXT PRIMARY KEY,
@@ -77,7 +79,11 @@ CREATE TABLE IF NOT EXISTS phrases (
     votes INTEGER DEFAULT 1,
     rejected INTEGER DEFAULT 0,
     learned_at REAL,
-    notes TEXT DEFAULT '');
+    notes TEXT DEFAULT '',
+    -- Who produced this (training specification 2.5).  See core.provenance:
+    -- generated material is composable but is never evidence of learning.
+    origin TEXT DEFAULT 'human');
+CREATE INDEX IF NOT EXISTS phrases_by_origin ON phrases (raaga, origin, rejected);
 CREATE INDEX IF NOT EXISTS phrases_by_raaga ON phrases (raaga, rejected);
 CREATE INDEX IF NOT EXISTS phrases_by_fingerprint ON phrases (fingerprint);
 
@@ -221,6 +227,7 @@ class Source:
     error: str = ""
     fingerprint: str = ""
     notes: str = ""
+    origin: str = provenance.HUMAN
 
 
 @dataclass
@@ -240,6 +247,10 @@ class Phrase:
     rejected: bool = False
     learned_at: float = field(default_factory=time.time)
     notes: str = ""
+    #: Where this came from - see ``core.provenance``.  Defaulting to HUMAN
+    #: is safe only because ``add_phrase`` derives the truth from whether a
+    #: source was named; nothing else may assume it.
+    origin: str = provenance.HUMAN
 
     def compute_fingerprint(self) -> str:
         return fingerprint([self.raaga] + list(self.swaras))
@@ -366,6 +377,11 @@ class KnowledgeRepository:
         # Called once from __init__, before this object can have reached any
         # other thread - nothing to serialise against yet.
         with self._conn:
+            # Before the schema script, not after.  The script now creates an
+            # index over ``phrases.origin``, and on a database written before
+            # that column existed the index cannot be built - CREATE INDEX IF
+            # NOT EXISTS still has to resolve the column it names.
+            self._add_origin_columns()
             self._conn.executescript(_SCHEMA)
             found = self._conn.execute(
                 "SELECT value FROM meta WHERE key='schema_version'").fetchone()
@@ -383,9 +399,46 @@ class KnowledgeRepository:
                 if stored < SCHEMA_VERSION:
                     log.info("migrating knowledge schema %d -> %d", stored,
                              SCHEMA_VERSION)
+                    self._backfill_origins()
                     self._conn.execute(
                         "UPDATE meta SET value=? WHERE key='schema_version'",
                         (str(SCHEMA_VERSION),))
+
+    def _add_origin_columns(self) -> None:
+        """Schema 4: provenance becomes a column instead of a convention.
+
+        ``executescript(_SCHEMA)`` cannot do this - every statement there is
+        CREATE TABLE IF NOT EXISTS, which does nothing at all to a table that
+        already exists, so a new column in the schema text reaches new
+        databases only.  Existing ones need the ALTER.
+
+        An empty ``table_info`` means the table is not there yet, which is a
+        fresh database: the schema script is about to create it with the
+        column already in place, so there is nothing to alter.
+        """
+        for table in ("sources", "phrases"):
+            columns = {r["name"] for r in
+                       self._conn.execute(f"PRAGMA table_info({table})")}
+            if columns and "origin" not in columns:
+                self._conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN origin TEXT DEFAULT 'human'")
+                log.info("added %s.origin", table)
+
+    def _backfill_origins(self) -> None:
+        """Classify what was stored before anything recorded an origin.
+
+        Derived, not guessed: a phrase learned from a source carries that
+        source's id, so a phrase with no source was not learned from one.
+        That is exactly the material the agent wrote itself - practice
+        output kept by ``_keep_best_artifact`` - and it is the only thing
+        this reclassifies.
+        """
+        moved = self._conn.execute(
+            "UPDATE phrases SET origin=? WHERE source_id IS NULL OR source_id=''",
+            (provenance.GENERATED,)).rowcount
+        if moved:
+            log.info("provenance backfill: %d phrase(s) named no source and "
+                     "are recorded as generated", moved)
 
     @property
     def schema_version(self) -> int:
@@ -441,12 +494,13 @@ class KnowledgeRepository:
                     "INSERT INTO sources(id, locator, title, performer, raaga,"
                     " content_type, rights_status, provider, quality, ingested_at,"
                     " extraction_version, confidence, status, error, fingerprint,"
-                    " notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    " notes, origin) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (source.id, source.locator, source.title, source.performer,
                      source.raaga, source.content_type, source.rights_status,
                      source.provider, source.quality, source.ingested_at,
                      source.extraction_version, source.confidence, source.status,
-                     source.error, source.fingerprint, source.notes))
+                     source.error, source.fingerprint, source.notes,
+                     source.origin))
             self.log_event("source.added", source.title or source.locator,
                            raaga=source.raaga, source_id=source.id)
             return source, True
@@ -524,47 +578,95 @@ class KnowledgeRepository:
 
     # -- phrases -----------------------------------------------------------
     def add_phrase(self, phrase: Phrase) -> Tuple[Phrase, bool]:
-        """Store a learned phrase; an identical one strengthens the existing entry."""
+        """Store a phrase; an identical one strengthens the existing entry.
+
+        Two provenance rules live here (training specification 2.4).
+
+        The origin is settled rather than trusted: a phrase that names no
+        source cannot have been learned from one, so it is recorded as
+        generated whatever it claimed.
+
+        And a generated phrase may not strengthen a learned one.  Repeating
+        yourself is not a second witness; letting it through was a quiet
+        route by which the agent's own output raised the confidence of the
+        material it was supposed to be judged against.
+        """
         with self._lock:
+            phrase.origin = provenance.coerce(phrase.origin,
+                                              source_id=phrase.source_id)
             phrase.fingerprint = phrase.fingerprint or phrase.compute_fingerprint()
             existing = self._conn.execute(
                 "SELECT * FROM phrases WHERE fingerprint=?",
                 (phrase.fingerprint,)).fetchone()
             if existing is not None:
+                stored = self._row_to_phrase(existing)
+                if phrase.origin == provenance.GENERATED \
+                        and provenance.may_be_learned_from(stored.origin):
+                    log.debug("generated phrase matched learned %s; not "
+                              "strengthening it", stored.id)
+                    return stored, False
                 votes = existing["votes"] + 1
                 confidence = min(0.99, max(existing["confidence"],
                                            phrase.confidence) + 0.05)
+                # The promotion the rule implies in the other direction: if a
+                # real recording turns out to contain something the agent had
+                # only invented, that is a genuine witness and the phrase has
+                # now been heard.  Without this the row stayed marked
+                # generated for ever and the evidence was thrown away.
+                origin, source_id = stored.origin, stored.source_id
+                if provenance.may_be_learned_from(phrase.origin) \
+                        and not provenance.may_be_learned_from(stored.origin):
+                    origin, source_id = phrase.origin, phrase.source_id
+                    log.info("phrase %s was generated and has now been heard "
+                             "in %s", stored.id, source_id or "a source")
                 with self._conn:
                     self._conn.execute(
-                        "UPDATE phrases SET votes=?, confidence=? WHERE id=?",
-                        (votes, confidence, existing["id"]))
-                stored = self._row_to_phrase(existing)
+                        "UPDATE phrases SET votes=?, confidence=?, origin=?,"
+                        " source_id=? WHERE id=?",
+                        (votes, confidence, origin, source_id, existing["id"]))
                 stored.votes = votes
                 stored.confidence = confidence
+                stored.origin = origin
+                stored.source_id = source_id
                 return stored, False
 
             with self._conn:
                 self._conn.execute(
                     "INSERT INTO phrases(id, raaga, swaras, midi, durations,"
                     " function, source_id, confidence, fingerprint, contour, tempo,"
-                    " votes, rejected, learned_at, notes)"
-                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    " votes, rejected, learned_at, notes, origin)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (phrase.id, phrase.raaga, json.dumps(phrase.swaras),
                      json.dumps(phrase.midi), json.dumps(phrase.durations),
                      phrase.function, phrase.source_id, phrase.confidence,
                      phrase.fingerprint, phrase.contour, phrase.tempo, phrase.votes,
-                     int(phrase.rejected), phrase.learned_at, phrase.notes))
+                     int(phrase.rejected), phrase.learned_at, phrase.notes,
+                     phrase.origin))
             return phrase, True
 
     def phrases(self, raaga: str = "", min_confidence: float = 0.0,
                 include_rejected: bool = False, limit: int = 500,
-                function: str = "") -> List[Phrase]:
+                function: str = "",
+                origins: Optional[Sequence[str]] = None) -> List[Phrase]:
+        """Every phrase, whatever produced it.
+
+        This is the raw pool, and it is the right thing to read when the
+        question is "what does this system have" - composing, answering the
+        creator, indexing for originality, applying feedback.
+
+        It is the *wrong* thing to read when the question is "what has this
+        system learned".  Use ``learned_phrases`` for that; see
+        ``core.provenance``.
+        """
         with self._lock:
             clauses = ["confidence >= ?"]
             params: List[Any] = [min_confidence]
             if raaga:
                 clauses.append("raaga = ?")
                 params.append(raaga)
+            if origins:
+                clauses.append("origin IN (%s)" % ",".join("?" * len(origins)))
+                params.extend(origins)
             if function:
                 clauses.append("function = ?")
                 params.append(function)
@@ -575,6 +677,22 @@ class KnowledgeRepository:
                 f"SELECT * FROM phrases WHERE {' AND '.join(clauses)}"
                 f" ORDER BY confidence DESC, votes DESC LIMIT ?", params).fetchall()
             return [self._row_to_phrase(r) for r in rows]
+
+    def learned_phrases(self, raaga: str = "", min_confidence: float = 0.0,
+                        include_rejected: bool = False, limit: int = 500,
+                        function: str = "") -> List[Phrase]:
+        """Only what was learned from somebody else's music.
+
+        Training specification 2.4 and non-negotiable rule 2: the agent's
+        own output is creative material, not evidence.  Everything that
+        asks "is there enough to learn from", "what shall I practise from"
+        or "what shall I be quizzed on" belongs here rather than in
+        ``phrases``.
+        """
+        return self.phrases(raaga=raaga, min_confidence=min_confidence,
+                            include_rejected=include_rejected, limit=limit,
+                            function=function,
+                            origins=provenance.LEARNED_FROM)
 
     def phrase(self, phrase_id: str) -> Optional[Phrase]:
         with self._lock:
@@ -599,15 +717,20 @@ class KnowledgeRepository:
                     (reason, phrase_id))
             self.log_event("phrase.rejected", reason)
 
-    def count_phrases(self, raaga: str = "") -> int:
+    def count_phrases(self, raaga: str = "", learned_only: bool = False) -> int:
         with self._lock:
+            clauses = ["rejected = 0"]
+            params: List[Any] = []
             if raaga:
-                row = self._conn.execute(
-                    "SELECT count(*) AS n FROM phrases WHERE raaga=? AND rejected=0",
-                    (raaga,)).fetchone()
-            else:
-                row = self._conn.execute(
-                    "SELECT count(*) AS n FROM phrases WHERE rejected=0").fetchone()
+                clauses.append("raaga = ?")
+                params.append(raaga)
+            if learned_only:
+                clauses.append("origin IN (%s)"
+                               % ",".join("?" * len(provenance.LEARNED_FROM)))
+                params.extend(provenance.LEARNED_FROM)
+            row = self._conn.execute(
+                f"SELECT count(*) AS n FROM phrases WHERE {' AND '.join(clauses)}",
+                params).fetchone()
             return int(row["n"])
 
     @staticmethod
@@ -619,7 +742,7 @@ class KnowledgeRepository:
             confidence=row["confidence"], fingerprint=row["fingerprint"],
             contour=row["contour"], tempo=row["tempo"], votes=row["votes"],
             rejected=bool(row["rejected"]), learned_at=row["learned_at"],
-            notes=row["notes"])
+            notes=row["notes"], origin=row["origin"])
 
     # -- facts -------------------------------------------------------------
     def add_fact(self, fact: Fact) -> None:

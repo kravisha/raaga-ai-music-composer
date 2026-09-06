@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from ..core import provenance
 from ..core.logging_setup import get_logger
 from ..core.models import CreativeBrief, Note
 from ..core.settings import Settings
@@ -640,7 +641,10 @@ class MusicAgent:
     def _enough_material(self, unit: Unit, raaga: str) -> bool:
         wanted = int(unit.params.get("min_phrases",
                                      unit.minimum_examples_required))
-        have = len(self.repo.phrases(
+        # Learned only.  Counting its own practice output here let the agent
+        # satisfy its own prerequisite with its own work and then "progress"
+        # on the strength of it (training specification 2.4).
+        have = len(self.repo.learned_phrases(
             raaga=raaga,
             min_confidence=float(unit.params.get("min_confidence", 0.4)),
             limit=500))
@@ -785,6 +789,11 @@ class MusicAgent:
             raaga=raaga, swaras=swaras, midi=[n.midi for n in best],
             durations=[round(n.duration, 3) for n in best],
             function="practice", source_id="", confidence=0.5,
+            # Training specification 2.4.  This is the agent's own output.
+            # It is kept because it is useful creative material (2.3), and
+            # it is labelled because it must never be counted as evidence
+            # that the agent has learned anything.
+            origin=provenance.GENERATED,
             notes=f"the agent's own practice for {unit.id}")
         _, is_new = self.repo.add_phrase(phrase)
         if is_new:
@@ -1024,7 +1033,10 @@ class MusicAgent:
                     f"{self._source_name(up.source_id)} "
                     f"(confidence {up.confidence:.2f}).")
         if "phrase" in low or "prayoga" in low or "why" in low:
-            phrases = self.repo.phrases(raaga=raaga, limit=5)
+            # "heard in" below is a claim about where a phrase came from,
+            # so only material that actually came from somewhere belongs in
+            # this answer.
+            phrases = self.repo.learned_phrases(raaga=raaga, limit=5)
             if not phrases:
                 return (f"I have not heard any phrases of {raaga} yet, so I am "
                         f"composing from its scale alone.")

@@ -22,6 +22,7 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from ..core import provenance
 from ..core.logging_setup import get_logger
 from ..core.models import Note
 from ..core.settings import Settings
@@ -390,7 +391,7 @@ class ResearchAgent:
             content_type=candidate.content_type,
             rights_status=candidate.rights_status, provider=candidate.provider,
             quality=candidate.quality, extraction_version=analysis.ANALYSIS_VERSION,
-            notes=candidate.notes)
+            origin=provenance.INTERNET, notes=candidate.notes)
         stored, is_new = self.repo.add_source(source)
         result.source_id = stored.id
         if not is_new:
@@ -567,7 +568,7 @@ class ResearchAgent:
                 durations=durations, function=self._function(phrase),
                 source_id=source.id, confidence=confidence,
                 contour=phrase.contour(), tempo=analysed.tempo_bpm,
-                notes=candidate.title[:120])
+                origin=source.origin, notes=candidate.title[:120])
             _, is_new = self.repo.add_phrase(record)
             learned += int(is_new)
             if is_new:
@@ -655,6 +656,7 @@ class ResearchAgent:
             content_type="structural", rights_status="internally-generated",
             provider="library", quality=0.9, confidence=0.9, status="analysed",
             extraction_version=analysis.ANALYSIS_VERSION,
+            origin=provenance.HUMAN,
             notes="the structural definition the application ships with")
         stored, _ = self.repo.add_source(source)
 

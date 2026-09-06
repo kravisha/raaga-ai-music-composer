@@ -583,9 +583,13 @@ class PracticeEngine:
         """The same phrases and order ``learned_phrase_bank`` would give,
         minus any this attempt was told not to quote.  With an empty
         ``guidance`` the result is identical to ``learned_phrase_bank``."""
+        # Learned material only.  Practising from its own past practice is
+        # the retraining loop training specification 2.4 forbids: each round
+        # would be built on the last one instead of on the music.
         return [list(p.swaras) for p in
-                self.repo.phrases(raaga=raaga_name, min_confidence=min_confidence,
-                                  limit=limit)
+                self.repo.learned_phrases(raaga=raaga_name,
+                                          min_confidence=min_confidence,
+                                          limit=limit)
                 if p.id not in guidance.avoid_quoting and 2 <= len(p.swaras) <= 10]
 
     def _generate_pattern(self, unit: Unit, raaga: Optional[Raaga],
