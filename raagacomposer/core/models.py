@@ -51,9 +51,11 @@ class CreativeBrief:
     situation: str = ("a young novice musician is eager to impress his "
                       "audience by belting out a new tune")
     #: Moods, plural: the brief is read as text everywhere it is used, so
-    #: "hopeful, romantic" reaches the emotion vector as both feelings
+    #: The default is the brief the situation asks for: a novice about to
+    #: play in front of people is nervous and excited at once, and the
+    #: emotion engine reads all five words rather than making one win.
     #: rather than one of them (specification 9.1).
-    mood: str = "hopeful, romantic"
+    mood: str = "tense, upbeat, nervous, excited, hopeful"
     feel: str = ""
     language: str = "Tamil"
     #: The rhythmic cycle, by name.  Tala is a first-class dimension

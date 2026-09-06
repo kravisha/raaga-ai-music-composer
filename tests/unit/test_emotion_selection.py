@@ -276,3 +276,53 @@ def test_a_brief_with_nothing_in_it_ranks_nothing(lib):
     """The one case where an empty answer is the honest one; the callers
     turn it into a stated default rather than a silent guess."""
     assert rank(CreativeBrief(mood="", feel="", situation=""), lib.all()) == []
+
+
+# --------------------------------------------------------------------------
+# The default brief must be read in full
+# --------------------------------------------------------------------------
+def test_every_word_of_the_default_feel_reaches_the_engine():
+    """A default nobody understands is worse than a short one.
+
+    "upbeat", "nervous" and "excited" were not in the lexicon, so a five
+    word default would have been read as "tense, hopeful" and the other
+    three silently dropped.
+    """
+    from raagacomposer.core.models import CreativeBrief
+    from raagacomposer.raaga import emotion
+
+    words = [w.strip() for w in CreativeBrief().mood.split(",") if w.strip()]
+    assert words == ["tense", "upbeat", "nervous", "excited", "hopeful"]
+    for word in words:
+        assert word in emotion.LEXICON, f"{word!r} would be discarded"
+        # and it must actually move the vector, not merely be present
+        assert any(v for v in emotion.LEXICON[word].values())
+
+    full = emotion.target_vector(CreativeBrief(mood=", ".join(words))).weights
+    fewer = emotion.target_vector(CreativeBrief(mood="tense, hopeful")).weights
+    assert full != fewer
+
+
+def test_the_default_feel_is_tense_but_not_gloomy():
+    """Tension and brightness together - a nervous player, not a sad one."""
+    from raagacomposer.core.models import CreativeBrief
+    from raagacomposer.raaga import emotion, selection
+
+    w = emotion.target_vector(CreativeBrief()).weights
+    assert w["tension"] > 0.5
+    assert w["joy"] > 0.5 and w["brightness"] > 0.5
+    assert w.get("sadness", 0.0) < 0.2
+
+    tags = selection.expand_feel_words(CreativeBrief().mood)
+    assert "intense" in tags and "bright" in tags
+    # "tense" must not drag a brief that is also excited towards the dark.
+    assert "brooding" not in tags and "dark" not in tags
+
+
+def test_the_moods_offered_include_the_default_ones():
+    """Every word in the default has a box to untick."""
+    from raagacomposer.core.models import CreativeBrief
+    from raagacomposer.ui.panels.brief_panel import MOODS
+
+    for word in (w.strip() for w in CreativeBrief().mood.split(",")):
+        assert word in MOODS, f"{word!r} is the default but not in the picker"
