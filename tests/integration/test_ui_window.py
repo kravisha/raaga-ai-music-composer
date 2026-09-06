@@ -551,3 +551,21 @@ def test_the_help_text_lists_the_spoken_commands(window):
                    "from the second minute to the third minute",
                    "Add veena here", "without instruments"):
         assert phrase in HELP_TEXT
+
+
+def test_the_tala_picker_offers_the_cycles_and_their_shape(window):
+    """Tala is chosen, not inferred from a beat count (specification 11.4)."""
+    panel = window.tune
+    labels = [panel.tala.itemText(i) for i in range(panel.tala.count())]
+    assert labels[0] == "From the tune", "there must be a way not to choose"
+    assert any("Misra Chapu" in l and "3+2+2" in l for l in labels), \
+        "the picker should show each cycle's shape, not only its name"
+    assert any("Adi" in l and "4+2+2" in l for l in labels)
+
+    # Choosing one records it on the brief, where the tune reads it too.
+    index = next(i for i in range(panel.tala.count())
+                 if panel.tala.itemData(i) == "Misra Chapu")
+    panel.tala.setCurrentIndex(index)
+    panel._tala_chosen(index)
+    assert window.app.project.brief.tala == "Misra Chapu"
+    assert window.app.current_tala().aksharas == 7
