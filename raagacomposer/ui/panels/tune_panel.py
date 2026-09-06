@@ -6,6 +6,8 @@ from PySide6.QtWidgets import (QComboBox, QGroupBox, QHBoxLayout, QLabel,
                                QMessageBox, QPushButton, QSpinBox, QTableWidget,
                                QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget)
 
+from ...music import beat as beat_engine
+
 
 class TunePanel(QWidget):
     changed = Signal()
@@ -25,6 +27,23 @@ class TunePanel(QWidget):
         self.stop_btn.clicked.connect(self.app.stop)
         self.accept_btn = QPushButton("Accept and lock")
         self.accept_btn.clicked.connect(self._accept)
+
+        # The beat is its own layer (specification 11): made, heard and
+        # varied without touching the tune, because it is written against
+        # the tala rather than against the melody's notes.
+        self.beat_btn = QPushButton("Generate beat")
+        self.beat_btn.clicked.connect(lambda: self.app.generate_beat(autoplay=True))
+        self.beat_variation_btn = QPushButton("Beat variation")
+        self.beat_variation_btn.clicked.connect(
+            lambda: self.app.beat_variation(self.beat_strength.currentText(),
+                                            autoplay=True))
+        self.beat_strength = QComboBox()
+        self.beat_strength.addItems(list(beat_engine.STRENGTHS))
+        self.beat_strength.setCurrentText(beat_engine.DEFAULT_STRENGTH)
+        self.play_beat_btn = QPushButton("Play beat")
+        self.play_beat_btn.clicked.connect(lambda: self.app.play_render("beat"))
+        self.beat_label = QLabel("No beat yet")
+        self.beat_label.setObjectName("hint")
 
         self.versions = QComboBox()
         self.versions.activated.connect(self._version_chosen)
@@ -65,6 +84,13 @@ class TunePanel(QWidget):
         second.addWidget(self.tempo)
         second.addWidget(tempo_btn)
 
+        beat_row = QHBoxLayout()
+        beat_row.addWidget(self.beat_btn)
+        beat_row.addWidget(self.beat_variation_btn)
+        beat_row.addWidget(self.beat_strength)
+        beat_row.addWidget(self.play_beat_btn)
+        beat_row.addWidget(self.beat_label, 1)
+
         third = QHBoxLayout()
         third.addWidget(regen_btn)
         third.addWidget(lock_btn)
@@ -74,6 +100,7 @@ class TunePanel(QWidget):
         layout = QVBoxLayout(self)
         layout.addLayout(top)
         layout.addLayout(second)
+        layout.addLayout(beat_row)
         layout.addWidget(QLabel("Sections - each is separately playable, "
                                 "regeneratable and lockable:"))
         layout.addWidget(self.sections, 1)
@@ -151,6 +178,15 @@ class TunePanel(QWidget):
         self.variation_btn.setEnabled(has_tune)
         self.play_btn.setEnabled(self.app.rendered("tune") is not None)
         self.accept_btn.setEnabled(has_tune)
+
+        # The beat needs a length to fill, which a tune gives it - but a
+        # brief with a target length is enough, so it is not gated on the
+        # tune existing.
+        beat = project.beat()
+        self.beat_variation_btn.setEnabled(beat is not None)
+        self.play_beat_btn.setEnabled(self.app.rendered("beat") is not None)
+        self.beat_label.setText(
+            f"v{beat.version}: {beat.summary()}" if beat else "No beat yet")
 
         if melody is not None and not self.tempo.hasFocus():
             self.tempo.setValue(int(melody.tempo_bpm))

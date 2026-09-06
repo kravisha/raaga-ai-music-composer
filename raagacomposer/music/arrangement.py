@@ -524,7 +524,7 @@ def lock_range(arrangement: ArrangementVersion, start: float, end: float,
 # --------------------------------------------------------------------------
 def auto_arrange(melody: MelodyVersion, raaga: Raaga, brief, seed: int = 5,
                  previous: Optional[ArrangementVersion] = None,
-                 lead=None) -> ArrangementVersion:
+                 lead=None, beat=None) -> ArrangementVersion:
     """Build a complete, playable first arrangement from the tune.
 
     ``lead`` is the instrument already cast for the melody.  The controller
@@ -533,6 +533,10 @@ def auto_arrange(melody: MelodyVersion, raaga: Raaga, brief, seed: int = 5,
     model - and two places deciding the same thing from different
     information is how the audition and the arrangement came to disagree.
     Left out, the shared policy decides from the brief alone.
+
+    ``beat`` is the percussion the creator made and approved.  When one
+    exists it is arranged as it stands; the alternative is generating a
+    second rhythm part and quietly replacing the one they heard.
     """
     from .instruments import find as find_instrument, suggest_for_feel
     from ..raaga.selection import expand_feel_words
@@ -581,9 +585,27 @@ def auto_arrange(melody: MelodyVersion, raaga: Raaga, brief, seed: int = 5,
         # Percussion enters after the prelude.
         first_sung = next((s.start for s in melody.sections
                            if not s.kind.instrumental), 0.0)
-        add_instrument(arrangement, melody, raaga, percussion.key, first_sung, total,
-                       role="rhythm", intensity=0.6, seed=seed + 3,
-                       generated_by="auto")
+        if beat is not None and beat.notes:
+            # A beat the creator made is the beat.  Generating another one
+            # here would silently replace it - two rhythm parts from one
+            # song, and only one of them the one they heard and approved.
+            strokes = [n for n in beat.notes if n.start >= first_sung]
+            track = Track(instrument=percussion.key, role="rhythm",
+                          display_name=percussion.name,
+                          gain=percussion.default_gain,
+                          pan=percussion.default_pan, created_by="beat")
+            track.regions = [Region(start=first_sung, end=total, role="rhythm",
+                                    notes=strokes, seed=beat.seed,
+                                    generated_by="beat",
+                                    meta={"tala": beat.tala,
+                                          "beat_version": str(beat.version)})]
+            arrangement.tracks.append(track)
+            log.info("arranged the creator's beat v%d (%s, %d strokes)",
+                     beat.version, beat.tala, len(strokes))
+        else:
+            add_instrument(arrangement, melody, raaga, percussion.key,
+                           first_sung, total, role="rhythm", intensity=0.6,
+                           seed=seed + 3, generated_by="auto")
     if lead:
         for section in melody.sections:
             if section.kind.instrumental:
