@@ -1897,7 +1897,11 @@ class AppController:
                     # Every note, including the prelude and interlude: this
                     # is the tune being heard, not a take being sung over
                     # an arrangement.
-                    vocal_sections_only=False)
+                    vocal_sections_only=False,
+                    # Closed, not open.  An open "aa" through four strong
+                    # formants is close to how you would synthesise a reed
+                    # instrument, which is what it sounded like.
+                    vowel="hum")
                 from .audio import dsp
                 stereo = dsp.reverb(dsp.pan_mono(audio, 0.0), sr, 0.4, 0.16)
                 stereo = dsp.normalize_loudness(stereo, sr, -17.0)

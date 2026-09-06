@@ -35,9 +35,22 @@ VOWEL_FORMANTS: Dict[str, Tuple[float, float, float, float]] = {
     "u": (320, 900, 2240, 3200),
     "ai": (600, 1700, 2500, 3400),
     "au": (620, 1000, 2400, 3300),
+    # A closed hum, which is not a vowel at all: the lips are shut and the
+    # sound leaves through the nose.  Its first resonance is low and the
+    # rest are barely there, which is why a hum reads as warm and dark
+    # where an open "aa" reads as bright.
+    "hum": (280, 1100, 2000, 2800),
 }
 
+#: Per-formant loudness.  Sung vowels share the default; a hum does not,
+#: and that is the whole difference between the two.  Open "aa" through
+#: these gains sounds like a reed instrument, because a sawtooth with four
+#: strong formants *is* roughly how you synthesise one.  Shutting the upper
+#: formants down is what makes it sound like a closed mouth.
 FORMANT_GAINS = (1.0, 0.62, 0.34, 0.18)
+VOWEL_GAINS: Dict[str, Tuple[float, float, float, float]] = {
+    "hum": (1.0, 0.22, 0.06, 0.02),
+}
 FORMANT_BW = (80.0, 110.0, 160.0, 220.0)
 
 PLOSIVES = set("kgtdpb") | {"ch", "j", "tt", "dd"}
@@ -89,8 +102,14 @@ def split_syllable(syllable: str) -> Tuple[str, str]:
 
 def plan_segments(melody: MelodyVersion,
                   lyrics: Optional[LyricsVersion] = None,
-                  vocal_sections_only: bool = True) -> List[SungSegment]:
-    """Map notes (and their fitted syllables) onto singable segments."""
+                  vocal_sections_only: bool = True,
+                  vowel: str = "") -> List[SungSegment]:
+    """Map notes (and their fitted syllables) onto singable segments.
+
+    ``vowel`` overrides what is sung, which is how a tune is hummed rather
+    than sung open on "aa": every note takes the same closed sound and no
+    consonant, because a hum has no words to shape.
+    """
     syllable_for: Dict[int, str] = {}
     if lyrics:
         for line in lyrics.lines:
@@ -104,10 +123,13 @@ def plan_segments(melody: MelodyVersion,
         if vocal_sections_only and section and section.kind.instrumental:
             continue
         syl = syllable_for.get(i, "")
-        cons, vowel = split_syllable(syl) if syl else ("", "a")
+        if vowel:
+            cons, sound = "", vowel
+        else:
+            cons, sound = split_syllable(syl) if syl else ("", "a")
         segments.append(SungSegment(
             start=note.start, end=note.end, midi=note.midi, syllable=syl,
-            vowel=vowel, consonant=cons, velocity=note.velocity,
+            vowel=sound, consonant=cons, velocity=note.velocity,
             gamaka=note.gamaka, legato=(note.start - prev_end) < 0.06))
         prev_end = note.end
     return segments
@@ -251,8 +273,9 @@ def render(segments: Sequence[SungSegment], profile: VoiceProfile,
         if len(seg_src) == 0:
             continue
         formants = VOWEL_FORMANTS.get(seg.vowel, VOWEL_FORMANTS["a"])
+        gains = VOWEL_GAINS.get(seg.vowel, FORMANT_GAINS)
         mixed = np.zeros(len(seg_src), dtype=np.float32)
-        for k, (f, gain, bw) in enumerate(zip(formants, FORMANT_GAINS, FORMANT_BW)):
+        for k, (f, gain, bw) in enumerate(zip(formants, gains, FORMANT_BW)):
             freq = f * shift * (1.0 + 0.06 * (profile.brightness - 1.0) * k)
             bnum, aden = _resonator(freq, bw * (1.0 + 0.3 * k), sr)
             zi = states[k]
@@ -324,7 +347,8 @@ def render_melody(melody: MelodyVersion, lyrics: Optional[LyricsVersion],
                   profile: VoiceProfile, direction: VocalDirection,
                   sr: int = 44100, total_seconds: Optional[float] = None,
                   seed: int = 11,
-                  vocal_sections_only: bool = True) -> np.ndarray:
+                  vocal_sections_only: bool = True,
+                  vowel: str = "") -> np.ndarray:
     """Sing a melody, with words or without them.
 
     ``vocal_sections_only`` is right for a take with lyrics - nobody sings
@@ -334,6 +358,7 @@ def render_melody(melody: MelodyVersion, lyrics: Optional[LyricsVersion],
     outro should be.
     """
     segments = plan_segments(melody, lyrics,
-                             vocal_sections_only=vocal_sections_only)
+                             vocal_sections_only=vocal_sections_only,
+                             vowel=vowel)
     return render(segments, profile, direction, sr,
                   total_seconds or (melody.duration + 1.0), seed)
