@@ -793,3 +793,47 @@ def test_a_resolved_word_reaches_the_next_search(ready, settle):
     status = app.apply_brief_sync(mood="nervy", feel="")
     settle()
     assert "not used yet" not in status.message, status.message
+
+
+def test_the_brief_says_when_a_guess_is_shaping_the_result(ready, settle):
+    """A resolution used to succeed silently: the deferral line vanished and
+    nothing replaced it, so a guess did the ranking unannounced."""
+    app = ready
+    app.apply_brief_sync(mood="nervy", feel="")
+    settle()
+    app.agent.repo.record_investigation("nervy", ["nervous", "tense"], 0.8,
+                                        "on edge")
+
+    status = app.apply_brief_sync(mood="nervy", feel="")
+    settle()
+    assert "Reading nervy as nervous and tense (unconfirmed)" in status.message, \
+        status.message
+    assert "not used yet" not in status.message, status.message
+
+
+def test_a_guess_about_a_word_you_did_not_use_is_not_mentioned(ready, settle):
+    app = ready
+    app.apply_brief_sync(mood="nervy", feel="")
+    settle()
+    app.agent.repo.record_investigation("nervy", ["nervous"], 0.8, "on edge")
+
+    status = app.apply_brief_sync(mood="hopeful", feel="")
+    settle()
+    assert "Reading nervy" not in status.message, status.message
+
+
+def test_a_dismissed_reading_stops_shaping_the_brief(ready, settle):
+    app = ready
+    app.apply_brief_sync(mood="nervy", feel="")
+    settle()
+    app.agent.repo.record_investigation("nervy", ["nervous", "tense"], 0.8, "x")
+    assert app.readings_in_use(app.project.brief)
+
+    app.agent.repo.dismiss_term("nervy", "wrong")
+
+    assert app.readings_in_use(app.project.brief) == []
+    readable = app.readable_brief(app.project.brief)
+    assert "nervy" in readable.mood, "the word was still being rewritten"
+    status = app.apply_brief_sync(mood="nervy", feel="")
+    settle()
+    assert "Reading nervy" not in status.message, status.message

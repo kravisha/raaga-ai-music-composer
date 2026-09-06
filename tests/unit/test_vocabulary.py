@@ -214,3 +214,56 @@ def test_narrative_prose_is_not_treated_as_unreadable_feeling(tmp_path):
             assert noise not in deferred, f"{noise!r} is not a feeling"
     finally:
         app.close()
+
+
+# --------------------------------------------------------------------------
+# (a) an unconfirmed reading says so; (b) a dismissed one stops acting
+# Approved by Arya 2026-09-06 14:35:42 under Krish's delegated authority.
+# --------------------------------------------------------------------------
+def test_an_unconfirmed_reading_is_offered_for_telling_the_creator(repo):
+    repo.note_unknown_terms(["nervy"])
+    repo.record_investigation("nervy", ["nervous", "tense"], 0.8, "on edge")
+    assert repo.unconfirmed_readings() == [("nervy", ["nervous", "tense"])]
+
+
+def test_a_confirmed_reading_is_not_flagged_as_a_guess(repo):
+    """Only what a machine proposed needs the caveat."""
+    repo.note_unknown_terms(["nervy"])
+    repo.record_investigation("nervy", ["nervous"], 0.8, "on edge",
+                              origin=provenance.HUMAN)
+    assert repo.resolutions() == {"nervy": ["nervous"]}
+    assert repo.unconfirmed_readings() == []
+
+
+def test_a_dismissed_reading_stops_influencing_anything(repo):
+    repo.note_unknown_terms(["zesty"])
+    repo.record_investigation("zesty", ["playful"], 0.6, "lively")
+    assert repo.resolutions() == {"zesty": ["playful"]}
+
+    repo.dismiss_term("zesty", "wrong - zesty is not playful")
+
+    assert repo.resolutions() == {}
+    assert repo.unconfirmed_readings() == []
+    row = repo.unresolved_term("zesty")
+    assert row.status == vocabulary.DISMISSED
+    assert row.mapped_to == []
+    assert "wrong" in row.note, "the reason was not kept"
+
+
+def test_a_dismissed_reading_is_not_proposed_again(repo):
+    """Without this the next sweep would quietly undo the rejection."""
+    repo.note_unknown_terms(["zesty"])
+    repo.dismiss_term("zesty", "no")
+
+    assert repo.record_investigation("zesty", ["playful"], 0.9, "trying again") \
+        == vocabulary.DISMISSED
+    assert repo.resolutions() == {}
+    assert [t.term for t in repo.unresolved_terms(status=vocabulary.PENDING)] == []
+
+
+def test_a_dismissed_word_is_not_reported_as_work_in_progress(repo):
+    """Dismissed is settled, not outstanding - saying "still working out"
+    would promise work that is deliberately not happening."""
+    repo.note_unknown_terms(["zesty"])
+    repo.dismiss_term("zesty", "no")
+    assert repo.note_unknown_terms(["zesty", "fresh"]) == ["fresh"]
