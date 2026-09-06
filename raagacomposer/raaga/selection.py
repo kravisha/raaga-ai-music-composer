@@ -70,6 +70,13 @@ FEEL_LEXICON: Dict[str, Sequence[str]] = {
     "folk": ("folk", "earthy"),
     "rain": ("pastoral", "reflective", "tender"),
     "separation": ("separation", "longing", "sad"),
+    # "intense" alone, deliberately.  "brooding" belongs with dark and
+    # aggressive; tension is not the same as gloom, and a brief that is
+    # tense *and* excited should not be dragged towards a dark raaga.
+    "tense": ("intense",),
+    "nervous": ("intense", "energetic"),
+    "excited": ("energetic", "bright", "joyful"),
+    "upbeat": ("bright", "joyful", "energetic"),
     "hope": ("hopeful", "bright"),
     "hopeful": ("hopeful", "bright", "warm"),
     "grand": ("grand", "majestic"),

@@ -136,6 +136,9 @@ LEXICON: Dict[str, Dict[str, float]] = {
     "hopeful": _v(brightness=0.7, joy=0.5, warmth=0.5, yearning=0.35),
     "hope": _v(brightness=0.7, joy=0.5, warmth=0.5, yearning=0.35),
     "energetic": _v(power=0.8, brightness=0.7, joy=0.6),
+    "upbeat": _v(joy=0.8, brightness=0.75, power=0.45),
+    "excited": _v(joy=0.75, power=0.6, brightness=0.6, tension=0.3),
+    "excitement": _v(joy=0.75, power=0.6, brightness=0.6, tension=0.3),
     "dance": _v(joy=0.8, brightness=0.7, power=0.5),
     "grand": _v(power=0.9, brightness=0.6, gravity=0.5),
     "majestic": _v(power=0.9, gravity=0.6, brightness=0.55),
@@ -162,6 +165,11 @@ LEXICON: Dict[str, Dict[str, float]] = {
     "tense": _v(tension=1.0),
     "tension": _v(tension=1.0),
     "anxious": _v(tension=0.9, sadness=0.35),
+    # Nervous is anticipation, not unhappiness: it leans on yearning where
+    # "anxious" leans on sadness, which is the difference between a player
+    # about to walk on stage and one who wishes they were not there.
+    "nervous": _v(tension=0.9, yearning=0.3),
+    "nerves": _v(tension=0.9, yearning=0.3),
     "restless": _v(tension=0.8, power=0.45),
     "urgent": _v(tension=0.85, power=0.6),
     "angry": _v(tension=0.85, power=0.7, gravity=0.4),

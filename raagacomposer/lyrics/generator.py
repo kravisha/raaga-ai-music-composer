@@ -97,6 +97,8 @@ MOOD_TO_THEMES: Dict[str, List[str]] = {
     "energetic": ["celebration", "nature"],
     "night": ["night", "sad"],
     "hopeful": ["nature", "romantic"],
+    "upbeat": ["celebration", "nature"],
+    "excited": ["celebration", "nature"],
     "nostalgia": ["longing", "night"],
 }
 

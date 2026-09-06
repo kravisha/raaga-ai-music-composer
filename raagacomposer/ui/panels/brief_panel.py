@@ -13,7 +13,8 @@ from ..theme import DARK
 LANGUAGES = ["Tamil", "Hindi", "Telugu", "English", "Kannada", "Malayalam"]
 SONG_TYPES = ["film song", "devotional", "simple", "pop", "ghazal"]
 MOODS = ["romantic", "longing", "sad", "celebration", "devotional", "aggressive",
-         "high-energy", "intimate", "hopeful", "nostalgia", "heroic"]
+         "high-energy", "intimate", "hopeful", "nostalgia", "heroic",
+         "tense", "upbeat", "nervous", "excited"]
 
 # Action state -> theme colour for the status label (v0.3 section 6.1).
 _STATE_COLOR = {
