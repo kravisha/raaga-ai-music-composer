@@ -398,7 +398,7 @@ def test_reg_102_a_retry_is_informed_by_the_last_failure(
     seed enough that the finding it was built to avoid does not recur, and
     the line scores higher for it.
 
-    Seed 75 is pinned: with a repository taught up through the prayogas unit
+    Seed 5 is pinned: with a repository taught up through the prayogas unit
     by the reference provider (real research, real practice - no mocks), the
     unguided attempt at this seed fails with a ``not_original`` finding and
     nothing else, and guidance built from that one finding is enough to make
@@ -409,6 +409,21 @@ def test_reg_102_a_retry_is_informed_by_the_last_failure(
     ``avoid_runs`` lever) - the unit test
     ``test_avoid_runs_never_replays_three_notes_of_a_bank_phrase`` in
     tests/unit/test_practice_guidance.py pins that guarantee directly.
+
+    The pin moved from seed 75 when provenance arrived, and it moved for a
+    good reason.  The phrase bank practice draws on used to include the
+    agent's own kept practice output - 9 phrases here, 7 learned from the
+    reference provider and 2 written by the agent itself.  Seed 75's line
+    copied one of its own, so the ``not_original`` this test was built on
+    was the agent failing to be original with respect to *itself*, and the
+    guidance machinery then taught it not to quote itself.  With the bank
+    restricted to learned material (training specification 2.4) the copy no
+    longer happens and the seed passes unguided.
+
+    Re-measured on the learned-only bank: 31 seeds in 1..400 fail unguided
+    with ``not_original`` alone.  Seed 5 is one of them, and is the first
+    whose guided retry both drops the finding and scores higher
+    (0.715 -> 0.846).
 
     A 1..400 search on this unit: 20 seeds fail unguided with
     ``not_original``.  A first cut of the guidance fixed 7 of them, because
@@ -430,7 +445,7 @@ def test_reg_102_a_retry_is_informed_by_the_last_failure(
         unit = agent.curriculum.unit("b13.short_phrase:Keeravani")
         assert unit is not None
 
-        seed = 75
+        seed = 5
         unguided = agent.practice.run(unit, "Keeravani", seed=seed)
         assert not unguided.passed, unguided.summary()
         failed_kinds = {f.kind for f in unguided.findings}

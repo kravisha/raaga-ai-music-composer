@@ -365,3 +365,56 @@ def test_the_agent_answers_questions_about_itself(agent):
     assert "Keeravani" in agent.explain("what do you know?")
     assert "stage" in agent.explain("how is your learning going?").lower()
     assert "arohanam" in agent.explain("what is the scale?")
+
+
+# --------------------------------------------------------------------------
+# Training specification 2.4 / acceptance test E: the agent's own output is
+# creative material, never evidence that it has learned something.
+# --------------------------------------------------------------------------
+def test_its_own_practice_does_not_satisfy_its_learning_prerequisite(agent):
+    """Section 2.4.  ``_enough_material`` counts what there is to learn from.
+
+    Practice output used to land in the same pool, so the agent could meet
+    its own requirement with its own work and then progress on the strength
+    of it.
+    """
+    from raagacomposer.agent.knowledge import Phrase, Source
+    from raagacomposer.core import provenance
+
+    unit = agent.curriculum.next_unit("Hamsadhwani")
+    assert unit is not None
+    wanted = max(2, int(unit.params.get("min_phrases",
+                                        unit.minimum_examples_required)))
+
+    swaras = [["S", "R2", "G3"], ["G3", "P", "N3"], ["P", "N3", "S."],
+              ["S.", "N3", "P"], ["N3", "P", "G3"], ["G3", "R2", "S"],
+              ["S", "G3", "P"], ["P", "G3", "R2"]][:wanted + 2]
+    for row in swaras:
+        agent.repo.add_phrase(Phrase(raaga="Hamsadhwani", swaras=row,
+                                     source_id="", confidence=0.9))
+
+    assert agent.repo.count_phrases("Hamsadhwani") >= wanted
+    assert not agent._enough_material(unit, "Hamsadhwani")
+
+    source, _ = agent.repo.add_source(Source(
+        locator="rec://real", title="a real recording", raaga="Hamsadhwani",
+        origin=provenance.HUMAN))
+    for row in swaras:
+        agent.repo.add_phrase(Phrase(raaga="Hamsadhwani", swaras=list(row),
+                                     source_id=source.id, confidence=0.9))
+    assert agent._enough_material(unit, "Hamsadhwani")
+
+
+def test_kept_practice_is_labelled_as_the_agents_own(agent):
+    """Whatever route keeps practice output, it must not look learned."""
+    from raagacomposer.core import provenance
+
+    study(agent, steps=40)
+    kept = [p for p in agent.repo.phrases(raaga="Hamsadhwani", limit=500)
+            if p.function == "practice"]
+    for phrase in kept:
+        assert phrase.origin == provenance.GENERATED, \
+            f"practice phrase {phrase.id} is recorded as {phrase.origin}"
+    learned_ids = {p.id for p in agent.repo.learned_phrases(raaga="Hamsadhwani",
+                                                            limit=500)}
+    assert not (learned_ids & {p.id for p in kept})

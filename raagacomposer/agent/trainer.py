@@ -153,7 +153,7 @@ class RagaTrainer:
                 source = self.agent.repo.source(fact.source_id)
                 if source is not None and source.title not in source_titles:
                     source_titles.append(source.title)
-        for phrase in self.agent.repo.phrases(raaga=raaga_name, limit=5):
+        for phrase in self.agent.repo.learned_phrases(raaga=raaga_name, limit=5):
             source = self.agent.repo.source(phrase.source_id)
             if source is not None and source.title not in source_titles:
                 source_titles.append(source.title)
@@ -161,8 +161,10 @@ class RagaTrainer:
         explanation = "; ".join(MEANINGS[k] for k in fact_keys if k in MEANINGS) \
             or unit.learning_goal
 
+        # A quiz built from the agent's own output tests nothing but its
+        # memory of itself (training specification 17, 24.5).
         examples = [" ".join(p.swaras) for p in
-                   self.agent.repo.phrases(raaga=raaga_name, limit=3)]
+                   self.agent.repo.learned_phrases(raaga=raaga_name, limit=3)]
         if not examples and raaga_obj is not None and raaga_obj.prayogas:
             examples = [" ".join(p) for p in raaga_obj.prayogas[:3]]
 

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Sequence
 
+from ..core import provenance
 from ..core.logging_setup import get_logger
 from ..raaga.library import RaagaLibrary, parse_swara
 from .models import KnowledgeEntry, KnowledgeStatus, LearningSource
@@ -190,6 +191,7 @@ class KnowledgeBaseService:
                 performer=source.author, raaga=phrases[0].raga,
                 content_type="audio", rights_status=rights,
                 provider="training", quality=0.7,
+                origin=provenance.HUMAN,
                 notes=f"learned through the Training tab, run {run_id}"))
         except Exception as exc:  # noqa: BLE001
             log.warning("could not register the training source with the "
@@ -215,7 +217,7 @@ class KnowledgeBaseService:
                     midi=[raaga.midi(s, 60) for s in swaras],
                     durations=[0.4] * len(swaras),
                     function="phrase", source_id=agent_source.id,
-                    confidence=entry.confidence,
+                    confidence=entry.confidence, origin=provenance.HUMAN,
                     notes=f"heard at {entry.source_timestamp} in "
                           f"{source.title}"))
             except Exception as exc:  # noqa: BLE001

@@ -139,7 +139,7 @@ class RagaStudent:
         return "; ".join(parts) if parts else "no prerequisites recorded"
 
     def _example(self, raaga: str) -> str:
-        phrases = self.agent.repo.phrases(raaga=raaga, limit=1)
+        phrases = self.agent.repo.learned_phrases(raaga=raaga, limit=1)
         if phrases:
             return " ".join(phrases[0].swaras)
         fact = self.agent.repo.best_fact(raaga, "arohanam")
