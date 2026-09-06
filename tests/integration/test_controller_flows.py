@@ -654,3 +654,82 @@ def test_an_unset_tala_keeps_the_cycle_the_tune_is_already_in(app, settle):
     settle()
     assert app.project.brief.tala == ""
     assert app.current_tala().aksharas == app.project.melody().beats_per_cycle
+
+
+# --------------------------------------------------------------------------
+# Stop is for stopping, not a prerequisite
+# --------------------------------------------------------------------------
+def test_a_creative_action_stops_what_is_playing(ready, settle):
+    """Specification 12.2/12.4: pressing Stop first should not be a habit.
+
+    A creative action used to start while the previous audio kept going
+    underneath it, so the way out of the last thing was always Stop.
+    """
+    app = ready
+    stopped = []
+    real_stop = app.playback.stop
+    app.playback.stop = lambda: (stopped.append(True), real_stop())[1]
+
+    actions = (("generate tune", lambda: app.generate_tune(seed=3)),
+               ("tune variation", lambda: app.make_variation()),
+               ("generate beat", lambda: app.generate_beat()),
+               ("beat variation", lambda: app.beat_variation()),
+               ("write lyrics", lambda: app.generate_lyrics(seed=1)),
+               ("arrange", lambda: app.auto_arrange()),
+               ("change the tempo", lambda: app.set_tempo(96)))
+    try:
+        for name, run in actions:
+            # No audio device under test, so assert the action reaches the
+            # transport rather than that a sound card obeyed.
+            app.playback._playing, app.playback._paused = True, False
+            stopped.clear()
+            run()
+            settle()
+            assert stopped, f"{name} started while the last thing was playing"
+    finally:
+        app.playback.stop = real_stop
+
+
+def test_taking_the_floor_says_whether_anything_was_playing(ready):
+    app = ready
+    app.playback._playing, app.playback._paused = False, False
+    assert app.take_the_floor("nothing") is False
+    app.playback._playing, app.playback._paused = True, False
+    assert app.take_the_floor("something") is True
+
+
+def test_playing_something_does_not_refuse_the_next_thing(ready, settle):
+    """``play_render`` takes no floor - playing *is* the action there.
+
+    What has to hold is that asking for audio while other audio is going
+    swaps to the new material rather than being refused; the transport's
+    own ``load`` does the stopping, so nothing is left sounding underneath.
+    """
+    app = ready
+    app.generate_tune(seed=5)
+    settle()
+    app.render("tune", autoplay=False)
+    app.generate_beat()
+    settle()
+    app.render_beat(autoplay=False)
+    settle()
+
+    app.play_render("tune")
+    assert app.playback.source_name == "tune"
+    tune_render = app._loaded_render
+
+    app.playback._playing, app.playback._paused = True, False
+    app.play_render("beat")
+    assert app.playback.source_name == "beat"
+    assert app._loaded_render is not tune_render
+    assert "Nothing has been rendered" not in app.playback.last_error
+
+
+def test_stop_says_which_of_the_two_things_happened(ready):
+    app = ready
+    app.playback._playing, app.playback._paused = False, False
+    app.stop()
+    assert app.status_text == "Nothing was playing"
+    app.playback._playing, app.playback._paused = True, False
+    app.stop()
+    assert app.status_text == "Stopped"

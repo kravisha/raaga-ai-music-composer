@@ -1094,6 +1094,7 @@ class AppController:
             song_type=brief.song_type, duration_target=brief.duration_target)
 
     def generate_tune(self, seed: Optional[int] = None) -> None:
+        self.take_the_floor("generate tune")
         raaga = self.composing_raaga()
         opts = self.melody_options(seed)
         opts.tempo_bpm = infer_tempo(self.project.brief, raaga)
@@ -1211,6 +1212,7 @@ class AppController:
         from .music import beat as beat_engine
         from .music import tala as tala_module
 
+        self.take_the_floor("generate beat")
         melody = self.project.melody()
         tala = self.current_tala()
         tempo = melody.tempo_bpm if melody else infer_tempo(
@@ -1244,6 +1246,7 @@ class AppController:
         """A different take on the same beat - never a different tala."""
         from .music import beat as beat_engine
 
+        self.take_the_floor("beat variation")
         previous = self.project.beat()
         if previous is None:
             return self.generate_beat(autoplay=autoplay)
@@ -1328,6 +1331,7 @@ class AppController:
             default="mridangam").instrument
 
     def make_variation(self, strength: float = 0.5) -> None:
+        self.take_the_floor("tune variation")
         melody = self.project.melody()
         if melody is None:
             return self.generate_tune()
@@ -1348,6 +1352,7 @@ class AppController:
                          description="Tune variation")
 
     def regenerate_tune_section(self, section_id: str) -> None:
+        self.take_the_floor("regenerate a section")
         melody = self.project.melody()
         if melody is None:
             return
@@ -1373,6 +1378,7 @@ class AppController:
                          description=f"Rewrite {section.name}")
 
     def set_tempo(self, bpm: int) -> None:
+        self.take_the_floor("change the tempo")
         melody = self.project.melody()
         if melody is None:
             self.project.brief.tempo_preference = int(bpm)
@@ -1576,6 +1582,7 @@ class AppController:
     # lyrics
     # ==================================================================
     def generate_lyrics(self, seed: Optional[int] = None) -> None:
+        self.take_the_floor("write lyrics")
         melody = self.project.melody()
         if melody is None:
             self.status("Write a tune first - the lyrics are fitted to it.")
@@ -1678,6 +1685,7 @@ class AppController:
 
     def render_vocal(self, kind: str = "preview", autoplay: bool = True) -> None:
         """kind is 'preview' or 'master' (the studio vocal-only version)."""
+        self.take_the_floor("render the vocal")
         melody = self.project.melody()
         if melody is None:
             self.status("There is no tune to sing yet.")
@@ -1848,6 +1856,7 @@ class AppController:
         return ranked[:limit]
 
     def auto_arrange(self) -> None:
+        self.take_the_floor("arrange")
         melody = self.project.melody()
         if melody is None:
             self.status("Write a tune before arranging.")
@@ -1973,6 +1982,28 @@ class AppController:
         export_engine.write_wav(path, audio, self.sample_rate)
         self.store.note_artifact(self.project_dir, path, category)
         return path
+
+    def take_the_floor(self, what: str = "") -> bool:
+        """A new creative action silences whatever is playing.
+
+        Stop is for stopping (specification 12.1).  It was also the way to
+        get out of the last thing before starting the next: press Generate
+        while a tune is playing and the old audio kept going underneath the
+        new work, so the habit became Stop-then-do, every time.
+
+        The job manager already supersedes in-flight work for the same
+        target, which is the other half of 12.3; this is the playback half.
+        Returns whether anything was actually stopped, so a caller can say
+        so if it matters.
+
+        Not called by ``play_render`` - playing something *is* the action
+        there, and ``load`` already stops before it swaps the audio.
+        """
+        if not self.playback.playing:
+            return False
+        self.playback.stop()
+        log.debug("stopped playback for %s", what or "a new action")
+        return True
 
     def _cache_render(self, kind: str, audio: np.ndarray, path: str = "") -> None:
         self._renders[kind] = RenderedAudio(kind=kind, audio=audio,
@@ -2149,8 +2180,16 @@ class AppController:
         return self.play_render(None, (start, end) if start is not None else None, loop)
 
     def stop(self) -> None:
+        """Stop is for stopping, and now that is all it is for.
+
+        It used to be the way out of the last thing before starting the
+        next one; the creative actions take the floor themselves now, so
+        pressing this is a deliberate "silence".  Say which of the two
+        happened rather than reporting "Stopped" at a quiet transport.
+        """
+        was_sounding = self.playback.playing or self.playback.paused
         self.playback.stop()
-        self.status("Stopped")
+        self.status("Stopped" if was_sounding else "Nothing was playing")
 
     def pause(self) -> None:
         self.playback.pause()
