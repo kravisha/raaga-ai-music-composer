@@ -366,6 +366,17 @@ def test_item4_a_tune_is_a_t10_result(app, settle):
 
 
 def test_learning_state_outlives_the_application(app, settle, settings):
+    """What was learned is still there after a restart, and still used.
+
+    The last assertion asks a question about *Keeravani*, so it now says
+    so.  It used to read ``composing_raaga()`` with nothing selected, which
+    made it depend on the default brief ranking the taught raaga into the
+    top five: ``require_raaga`` prefers a studied raaga among the ones that
+    fit the brief, and Keeravani happened to fit "hopeful, romantic".  It
+    does not fit "tense, upbeat, nervous, excited, hopeful", so the app
+    reasonably chose an unstudied raaga and the test failed for a reason
+    that has nothing to do with learning surviving a restart.
+    """
     from raagacomposer.app import AppController
     teach(app)
     phrases = app.agent.repo.count_phrases("Keeravani")
@@ -377,6 +388,7 @@ def test_learning_state_outlives_the_application(app, settle, settings):
     try:
         assert restarted.agent.repo.count_phrases("Keeravani") == phrases
         assert len(restarted.agent.repo.completed_units()) == passed
+        restarted.select_raaga("Keeravani", "the raaga this test taught")
         assert restarted.composing_raaga().source == "learned"
     finally:
         restarted.close()
