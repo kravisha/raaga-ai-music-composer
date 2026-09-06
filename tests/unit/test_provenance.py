@@ -179,3 +179,160 @@ def test_a_recording_can_promote_something_the_agent_only_invented(repo):
     assert after.origin == provenance.HUMAN
     assert after.source_id == source.id
     assert [p.id for p in repo.learned_phrases(raaga="Hamsadhwani")] == [made.id]
+
+
+# --------------------------------------------------------------------------
+# Provenance follows the provider, not a hardcoded default.
+# Approved by Krish via Arya 2026-09-06 17:02:46 after the single-recording
+# audio test found local recordings filed as internet-sourced.
+# --------------------------------------------------------------------------
+def test_each_provider_carries_its_own_truthful_origin():
+    from raagacomposer.agent.research import origin_for_provider
+
+    assert origin_for_provider("corpus") == provenance.HUMAN
+    assert origin_for_provider("web") == provenance.INTERNET
+    assert origin_for_provider("reference") == provenance.REFERENCE
+    assert origin_for_provider("library") == provenance.REFERENCE
+    assert origin_for_provider("project") == provenance.GENERATED
+
+
+def test_the_applications_own_renders_are_never_evidence():
+    """`project` is the app listening back to what it made.
+
+    Filing it as anything trainable would let the agent learn from music it
+    wrote itself - training specification 2.4.  Before this fix it was
+    labelled internet, which is trainable.
+    """
+    from raagacomposer.agent.research import origin_for_provider
+
+    origin = origin_for_provider("project")
+    assert origin == provenance.GENERATED
+    assert not provenance.may_be_learned_from(origin)
+
+
+def test_an_unmapped_provider_is_not_trainable_at_all():
+    """Not merely "not human" - not evidence either.
+
+    An earlier version defaulted to INTERNET on the reasoning that unknown
+    material is somebody else's.  Nothing established that, and INTERNET is
+    trainable, so an unmapped provider quietly entered the learned pool.
+    """
+    from raagacomposer.agent.research import origin_for_provider
+
+    for unmapped in ("", "  ", "something-new", "partner-feed"):
+        origin = origin_for_provider(unmapped)
+        assert origin != provenance.HUMAN
+        assert not provenance.may_be_learned_from(origin),             f"{unmapped!r} defaulted into the learned pool as {origin!r}"
+
+
+def test_reference_material_is_trainable_but_not_human():
+    """The shipped grammar rendered aloud is teaching material, not a
+    performance.  Counting it as a person's recording would overstate what
+    the agent has actually heard."""
+    assert provenance.may_be_learned_from(provenance.REFERENCE)
+    assert provenance.REFERENCE != provenance.HUMAN
+    assert provenance.REFERENCE in provenance.ORIGINS
+
+
+def test_a_stored_phrase_inherits_its_sources_origin(repo):
+    """The phrase must not be labelled independently of where it came from."""
+    for provider_origin in (provenance.HUMAN, provenance.INTERNET,
+                            provenance.REFERENCE):
+        source, _ = repo.add_source(Source(
+            locator=f"x://{provider_origin}", title=f"{provider_origin} source",
+            raaga="Mohanam", origin=provider_origin))
+        phrase, _ = repo.add_phrase(Phrase(
+            raaga="Mohanam", swaras=["S", "R2", provider_origin[:2].upper()],
+            source_id=source.id, confidence=0.6, origin=source.origin))
+        assert repo.phrase(phrase.id).origin == provider_origin
+
+
+def test_source_less_reference_material_never_reaches_the_learned_pool(repo):
+    """Arya's review finding, 2026-09-06 17:06:04.
+
+    REFERENCE is trainable, so it must obey the same evidence rule as every
+    other trainable origin: name the source it came from.  An earlier
+    version returned REFERENCE before that check and let source-less
+    material in.
+    """
+    made, _ = repo.add_phrase(Phrase(raaga="Mohanam", swaras=["S", "R2", "G3"],
+                                     source_id="", confidence=0.9,
+                                     origin=provenance.REFERENCE))
+    assert made.origin == provenance.GENERATED
+    assert repo.learned_phrases(raaga="Mohanam") == []
+
+
+def test_source_less_reference_material_cannot_strengthen_a_recording(repo):
+    """The generated-echo guard must cover it too, not just GENERATED."""
+    source, _ = repo.add_source(Source(locator="rec://1", title="a recording",
+                                       raaga="Mohanam",
+                                       origin=provenance.HUMAN))
+    learned, _ = repo.add_phrase(Phrase(raaga="Mohanam", swaras=["S", "R2", "G3"],
+                                        source_id=source.id, confidence=0.7))
+
+    repo.add_phrase(Phrase(raaga="Mohanam", swaras=["S", "R2", "G3"],
+                           source_id="", confidence=0.99,
+                           origin=provenance.REFERENCE))
+
+    after = repo.phrase(learned.id)
+    assert after.votes == learned.votes
+    assert after.confidence == pytest.approx(learned.confidence)
+    assert after.origin == provenance.HUMAN
+
+
+def test_reference_with_a_real_source_still_counts(repo):
+    """The guard must not break the legitimate case."""
+    source, _ = repo.add_source(Source(locator="library://Mohanam",
+                                       title="the reference library",
+                                       raaga="Mohanam",
+                                       origin=provenance.REFERENCE))
+    phrase, _ = repo.add_phrase(Phrase(raaga="Mohanam", swaras=["P", "D2", "S."],
+                                       source_id=source.id, confidence=0.8,
+                                       origin=provenance.REFERENCE))
+    assert phrase.origin == provenance.REFERENCE
+    assert [p.id for p in repo.learned_phrases(raaga="Mohanam")] == [phrase.id]
+
+
+def test_no_non_trainable_origin_can_strengthen_a_learned_phrase(repo):
+    """Arya's review finding, 2026-09-06 17:09:56.
+
+    The guard named GENERATED specifically, which was wide enough until
+    UNKNOWN existed: an unmapped provider's phrase then matched a real
+    recording by fingerprint and raised its votes and confidence, so
+    non-trainable material corroborated trainable evidence by the side
+    door.  Asserted for every non-trainable origin, so an origin added
+    later cannot reopen the same hole.
+    """
+    source, _ = repo.add_source(Source(locator="rec://1", title="a recording",
+                                       raaga="Mohanam",
+                                       origin=provenance.HUMAN))
+    learned, _ = repo.add_phrase(Phrase(raaga="Mohanam", swaras=["S", "R2", "G3"],
+                                        source_id=source.id, confidence=0.7))
+
+    untrainable = [o for o in provenance.ORIGINS
+                   if not provenance.may_be_learned_from(o)]
+    assert provenance.UNKNOWN in untrainable and provenance.GENERATED in untrainable
+
+    for origin in untrainable:
+        repo.add_phrase(Phrase(raaga="Mohanam", swaras=["S", "R2", "G3"],
+                               source_id="", confidence=0.99, origin=origin))
+        after = repo.phrase(learned.id)
+        assert after.votes == learned.votes, f"{origin} raised the vote count"
+        assert after.confidence == pytest.approx(learned.confidence), \
+            f"{origin} raised the confidence"
+        assert after.origin == provenance.HUMAN, f"{origin} rewrote the origin"
+
+
+def test_genuine_corroboration_still_works(repo):
+    """The guard must not break what it is protecting."""
+    first, _ = repo.add_source(Source(locator="rec://1", title="one",
+                                      raaga="Mohanam", origin=provenance.HUMAN))
+    learned, _ = repo.add_phrase(Phrase(raaga="Mohanam", swaras=["S", "R2", "G3"],
+                                        source_id=first.id, confidence=0.7))
+    second, _ = repo.add_source(Source(locator="rec://2", title="another",
+                                       raaga="Mohanam", origin=provenance.HUMAN))
+    repo.add_phrase(Phrase(raaga="Mohanam", swaras=["S", "R2", "G3"],
+                           source_id=second.id, confidence=0.8))
+    after = repo.phrase(learned.id)
+    assert after.votes == learned.votes + 1
+    assert after.confidence > learned.confidence

@@ -623,10 +623,18 @@ class KnowledgeRepository:
                 (phrase.fingerprint,)).fetchone()
             if existing is not None:
                 stored = self._row_to_phrase(existing)
-                if phrase.origin == provenance.GENERATED \
+                # Any origin that cannot be learned from must not be able to
+                # corroborate one that can.  This named GENERATED
+                # specifically, which was exactly wide enough until UNKNOWN
+                # arrived: an unmapped provider's phrase then matched a real
+                # recording by fingerprint and strengthened it, so
+                # non-trainable material raised trainable evidence by the
+                # side door.  Asking may_be_learned_from covers every
+                # non-trainable origin, including any added later.
+                if not provenance.may_be_learned_from(phrase.origin) \
                         and provenance.may_be_learned_from(stored.origin):
-                    log.debug("generated phrase matched learned %s; not "
-                              "strengthening it", stored.id)
+                    log.debug("%s material matched learned %s; not "
+                              "strengthening it", phrase.origin, stored.id)
                     return stored, False
                 votes = existing["votes"] + 1
                 confidence = min(0.99, max(existing["confidence"],

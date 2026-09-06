@@ -29,21 +29,41 @@ HUMAN = "human"
 #: is judged.  Kept separate from HUMAN so that judgement stays possible.
 INTERNET = "internet"
 
+#: The application's own rendering of the grammar it ships with - the
+#: reference library played aloud so the agent can practise hearing it.
+#: Trainable, because the *content* is human-authored musicology and the
+#: agent is doing ear training on known-correct material, the way a student
+#: plays scales from a book.  Kept apart from HUMAN because nobody
+#: performed it: counting it as a person's recording would overstate what
+#: the agent has actually heard.
+REFERENCE = "reference"
+
+#: Nobody recorded where this came from.  Distinct from GENERATED, which
+#: is a claim ("we made it"); this is the absence of a claim, and it is
+#: not trainable for the same reason an unrecognised origin is not: a
+#: value nobody established must never widen what the agent learns from.
+UNKNOWN = "unknown"
+
 #: This system produced it.  Legitimate creative material (section 2.3) and
 #: legitimate to compose from, reuse, index for originality and show to the
 #: creator - but never evidence that the agent has learned anything, because
 #: the only thing it evidences is that the agent repeated itself.
 GENERATED = "generated"
 
-ORIGINS: Tuple[str, ...] = (HUMAN, INTERNET, GENERATED)
+ORIGINS: Tuple[str, ...] = (HUMAN, INTERNET, REFERENCE, GENERATED,
+                            UNKNOWN)
 
 #: What may be treated as something the agent *learned from*.  The whole
 #: point of the module is that this tuple does not contain GENERATED.
-LEARNED_FROM: Tuple[str, ...] = (HUMAN, INTERNET)
+#: REFERENCE is in it: shipped grammar rendered aloud is teaching material,
+#: not invention.  What is excluded is only what the agent made up itself.
+LEARNED_FROM: Tuple[str, ...] = (HUMAN, INTERNET, REFERENCE)
 
 _DESCRIPTIONS = {
     HUMAN: "learned from a person's recording",
     INTERNET: "found online, pending judgement",
+    REFERENCE: "the shipped library, rendered for practice",
+    UNKNOWN: "of unrecorded origin",
     GENERATED: "written by this system",
 }
 
@@ -80,6 +100,10 @@ def coerce(origin: str, *, source_id: str = "") -> str:
     origin = (origin or "").strip().lower()
     if not is_valid(origin):
         return GENERATED if not source_id else HUMAN
+    # Every trainable origin, REFERENCE included, has to name what it came
+    # from.  An earlier version of this returned REFERENCE before reaching
+    # this check, which let a source-less reference phrase into the learned
+    # pool without the evidence the rule exists to require.
     if origin in LEARNED_FROM and not source_id:
         return GENERATED
     return origin
