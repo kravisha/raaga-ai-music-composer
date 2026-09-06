@@ -9,7 +9,9 @@ import sqlite3
 
 import pytest
 
-from raagacomposer.agent.knowledge import KnowledgeRepository, Phrase, Source
+from raagacomposer.agent.knowledge import (SCHEMA_VERSION,
+                                          KnowledgeRepository, Phrase,
+                                          Source)
 from raagacomposer.core import provenance
 
 
@@ -135,7 +137,7 @@ def test_an_older_database_is_classified_on_open(tmp_path):
     _schema_three_database(path)
     repo = KnowledgeRepository(path)
     try:
-        assert repo.schema_version == 4
+        assert repo.schema_version == SCHEMA_VERSION
         by_id = {p.id: p.origin for p in repo.phrases(raaga="Mohanam")}
         assert by_id["p1"] == provenance.HUMAN
         assert by_id["p2"] == provenance.GENERATED
@@ -150,7 +152,7 @@ def test_migrating_twice_changes_nothing(tmp_path):
     KnowledgeRepository(path).close()
     repo = KnowledgeRepository(path)
     try:
-        assert repo.schema_version == 4
+        assert repo.schema_version == SCHEMA_VERSION
         assert [p.id for p in repo.learned_phrases(raaga="Mohanam")] == ["p1"]
     finally:
         repo.close()

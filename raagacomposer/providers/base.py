@@ -69,6 +69,10 @@ class LLMProvider(Provider):
                             catalog: Sequence[str]) -> List[str]:
         raise NotImplementedError
 
+    def map_mood_word(self, term: str,
+                      catalog: Sequence[str]) -> Dict[str, Any]:
+        raise NotImplementedError
+
     def explain(self, question: str, context: str = "") -> str:
         raise NotImplementedError
 

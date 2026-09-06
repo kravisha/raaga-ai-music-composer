@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from ..core import provenance
+from ..raaga import vocabulary
 from ..core.logging_setup import get_logger
 from ..core.settings import config_dir
 
@@ -39,7 +40,7 @@ log = get_logger("agent.knowledge")
 #: 3 adds ``selection_weights`` (Stage 1 pack document 05 section 6).  The
 #: table is created by the same ``IF NOT EXISTS`` script an older database
 #: already ran, so an existing knowledge.db gains it and keeps everything.
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -131,6 +132,24 @@ CREATE TABLE IF NOT EXISTS feedback (
     text TEXT,
     sentiment TEXT,
     applied INTEGER DEFAULT 0);
+
+-- Mood words the engine could not read (Arya's specification of
+-- 2026-09-06 13:16).  A brief is never held up for one of these; it is
+-- recorded here and worked on afterwards.
+CREATE TABLE IF NOT EXISTS unresolved_terms (
+    term TEXT PRIMARY KEY,
+    status TEXT DEFAULT 'pending',
+    mapped_to TEXT DEFAULT '[]',
+    confidence REAL DEFAULT 0,
+    evidence TEXT DEFAULT '',
+    origin TEXT DEFAULT 'generated',
+    occurrences INTEGER DEFAULT 1,
+    attempts INTEGER DEFAULT 0,
+    first_seen REAL,
+    last_seen REAL,
+    note TEXT DEFAULT '');
+CREATE INDEX IF NOT EXISTS unresolved_by_status
+    ON unresolved_terms (status, last_seen DESC);
 
 CREATE TABLE IF NOT EXISTS agent_state (
     key TEXT PRIMARY KEY, value TEXT);
@@ -399,7 +418,11 @@ class KnowledgeRepository:
                 if stored < SCHEMA_VERSION:
                     log.info("migrating knowledge schema %d -> %d", stored,
                              SCHEMA_VERSION)
-                    self._backfill_origins()
+                    if stored < 4:
+                        self._backfill_origins()
+                    # Schema 5 adds unresolved_terms, which the schema script
+                    # creates on its own.  Nothing to migrate; said out loud
+                    # because an empty branch here otherwise looks forgotten.
                     self._conn.execute(
                         "UPDATE meta SET value=? WHERE key='schema_version'",
                         (str(SCHEMA_VERSION),))
@@ -743,6 +766,136 @@ class KnowledgeRepository:
             contour=row["contour"], tempo=row["tempo"], votes=row["votes"],
             rejected=bool(row["rejected"]), learned_at=row["learned_at"],
             notes=row["notes"], origin=row["origin"])
+
+    # -- unresolved mood terms ---------------------------------------------
+    def note_unknown_terms(self, terms: Sequence[str]) -> List[str]:
+        """Record words a brief used that the engine could not read.
+
+        Returns the terms that are still outstanding, so a caller can say
+        honestly which parts of the request did not reach the ranking.  A
+        term already resolved is not outstanding and is not reported.
+
+        Repeated sightings share one investigation (the specification's
+        "repeated occurrences can share an outstanding investigation") -
+        the row is the same row, with its count and last-seen moved on.
+        """
+        outstanding: List[str] = []
+        now = time.time()
+        with self._lock:
+            with self._conn:
+                for raw in terms:
+                    term = str(raw).strip().lower()
+                    if not term:
+                        continue
+                    row = self._conn.execute(
+                        "SELECT status FROM unresolved_terms WHERE term=?",
+                        (term,)).fetchone()
+                    if row is None:
+                        self._conn.execute(
+                            "INSERT INTO unresolved_terms(term, status,"
+                            " first_seen, last_seen) VALUES (?,?,?,?)",
+                            (term, vocabulary.PENDING, now, now))
+                        outstanding.append(term)
+                        continue
+                    self._conn.execute(
+                        "UPDATE unresolved_terms SET occurrences=occurrences+1,"
+                        " last_seen=? WHERE term=?", (now, term))
+                    if row["status"] != vocabulary.RESOLVED:
+                        outstanding.append(term)
+        if outstanding:
+            log.info("brief used %d term(s) the engine cannot read: %s",
+                     len(outstanding), ", ".join(outstanding))
+        return outstanding
+
+    def unresolved_terms(self, status: str = "", limit: int = 200
+                         ) -> List[vocabulary.UnresolvedTerm]:
+        with self._lock:
+            if status:
+                rows = self._conn.execute(
+                    "SELECT * FROM unresolved_terms WHERE status=?"
+                    " ORDER BY last_seen DESC LIMIT ?",
+                    (status, limit)).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT * FROM unresolved_terms"
+                    " ORDER BY last_seen DESC LIMIT ?", (limit,)).fetchall()
+            return [self._row_to_term(r) for r in rows]
+
+    def unresolved_term(self, term: str
+                        ) -> Optional[vocabulary.UnresolvedTerm]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM unresolved_terms WHERE term=?",
+                (str(term).strip().lower(),)).fetchone()
+            return self._row_to_term(row) if row else None
+
+    def resolutions(self) -> Dict[str, List[str]]:
+        """Every settled meaning, as a substitution table.
+
+        This is what makes a resolution *do* something: the words go into
+        the brief's text before it is scored, so every reader benefits at
+        once without knowing this table exists.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT term, mapped_to FROM unresolved_terms"
+                " WHERE status=?", (vocabulary.RESOLVED,)).fetchall()
+        out: Dict[str, List[str]] = {}
+        for row in rows:
+            words = json.loads(row["mapped_to"] or "[]")
+            if words:
+                out[row["term"]] = words
+        return out
+
+    def set_term_status(self, term: str, status: str, *, note: str = "") -> None:
+        with self._lock:
+            with self._conn:
+                self._conn.execute(
+                    "UPDATE unresolved_terms SET status=?, note=? WHERE term=?",
+                    (status, note, str(term).strip().lower()))
+
+    def record_investigation(self, term: str, mapped_to: Sequence[str],
+                             confidence: float, evidence: str,
+                             origin: str = provenance.GENERATED) -> str:
+        """Store the outcome of one attempt at an unknown word.
+
+        A mapping that named nothing usable is a failed attempt, not a
+        resolution; after ``MAX_ATTEMPTS`` of those the term stops being
+        retried and starts waiting for a person.
+        """
+        term = str(term).strip().lower()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT attempts FROM unresolved_terms WHERE term=?",
+                (term,)).fetchone()
+            attempts = int(row["attempts"] if row else 0) + 1
+            words = list(mapped_to or ())
+            if words:
+                status = vocabulary.RESOLVED
+            elif attempts >= vocabulary.MAX_ATTEMPTS:
+                status = vocabulary.NEEDS_USER_INPUT
+            else:
+                status = vocabulary.PENDING
+            with self._conn:
+                self._conn.execute(
+                    "UPDATE unresolved_terms SET status=?, mapped_to=?,"
+                    " confidence=?, evidence=?, origin=?, attempts=?"
+                    " WHERE term=?",
+                    (status, json.dumps(words), float(confidence),
+                     str(evidence)[:500], origin, attempts, term))
+        log.info("investigated %r: %s%s", term, status,
+                 f" -> {', '.join(words)}" if words else "")
+        return status
+
+    @staticmethod
+    def _row_to_term(row: sqlite3.Row) -> vocabulary.UnresolvedTerm:
+        return vocabulary.UnresolvedTerm(
+            term=row["term"], status=row["status"],
+            mapped_to=json.loads(row["mapped_to"] or "[]"),
+            confidence=row["confidence"], evidence=row["evidence"],
+            origin=row["origin"], occurrences=row["occurrences"],
+            attempts=row["attempts"], first_seen=row["first_seen"],
+            last_seen=row["last_seen"], note=row["note"])
 
     # -- facts -------------------------------------------------------------
     def add_fact(self, fact: Fact) -> None:

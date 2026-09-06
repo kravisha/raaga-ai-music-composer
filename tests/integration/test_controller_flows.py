@@ -733,3 +733,63 @@ def test_stop_says_which_of_the_two_things_happened(ready):
     app.playback._playing, app.playback._paused = True, False
     app.stop()
     assert app.status_text == "Stopped"
+
+
+# --------------------------------------------------------------------------
+# Unreadable mood words (Arya's specification, 2026-09-06 13:16)
+# --------------------------------------------------------------------------
+def test_an_unfamiliar_mood_word_neither_blocks_nor_vanishes(ready, settle):
+    """The brief is answered on what was understood, and the rest is kept."""
+    from raagacomposer.raaga import vocabulary
+
+    app = ready
+    status = app.apply_brief_sync(mood="nervy, hopeful, skittish")
+    settle()
+
+    assert status.state.name == "COMPLETED", status.message
+    assert app.raaga_suggestions(4), "the understood words produced nothing"
+
+    kept = {t.term for t in app.agent.repo.unresolved_terms()}
+    assert {"nervy", "skittish"} <= kept
+    assert "hopeful" not in kept
+
+
+def test_the_brief_says_which_words_it_could_not_use(ready, settle):
+    """Section: do not claim every mood influenced the result."""
+    app = ready
+    status = app.apply_brief_sync(mood="nervy, hopeful")
+    settle()
+    assert "nervy" in status.message, status.message
+    assert "not used yet" in status.message, status.message
+
+
+def test_a_brief_of_known_words_says_nothing_about_deferrals(ready, settle):
+    """Both fields are cleared deliberately.
+
+    The fixture's feel is "lonely, late at night, but still warm", and
+    *late* is a word the engine genuinely cannot read - so setting only the
+    mood does not make a brief the engine fully understands.  The first
+    version of this test asserted otherwise and was wrong about its own
+    fixture, not about the code.
+    """
+    app = ready
+    status = app.apply_brief_sync(mood="hopeful, romantic", feel="")
+    settle()
+    assert "not used yet" not in status.message, status.message
+
+
+def test_a_resolved_word_reaches_the_next_search(ready, settle):
+    app = ready
+    app.apply_brief_sync(mood="nervy", feel="")
+    settle()
+    assert app.agent.repo.unresolved_term("nervy") is not None
+
+    app.agent.repo.record_investigation("nervy", ["nervous", "tense"], 0.8,
+                                        "on edge")
+
+    readable = app.readable_brief(app.project.brief)
+    assert "nervous" in readable.mood and "nervy" not in readable.mood
+
+    status = app.apply_brief_sync(mood="nervy", feel="")
+    settle()
+    assert "not used yet" not in status.message, status.message

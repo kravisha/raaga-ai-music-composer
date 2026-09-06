@@ -53,6 +53,7 @@ from .providers import registry as provider_registry
 from .providers.status import ProviderStatus
 from .providers.status import provider_statuses as _provider_statuses
 from .raaga import audition
+from .raaga import vocabulary
 from .raaga.library import Raaga, library as raaga_library
 from .raaga.selection import (RaagaSuggestion, expand_feel_words, infer_tempo,
                               suggest as suggest_raagas)
@@ -610,6 +611,13 @@ class AppController:
         """
         if ctx is not None:
             epoch = ctx.epoch
+        # Words the engine cannot read are noted and then stepped over: the
+        # ranking runs on what was understood, and the rest is worked out
+        # afterwards (Arya's specification, 2026-09-06 13:16).  Anything
+        # already worked out is substituted in first, so a resolution
+        # reaches every reader of the brief at once.
+        deferred = self.note_unreadable_words(brief)
+        brief = self.readable_brief(brief)
         try:
             self._action("apply_brief", ActionState.WORKING,
                         phase="Analyzing creative brief...",
@@ -703,6 +711,14 @@ class AppController:
             plural = "s" if len(suggestions) != 1 else ""
             message = f"{len(suggestions)} raaga{plural} suggested; " \
                      f"{top.name} first."
+            # Say what did not reach the ranking.  Claiming every word of
+            # the brief was used when some of it was set aside is the thing
+            # the specification names outright: "do not claim that all
+            # requested moods influenced the present result if some were
+            # omitted."
+            if deferred:
+                message += (f" Still working out {', '.join(deferred)} - "
+                            f"not used yet.")
             if agent_failed:
                 message += " (the agent was unavailable; used the shipped " \
                           "raaga library)"
@@ -835,6 +851,124 @@ class AppController:
             "apply_brief", ActionState.FAILED,
             message=f"Applying the brief failed unexpectedly: {exc}",
             code="BRIEF-002", detail=repr(exc))
+
+    def note_unreadable_words(self, brief=None) -> List[str]:
+        """Collect the brief's words the engine cannot read, and keep them.
+
+        Deliberately not a gate.  The specification is explicit that an
+        unfamiliar word must neither be discarded nor allowed to hold up
+        the request, so this records and returns; the ranking proceeds on
+        whatever was understood.
+        """
+        brief = brief or self.project.brief
+        if self.agent is None:
+            return []
+        # Mood and feel only.  Situation and notes are narrative - "a man on
+        # a terrace late at night" - and scanning them reported *terrace* and
+        # *man* as unreadable feelings, which is both noise and a promise to
+        # investigate words that were never moods.  These two fields are
+        # where the creator states a feeling, so they are where an unread
+        # word is worth chasing.
+        terms = vocabulary.unknown_terms(brief.mood, brief.feel,
+                                         raagas=self.raagas)
+        if not terms:
+            return []
+        try:
+            return self.agent.repo.note_unknown_terms(terms)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("could not record unreadable words: %s", exc)
+            return []
+
+    def readable_brief(self, brief=None):
+        """The brief with settled meanings substituted in.
+
+        A resolution earns its keep here: once "nervy" is known to mean
+        "nervous", the words go into the text before anything scores it, so
+        the emotion vector, the raaga tags and the tempo hint all improve
+        at once without any of them knowing this feature exists.
+        """
+        brief = brief or self.project.brief
+        if self.agent is None:
+            return brief
+        try:
+            table = self.agent.repo.resolutions()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("could not read resolved terms: %s", exc)
+            return brief
+        if not table:
+            return brief
+        clone = replace(
+            brief,
+            mood=vocabulary.resolve_text(brief.mood, table),
+            feel=vocabulary.resolve_text(brief.feel, table),
+            situation=vocabulary.resolve_text(brief.situation, table),
+            notes=vocabulary.resolve_text(brief.notes, table))
+        return clone
+
+    def vocabulary_report(self) -> str:
+        """What became of the words the engine could not read."""
+        if self.agent is None:
+            return "No agent, so nothing is being learned."
+        terms = self.agent.repo.unresolved_terms(limit=100)
+        if not terms:
+            return "Every word of every brief so far was understood."
+        rows = []
+        for status in (vocabulary.NEEDS_USER_INPUT, vocabulary.PENDING,
+                       vocabulary.INVESTIGATING, vocabulary.RESOLVED):
+            group = [t for t in terms if t.status == status]
+            if group:
+                rows.append(f"{status}:")
+                rows.extend(f"  {t.describe()}" for t in group)
+        return "\n".join(rows)
+
+    def investigate_unknown_words(self, limit: int = 3) -> List[str]:
+        """Work out what the outstanding words mean, in the background.
+
+        Runs after the brief has already been answered, which is the whole
+        point: the creator waited for nothing.  Only terms that are still
+        pending are picked up, and a term that has failed too often stops
+        being retried and starts waiting for a person.
+        """
+        if self.agent is None:
+            return []
+        pending = self.agent.repo.unresolved_terms(
+            status=vocabulary.PENDING, limit=limit)
+        if not pending:
+            return []
+        llm = self.providers.llm
+        done: List[str] = []
+
+        def work(ctx: JobContext) -> List[Tuple[str, str]]:
+            results = []
+            for i, term in enumerate(pending):
+                ctx.progress((i + 1) / len(pending),
+                             f"Working out what {term.term!r} means")
+                self.agent.repo.set_term_status(term.term,
+                                                vocabulary.INVESTIGATING)
+                mapped, confidence, evidence = vocabulary.investigate(
+                    term.term, llm)
+                status = self.agent.repo.record_investigation(
+                    term.term, mapped, confidence, evidence)
+                results.append((term.term, status))
+            return results
+
+        def finished(results: List[Tuple[str, str]]) -> None:
+            settled = [t for t, s in results if s == vocabulary.RESOLVED]
+            asking = [t for t, s in results if s == vocabulary.NEEDS_USER_INPUT]
+            parts = []
+            if settled:
+                parts.append(f"worked out {', '.join(settled)}")
+            if asking:
+                parts.append(f"could not work out {', '.join(asking)} - "
+                             f"I will need you for those")
+            self.status("; ".join(parts) or "no new words were settled")
+
+        self.jobs.submit("vocabulary.investigate", "vocabulary",
+                         work, on_done=finished,
+                         on_error=lambda e: log.warning(
+                             "investigating words failed: %s", e),
+                         description="Work out unfamiliar mood words")
+        return [t.term for t in pending]
 
     def raaga_suggestions(self, limit: int = 4) -> List:
         """"Suggest from the brief" (section 7): reruns the Apply Brief

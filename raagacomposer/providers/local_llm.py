@@ -131,6 +131,12 @@ class SmallModelLLM(LLMProvider):
         system, user = prompts.instruments(description, catalog)
         return prompts.as_instruments(self._json(system, user, task), catalog)
 
+    def map_mood_word(self, term: str,
+                      catalog: Sequence[str]) -> Dict[str, Any]:
+        task = tasks.TASKS[tasks.MAP_MOOD_WORD]
+        system, user = prompts.mood_word(term, catalog)
+        return prompts.as_mood_word(self._json(system, user, task))
+
     def explain(self, question: str, context: str = "") -> str:
         task = tasks.TASKS[tasks.EXPLAIN]
         system, user = prompts.explain(question, context)

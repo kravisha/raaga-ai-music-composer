@@ -375,6 +375,30 @@ class RoutedLLM(LLMProvider):
                           lambda b: b.suggest_instruments(description, catalog),
                           [], validate=valid, prompt=description)
 
+    def map_mood_word(self, term: str,
+                      catalog: Sequence[str]) -> Dict[str, Any]:
+        """What an unfamiliar mood word means, in vocabulary we already have.
+
+        Validation is the safeguard rather than a formality: an answer that
+        names a word outside the catalog is rejected outright, so the
+        routing cannot end with the engine believing in a feeling it has no
+        way to score.
+        """
+        known = {c.lower() for c in catalog}
+
+        def valid(answer: Any) -> bool:
+            if not isinstance(answer, dict):
+                return False
+            means = answer.get("means")
+            if not isinstance(means, list) or not means:
+                return False
+            return all(isinstance(w, str) and w.lower() in known for w in means)
+
+        return self._call(tasks.MAP_MOOD_WORD,
+                          lambda b: b.map_mood_word(term, catalog),
+                          {"means": [], "confidence": 0.0, "reason": ""},
+                          validate=valid, prompt=term)
+
     def explain(self, question: str, context: str = "") -> str:
         return self._call(tasks.EXPLAIN,
                           lambda b: b.explain(question, context), "",

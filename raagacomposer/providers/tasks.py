@@ -41,6 +41,7 @@ CLASSIFY_INTENT = "classify_intent"
 SUGGEST_RAAGAS = "suggest_raagas"
 SUGGEST_INSTRUMENTS = "suggest_instruments"
 EXPLAIN = "explain"
+MAP_MOOD_WORD = "map_mood_word"
 
 
 TASKS: Dict[str, TaskSpec] = {
@@ -68,6 +69,12 @@ TASKS: Dict[str, TaskSpec] = {
     CLASSIFY_INTENT: TaskSpec(
         CLASSIFY_INTENT, Complexity.LOW, 300, latency_critical=True,
         description="map a spoken instruction onto one of a closed intent set"),
+    # Nobody is waiting: this runs after the brief has already been answered
+    # on the words that were understood.  Closed vocabulary, so a small model
+    # is enough, and a wrong answer is caught by validation rather than sung.
+    MAP_MOOD_WORD: TaskSpec(
+        MAP_MOOD_WORD, Complexity.LOW, 300,
+        description="say which known feelings an unfamiliar mood word means"),
 }
 
 

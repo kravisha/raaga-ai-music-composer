@@ -72,6 +72,26 @@ def instruments(description: str, catalog: Sequence[str]) -> Prompt:
     return system, user
 
 
+def mood_word(term: str, catalog: Sequence[str]) -> Prompt:
+    """Ask what an unfamiliar feeling word means, in words we already have.
+
+    The catalog is the whole point.  A free answer would name a feeling the
+    engine has no vector for and could not act on; constrained to known
+    words the worst case is a mapping that is wrong rather than one that is
+    meaningless - and a wrong one can be reviewed, because the reasoning
+    comes back with it.
+    """
+    system = ("You are a lexicographer for a music application. Given one "
+              "unfamiliar word describing a musical mood, say which words "
+              "from the supplied list are closest in meaning. Pick only from "
+              "the list. If none fit, return an empty list rather than "
+              "inventing a word. Return JSON only, in exactly this shape: "
+              '{"means": ["word"], "confidence": 0.0, "reason": "why"}'
+              " - at most three words, best first, confidence 0 to 1.")
+    user = f"Word: {term}\nAvailable: {', '.join(catalog)}"
+    return system, user
+
+
 def explain(question: str, context: str = "") -> Prompt:
     system = ("You are the arranger sitting beside a music director. Answer "
               "in at most three sentences, practically.")
@@ -153,6 +173,20 @@ def as_raagas(data: Any) -> List[Dict[str, str]]:
             return [data]
         return [d for d in _numbered(data) if isinstance(d, dict)]
     return []
+
+
+def as_mood_word(data: Any) -> Dict[str, Any]:
+    empty = {"means": [], "confidence": 0.0, "reason": ""}
+    if not isinstance(data, dict):
+        return empty
+    means = data.get("means") or data.get("words") or []
+    if isinstance(means, str):
+        means = [means]
+    if not isinstance(means, list):
+        return empty
+    return {"means": [str(w) for w in means if isinstance(w, (str, int))][:3],
+            "confidence": data.get("confidence", 0.0),
+            "reason": str(data.get("reason", ""))[:300]}
 
 
 def as_instruments(data: Any, catalog: Sequence[str]) -> List[str]:
