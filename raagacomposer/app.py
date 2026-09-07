@@ -414,6 +414,38 @@ class AppController:
                 "melody_version": melody.version if melody else None,
                 "sections": tuple(section_ids)}
 
+    def _merge_sections(self, draft: LyricsVersion,
+                        chosen: Sequence[str]) -> LyricsVersion:
+        """Take the chosen sections' lines from *draft*, the rest from now.
+
+        A snapshot of the words taken when the job started is not enough,
+        and no version number will catch it: edit_lyric_line changes a
+        lyric version in place, so a creator who fixes a Pallavi line while
+        the Charanam is being written leaves every number identical and the
+        arriving draft still carries their old Pallavi text.  So the draft
+        is not committed as a whole - only the lines it was actually asked
+        to write are taken from it, and everything else is whatever is
+        there when it lands.
+        """
+        current = self.project.lyrics_version()
+        if current is None or not chosen:
+            return draft
+        wanted = set(chosen)
+        lines = []
+        for i, line in enumerate(draft.lines):
+            existing = current.lines[i] if i < len(current.lines) else None
+            if existing is None:
+                lines.append(line)
+                continue
+            # A line the creator locked while waiting is their decision,
+            # even inside the section they asked to have rewritten.
+            if existing.section_id in wanted and not existing.locked:
+                lines.append(line)
+            else:
+                lines.append(existing)
+        merged = replace(draft, lines=lines)
+        return merged
+
     def stale_reason(self, ticket: Dict) -> str:
         """Why a finished job must not be committed, or "" when it may be."""
         if ticket.get("generation") != self._project_generation:
@@ -1457,8 +1489,12 @@ class AppController:
             best.guidance_note = guidance_note
             return best
 
+        # Composing replaces the tune, so the tune's own version is not a
+        # precondition; which song is.
+        ticket = {"generation": self._project_generation, "sections": ()}
         self.jobs.submit("tune.generate", "melody:all", work,
-                         on_done=lambda m: self._tune_ready(m, "Generated"),
+                         on_done=lambda m: self._tune_ready(m, "Generated",
+                                                            ticket),
                          on_error=lambda e: self.error("tune", f"Tune generation failed: {e}"),
                          description=f"Compose a tune in {raaga.name}")
 
@@ -1512,13 +1548,16 @@ class AppController:
             seed=seed if seed is not None else int(time.time()) % 9999)
         self.status(f"Laying down a beat in {tala.describe()}...")
 
+        beat_ticket = self.song_work_ticket()
+
         def work(ctx: JobContext) -> BeatVersion:
             ctx.progress(0.4, f"{tala.name} at {version.tempo_bpm} bpm")
             return beat_engine.realise(version)
 
         self.jobs.submit(
             "beat.generate", "beat:all", work,
-            on_done=lambda b: self._beat_ready(b, "Beat", autoplay),
+            on_done=lambda b: self._beat_ready(b, "Beat", autoplay,
+                                               beat_ticket),
             on_error=lambda e: self.error("beat", f"Beat generation failed: {e}"),
             description=f"Lay down a {tala.name} beat")
 
@@ -1533,6 +1572,8 @@ class AppController:
             return self.generate_beat(autoplay=autoplay)
         self.status(f"Varying the beat ({strength})...")
 
+        variation_ticket = self.song_work_ticket()
+
         def work(ctx: JobContext) -> BeatVersion:
             ctx.progress(0.4, "Reworking the strokes")
             return beat_engine.realise(
@@ -1540,12 +1581,18 @@ class AppController:
 
         self.jobs.submit(
             "beat.variation", "beat:all", work,
-            on_done=lambda b: self._beat_ready(b, "Beat variation", autoplay),
+            on_done=lambda b: self._beat_ready(b, "Beat variation", autoplay,
+                                               variation_ticket),
             on_error=lambda e: self.error("beat", f"Beat variation failed: {e}"),
             description="Vary the beat")
 
     def _beat_ready(self, version: BeatVersion, what: str,
-                    autoplay: bool = False) -> None:
+                    autoplay: bool = False,
+                    ticket: Optional[Dict] = None) -> None:
+        stale = self.stale_reason(ticket) if ticket else ""
+        if stale:
+            self.status(f"I did not keep that beat: {stale}.")
+            return
         self.project.beats.append(version)
         self.project.approved_beat = version.version
         self._changed("beat.generate", f"{what} v{version.version}",
@@ -1572,7 +1619,13 @@ class AppController:
             stereo = dsp.normalize_loudness(dsp.pan_mono(audio, 0.0), sr, -18.0)
             return dsp.limiter(stereo, -1.0, sr)
 
+        beat_render_ticket = self.song_work_ticket()
+
         def done(audio: np.ndarray) -> None:
+            stale = self.stale_reason(beat_render_ticket)
+            if stale:
+                self.status(f"I did not keep that beat audio: {stale}.")
+                return
             path = self._write_artifact("audio", f"beat_v{version.version}.wav",
                                         audio)
             version.audio_path = str(path)
@@ -1653,8 +1706,10 @@ class AppController:
             fresh.validation = validate(fresh, raaga).issues
             return fresh
 
+        variation_ticket = self.song_work_ticket()
         self.jobs.submit("tune.variation", "melody:all", work,
-                         on_done=lambda m: self._tune_ready(m, "Variation"),
+                         on_done=lambda m: self._tune_ready(m, "Variation",
+                                                            variation_ticket),
                          on_error=lambda e: self.error("tune", f"Variation failed: {e}"),
                          description="Tune variation")
 
@@ -1679,8 +1734,12 @@ class AppController:
             fresh.validation = validate(fresh, raaga).issues
             return fresh
 
+        # A rewrite of one section depends on the tune it is rewriting and
+        # on that section still being unlocked when it lands.
+        section_ticket = self.song_work_ticket([section_id])
         self.jobs.submit("tune.section", f"melody:{section_id}", work,
-                         on_done=lambda m: self._tune_ready(m, f"Rewrote {section.name}"),
+                         on_done=lambda m: self._tune_ready(
+                             m, f"Rewrote {section.name}", section_ticket),
                          on_error=lambda e: self.error("tune", f"Section rewrite failed: {e}"),
                          description=f"Rewrite {section.name}")
 
@@ -1695,7 +1754,12 @@ class AppController:
         fresh = melody_engine.retempo(melody, int(bpm), version)
         self._tune_ready(fresh, f"Tempo {bpm} bpm")
 
-    def _tune_ready(self, melody: MelodyVersion, what: str) -> None:
+    def _tune_ready(self, melody: MelodyVersion, what: str,
+                    ticket: Optional[Dict] = None) -> None:
+        stale = self.stale_reason(ticket) if ticket else ""
+        if stale:
+            self.status(f"I did not keep that tune: {stale}.")
+            return
         self.project.melodies.append(melody)
         self.project.approved_melody = melody.version
         self.project.current_stage = Stage.TUNE
@@ -2312,6 +2376,11 @@ class AppController:
             if stale:
                 self.status(f"I did not keep those lyrics: {stale}.")
                 return
+            lyrics = self._merge_sections(lyrics, chosen)
+            # Recomputed here, not at submission: another version may have
+            # arrived while this one was being written.
+            lyrics.version = max((l.version for l in self.project.lyrics),
+                                 default=0) + 1
             self.project.lyrics.append(lyrics)
             self.project.approved_lyrics = lyrics.version
             self.project.current_stage = Stage.VOICE
@@ -2449,6 +2518,10 @@ class AppController:
         self.status("Rendering the vocal..." if kind == "preview"
                     else "Producing the studio vocal-only master...")
 
+        ticket = self.song_work_ticket()
+        ticket["lyrics_version"] = lyrics.version if lyrics else 0
+        ticket["voice_profile_id"] = profile.id
+
         def work(ctx: JobContext) -> Tuple[VocalRender, np.ndarray]:
             ctx.progress(0.2, "Singing the line")
             raw = provider.render_vocal(melody, lyrics, profile, direction, sr,
@@ -2467,6 +2540,18 @@ class AppController:
             return take, produced
 
         def done(result: Tuple[VocalRender, np.ndarray]) -> None:
+            # Before the file is written, not after: a take belonging to a
+            # song we have left would otherwise be saved into the new
+            # song's renders directory and then played to the creator as
+            # theirs.
+            stale = self.stale_reason(ticket)
+            if not stale:
+                now = self.project.lyrics_version()
+                if (now.version if now else 0) != ticket["lyrics_version"]:
+                    stale = "the words changed while I was singing"
+            if stale:
+                self.status(f"I did not keep that take: {stale}.")
+                return
             take, audio = result
             path = self._write_artifact(
                 "renders", f"vocal_{kind}_v{take.version}.wav", audio)
@@ -2626,7 +2711,13 @@ class AppController:
             return arranger.auto_arrange(melody, raaga, brief, previous=previous,
                                          lead=lead.instrument, beat=beat)
 
+        arrange_ticket = self.song_work_ticket()
+
         def done(arrangement: ArrangementVersion) -> None:
+            stale = self.stale_reason(arrange_ticket)
+            if stale:
+                self.status(f"I did not keep that arrangement: {stale}.")
+                return
             self.project.arrangements.append(arrangement)
             self.project.current_arrangement = arrangement.version
             self.project.current_stage = Stage.ARRANGEMENT
@@ -2852,7 +2943,16 @@ class AppController:
                                         "loudness": result.loudness_db,
                                         "tracks": result.track_count}
 
+        render_ticket = self.song_work_ticket()
+
         def done(result: Tuple[str, np.ndarray, dict]) -> None:
+            # Guarded before the file is written and before anything is
+            # played: a mix of a song we have left would otherwise be saved
+            # into the current song's folder and played back as its own.
+            stale = self.stale_reason(render_ticket)
+            if stale:
+                self.status(f"I did not keep that mix: {stale}.")
+                return
             rendered_kind, audio, info = result
             if rendered_kind == "tune":
                 path = self._write_artifact("audio", f"tune_v{melody.version}.wav", audio)
