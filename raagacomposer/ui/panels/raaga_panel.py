@@ -4,7 +4,8 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QGroupBox, QHBoxLayout,
                                QLabel, QListWidget, QListWidgetItem, QMessageBox,
-                               QPushButton, QTextEdit, QVBoxLayout)
+                               QPushButton, QSizePolicy, QTextEdit,
+                               QVBoxLayout)
 
 from ...core.actions import ActionState
 from ...raaga.selection import compare
@@ -42,7 +43,11 @@ class RaagaPanel(QGroupBox):
         # difference matters: refreshing the panel must not look like a
         # choice.
         self.all_raagas.activated.connect(lambda _: self._chose("all"))
-        self.suggestions.itemClicked.connect(lambda _: self._chose("suggestions"))
+        # Both, deliberately.  ``currentRowChanged`` does not fire when the
+        # clicked row is already current, so clicking the highlighted
+        # suggestion refreshed nothing and looked like the details had
+        # stopped updating.
+        self.suggestions.itemClicked.connect(self._on_suggestion_clicked)
 
         # Hear any raaga, straight from the selector, with no ambiguity about
         # which one is meant.  ``Hear the scale`` acts on whichever control
@@ -60,7 +65,12 @@ class RaagaPanel(QGroupBox):
 
         self.details = QTextEdit()
         self.details.setReadOnly(True)
-        self.details.setFixedHeight(132)
+        # Expandable rather than fixed: the details now carry the evidence
+        # behind a recommendation, and 132 pixels clipped it to a line or
+        # two that had to be scrolled to be read.
+        self.details.setMinimumHeight(132)
+        self.details.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.details.setLineWrapMode(QTextEdit.WidgetWidth)
 
         self.selected_label = QLabel("Selected: -")
         self.lock_box = QCheckBox("Lock the raaga")
@@ -114,7 +124,7 @@ class RaagaPanel(QGroupBox):
         chooser.addWidget(self.use_chosen_btn)
         layout.addLayout(chooser)
         layout.addLayout(row3)
-        layout.addWidget(self.details)
+        layout.addWidget(self.details, 1)
         layout.addWidget(self.selected_label)
         self.refresh()
 
@@ -150,6 +160,10 @@ class RaagaPanel(QGroupBox):
         if self.suggestions.count():
             self.suggestions.setCurrentRow(0)
         self.changed.emit()
+
+    def _on_suggestion_clicked(self, item) -> None:
+        self._chose("suggestions")
+        self._show_named(str(item.data(Qt.UserRole)))
 
     def _chose(self, where: str) -> None:
         """Remember which control the creator last used."""

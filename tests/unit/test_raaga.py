@@ -209,3 +209,93 @@ def test_templates_and_roles():
     assert section_role(SectionKind.CHARANAM) == "verse"
     assert section_role(SectionKind.INTERLUDE) == "instrumental"
     assert "Prelude" in describe(plan_sections(120.0, 72, 8, "film song"))
+
+
+# --------------------------------------------------------------------------
+# Selecting a raaga shows what is known about it (Arya, 2026-09-07 08:39:12)
+# --------------------------------------------------------------------------
+def test_a_curated_raaga_describes_what_the_specification_lists():
+    """Krish selected Hamsadhwani and saw a fraction of what was known.
+
+    The specification's per-raaga list names characteristic phrases (item 6)
+    and gamaka behaviour (item 9), and elsewhere aliases and the
+    melakarta/janya relation.  The library held all of it; describe() showed
+    none of it.
+    """
+    from raagacomposer.raaga.library import library
+
+    text = library().require("Hamsadhwani").describe()
+    for expected in ("Arohanam", "Avarohanam", "Jeeva swaras",
+                     "Resting (nyasa)", "Characteristic phrases", "Gamaka",
+                     "Starts on", "Avoid"):
+        assert expected in text, f"{expected!r} is missing from the details"
+
+    # and the content, not merely the label
+    assert "S  R2  G3  P" in text, "the prayogas are not actually shown"
+    assert "kampita" in text, "the gamaka behaviour is not actually shown"
+    assert "M1" in text.split("Avoid:")[1], "the avoided swaras are not shown"
+
+
+def test_a_scale_only_raaga_does_not_claim_what_it_lacks():
+    """Honest degradation: no invented phrases for a parent scale."""
+    from raagacomposer.raaga.library import library
+
+    scale_only = next(r for r in library().all() if r.scale_only)
+    text = scale_only.describe()
+    assert "Characteristic phrases" not in text
+    assert "Gamaka:" not in text
+    assert "parent scale" in text
+
+
+def test_aliases_are_shown_when_the_library_has_them():
+    """A raaga spelled three ways is one raaga, and saying so helps."""
+    from raagacomposer.raaga.library import library
+
+    with_aliases = next(r for r in library().all() if r.aliases)
+    assert "Also called:" in with_aliases.describe()
+
+
+def test_evidence_is_shown_with_its_basis_labelled():
+    """Krish: information used to recommend a raaga must be visible in its
+    details, even when it has not been verified through learning.
+
+    Chitrambari was recommended on its block characters and tags, and the
+    display showed an empty "moods" heading and nothing else - the one
+    absent field made prominent while the evidence that drove the choice
+    was invisible.
+    """
+    from raagacomposer.raaga.library import library
+
+    text = library().require("Chitrambari").describe()
+    assert "Moods (curated): none recorded" in text, \
+        "an absent field must say so rather than show a blank heading"
+    assert "Descriptors (reference pack, not studied)" in text
+    assert "Scale character (derived from its blocks)" in text
+    assert "luminous" in text, "the descriptors are labelled but not shown"
+
+
+def test_reference_descriptors_are_never_presented_as_curated_moods():
+    """The label carries the claim.  A descriptor inferred from a scale is
+    not a mood a person wrote down, and merging them would be fabrication."""
+    from raagacomposer.raaga.library import library
+
+    raaga = library().require("Chitrambari")
+    text = raaga.describe()
+    moods_line = next(l for l in text.splitlines() if "Moods (curated)" in l)
+    for tag in raaga.tags:
+        assert tag not in moods_line, \
+            f"reference tag {tag!r} was promoted into the curated moods line"
+
+
+def test_the_comparison_shows_both_raagas_evidence():
+    """Comparing a curated raaga with a pack entry used to give one
+    populated column beside two blank headings."""
+    from raagacomposer.raaga.library import library
+    from raagacomposer.raaga.selection import compare
+
+    lib = library()
+    text = compare(lib.require("Keeravani"), lib.require("Chitrambari"))
+    assert text.count("Descriptors (reference pack, not studied)") == 2
+    assert "Moods (curated): romantic" in text          # the curated one
+    assert "Moods (curated): none recorded" in text     # and the honest gap
+    assert "" != text.split("Chitrambari:")[1].strip()
