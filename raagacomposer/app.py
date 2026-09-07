@@ -205,6 +205,11 @@ class AppController:
         #: The brief ``last_suggestions`` were made for, so selection
         #: feedback is attached to what was actually asked.
         self.suggested_for: Optional[CreativeBrief] = None
+        #: Which ranking ``last_suggestions`` came from.  Bumped whenever a
+        #: ranking is stored *and* whenever one is thrown away, so anything
+        #: that cached a suggestion's reasoning can tell that the reasoning
+        #: it holds belongs to a ranking that no longer exists.
+        self.suggestion_epoch = 0
 
         # UI callbacks
         self.on_project_changed: Optional[Callable[[], None]] = None
@@ -376,6 +381,20 @@ class AppController:
     # ==================================================================
     # project lifecycle
     # ==================================================================
+    def _clear_ranking(self) -> None:
+        """Forget the suggestions and the brief they were ranked for.
+
+        A ranking belongs to one project's brief.  Carrying it across a
+        project change left the panel able to say "the current brief
+        suggested this" about a brief belonging to a song the creator had
+        closed - a recommendation from a prior context presented as current
+        evidence.  The controller owns the ranking, so the controller
+        discards it; the panel reads the epoch and follows.
+        """
+        self.last_suggestions = []
+        self.suggested_for = None
+        self.suggestion_epoch += 1
+
     def new_project(self, title: str = "Untitled Song", write: bool = True) -> Project:
         self.playback.stop()
         self._renders.clear()
@@ -387,6 +406,7 @@ class AppController:
             self.project_dir = None
         self.project.voice_profile_id = self.voices.default().id
         self.selection = None
+        self._clear_ranking()
         self.dirty = not write
         self.undo.reset(self.project, "new project")
         self.context = ConversationContext()
@@ -404,6 +424,7 @@ class AppController:
         if not self.voices.get(self.project.voice_profile_id):
             self.project.voice_profile_id = self.voices.default().id
         self.selection = None
+        self._clear_ranking()
         self.dirty = False
         self.undo.reset(self.project, "opened")
         self.context = ConversationContext()
@@ -843,6 +864,7 @@ class AppController:
         """Write a completed Apply Brief's results into project state.  UI
         thread only - see the threading rule in this module's docstring."""
         self.last_suggestions = suggestions
+        self.suggestion_epoch += 1
         self.project.raaga.alternatives = [s.name for s in suggestions]
         # The brief these answer, kept as it was at the time.  Selection
         # feedback has to be attached to the brief the suggestions were made

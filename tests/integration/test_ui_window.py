@@ -651,3 +651,126 @@ def test_every_library_raaga_is_offered(window):
                for i in range(panel.all_raagas.count())}
     assert "Keeravani" in offered
     assert offered == set(window.app.raagas.names())
+
+
+def test_the_reason_this_brief_gave_survives_into_the_details(window):
+    """Arya's finding: the rationale existed only in the clipped list row.
+
+    _render_suggestions stored just the name, and the details pane and the
+    comparison look a raaga up in the catalogue - so they could say what a
+    raaga is but never why it had been suggested.
+    """
+    panel = window.raaga_panel
+    window.app.apply_brief_sync(mood="hopeful, romantic", feel="")
+    panel.suggest()
+    assert panel.suggestions.count(), "nothing was suggested"
+
+    first = panel.suggestions.item(0)
+    name = first.data(Qt.UserRole)
+    reason = first.data(Qt.UserRole + 1)
+    assert reason, "the reason was not kept beside the name"
+
+    panel.suggestions.setCurrentRow(0)
+    panel.suggestions.itemClicked.emit(first)
+    shown = panel.details.toPlainText()
+    assert f"Why this brief suggested {name}" in shown
+    assert reason[:24] in shown, "the actual rationale is not shown"
+    assert "not the catalogue" in shown, "its basis is not labelled"
+
+
+def test_the_comparison_carries_the_reason_too(window):
+    panel = window.raaga_panel
+    window.app.apply_brief_sync(mood="hopeful, romantic", feel="")
+    panel.suggest()
+    name = panel.suggestions.item(0).data(Qt.UserRole)
+    window.app.select_raaga(name, "for the test")
+
+    other = next(n for n in window.app.raagas.names() if n != name)
+    panel.all_raagas.setCurrentText(other)
+    panel.all_raagas.activated.emit(panel.all_raagas.currentIndex())
+    panel.compare_with_current()
+
+    shown = panel.details.toPlainText()
+    assert name in shown and other in shown
+    assert f"Why this brief suggested {name}" in shown
+
+
+def test_looking_at_a_raaga_does_not_re_rank(window):
+    """Displaying a reason must not re-run the recommendation."""
+    panel = window.raaga_panel
+    window.app.apply_brief_sync(mood="hopeful, romantic", feel="")
+    panel.suggest()
+    calls = []
+    original = window.app.raaga_suggestions
+    window.app.raaga_suggestions = lambda *a, **k: calls.append(1) or original(*a, **k)
+    try:
+        panel.suggestions.setCurrentRow(0)
+        panel._show_named(panel.suggestions.item(0).data(Qt.UserRole))
+        panel.compare_with_current()
+        assert not calls, "looking at a raaga re-ran the ranking"
+    finally:
+        window.app.raaga_suggestions = original
+
+
+def test_each_rationale_says_which_raaga_it_is_about(window):
+    """Arya's finding: two explanations under one generic heading.
+
+    Comparing two raagas the brief had both suggested printed "Why this
+    brief suggested it" twice in a row, and nothing said which sentence
+    belonged to which raaga.
+    """
+    panel = window.raaga_panel
+    window.app.apply_brief_sync(mood="hopeful, romantic", feel="")
+    panel.suggest()
+    assert panel.suggestions.count() >= 2, "need two suggestions to compare"
+
+    first = str(panel.suggestions.item(0).data(Qt.UserRole))
+    second = str(panel.suggestions.item(1).data(Qt.UserRole))
+    window.app.select_raaga(first, "for the test")
+    panel.all_raagas.setCurrentText(second)
+    panel.all_raagas.activated.emit(panel.all_raagas.currentIndex())
+    panel.compare_with_current()
+
+    shown = panel.details.toPlainText()
+    assert f"Why this brief suggested {first}" in shown
+    assert f"Why this brief suggested {second}" in shown
+    assert "Why this brief suggested it" not in shown, "still unattributed"
+
+
+def test_a_new_project_does_not_inherit_the_last_one_s_reasons(window):
+    """Arya's finding: a prior context's recommendation shown as evidence.
+
+    The rationale cache was keyed by raaga name and nothing cleared it, so
+    after starting a fresh song the previous song's ranking still explained
+    itself as "the current brief's ranking".
+    """
+    panel = window.raaga_panel
+    window.app.apply_brief_sync(mood="hopeful, romantic", feel="")
+    panel.suggest()
+    name = str(panel.suggestions.item(0).data(Qt.UserRole))
+    assert panel._recommendation_note(name), "nothing was cached to begin with"
+
+    window.app.new_project("Second Song", write=False)
+    window.refresh()
+
+    assert panel._rationales == {}, "the previous ranking's reasons survived"
+    assert panel.suggestions.count() == 0, "the previous ranking's rows survived"
+    panel._show_named(name)
+    assert "Why this brief suggested" not in panel.details.toPlainText()
+
+
+def test_a_brief_that_moved_on_is_not_called_the_current_one(window):
+    """Editing the brief without applying it does not re-rank.
+
+    The reasons on screen are still why these raagas are listed, so they
+    stay; but they answer the question as it was asked, not as it now
+    stands, and the label has to say so.
+    """
+    panel = window.raaga_panel
+    window.app.apply_brief_sync(mood="hopeful, romantic", feel="")
+    panel.suggest()
+    name = str(panel.suggestions.item(0).data(Qt.UserRole))
+    assert "from the current brief's ranking" in panel._recommendation_note(name)
+
+    window.app.project.brief.mood = "grieving, heavy"
+    assert "from an earlier brief's ranking" in panel._recommendation_note(name)
