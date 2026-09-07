@@ -1457,3 +1457,62 @@ def test_composing_without_naming_a_raaga_still_works(ready, settle):
     melody = app.project.melody()
     assert len(app.project.melodies) > before, "nothing was composed"
     assert melody is not None and melody.raaga == "Keeravani", melody
+
+
+# --------------------------------------------------------------------------
+# One door into interpretation (Arya's third named path, 2026-09-07 12:31)
+# --------------------------------------------------------------------------
+def test_typed_text_is_not_interpreted_on_the_calling_thread(ready):
+    """The conversation box used to call handle_utterance inline.
+
+    That is the fault the microphone had: interpreting may wait on a
+    language model, and doing it on the thread that redraws the window
+    freezes the window.  say() queues instead.
+    """
+    app = ready
+    before = len(app.project.conversation)
+    assert app.say("compose a tune") is True
+    assert len(app.project.conversation) == before, \
+        "the instruction was acted on before returning"
+
+    for _ in range(400):
+        app.pump()
+        if len(app.project.conversation) > before:
+            break
+        time.sleep(0.01)
+    assert len(app.project.conversation) > before, "it was never acted on"
+
+
+def test_a_typed_instruction_is_served_before_overheard_speech(ready):
+    """Deliberate text should not queue behind a talkative room."""
+    app = ready
+    for i in range(5):
+        app._on_transcript_final(f"overheard phrase {i}")
+    app.say("play the first minute")
+
+    app._drain_utterances()
+    assert app._interpreting == "play the first minute", app._interpreting
+
+
+def test_a_typed_instruction_is_never_dropped_silently(ready):
+    """Overheard speech may be discarded when the room outruns us; what
+    the creator typed may not be."""
+    app = ready
+    for i in range(20):
+        app._on_transcript_final(f"overheard {i}")
+    assert app._utterances_dropped > 0, "the speech queue did not overflow"
+
+    assert app.say("compose a tune") is True, "typed text was refused"
+    assert app._typed_queue.qsize() == 1
+
+
+def test_stop_listening_does_not_discard_what_was_typed(ready):
+    """Stop Listening is about the microphone.  Silently throwing away a
+    typed instruction would be a different act wearing the same button."""
+    app = ready
+    app._on_transcript_final("something overheard")
+    app.say("compose a tune")
+
+    discarded = app._clear_utterances()
+    assert discarded == 1, discarded
+    assert app._typed_queue.qsize() == 1, "the typed instruction was discarded"

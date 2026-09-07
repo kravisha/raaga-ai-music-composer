@@ -127,7 +127,9 @@ class ConversationPanel(QWidget):
         if not text:
             return
         self.entry.clear()
-        self.app.handle_utterance(text)
+        # Queued, not inline: interpreting here would block the thread that
+        # has to redraw this box.
+        self.app.say(text)
         self.refresh()
         self.changed.emit()
 

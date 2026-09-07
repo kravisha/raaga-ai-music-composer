@@ -854,3 +854,18 @@ def test_relabelling_does_not_re_rank(window):
         assert not calls, "relabelling re-ran the ranking"
     finally:
         window.app.raaga_suggestions = original
+
+
+def test_typing_in_the_conversation_box_does_not_act_inline(window):
+    """The box used to call handle_utterance directly, so interpreting a
+    typed phrase happened on the thread that had to redraw the window."""
+    app = window.app
+    panel = window.conversation
+    before = len(app.project.conversation)
+
+    panel.entry.setText("compose a tune")
+    panel.entry.returnPressed.emit()
+
+    assert panel.entry.text() == "", "the box did not clear"
+    assert len(app.project.conversation) == before,         "the typed phrase was interpreted on the interface thread"
+    assert app._typed_queue.qsize() == 1, "it was not queued either"
