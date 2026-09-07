@@ -209,8 +209,6 @@ class AppController:
         self._typed_queue: "queue.Queue[str]" = queue.Queue(maxsize=64)
         #: How many phrases were discarded because the queue was full.
         self._utterances_dropped = 0
-        #: A section preview waiting for its vocal take before the mix.
-        self._preview_after_vocal = None
         #: The interpretation currently in flight, if any, and which
         #: request it belongs to.  A cancelled older request must not clear
         #: a newer one's marker: doing so let a third request start beside
@@ -495,6 +493,21 @@ class AppController:
                 return f"{section.name} was locked while I was working"
         return ""
 
+    def _forget_the_previous_song(self) -> None:
+        """Drop what described the song we are leaving.
+
+        Found by looking for more of the shape Arya kept finding rather
+        than by another failure: state set while one song is open and read
+        while another is.  last_evaluation is the one that mattered - it is
+        the agent's judgement of a particular tune, and record_lessons
+        attaches it to whatever project is open when the creator next says
+        something.  Praise for one song became a lesson filed against
+        another, in the agent's own learning.
+        """
+        self.last_evaluation = None
+        self._loaded_render = None
+        self._playhead = 0.0
+
     def _abandon_pending_requests(self, what: str) -> int:
         """Drop conversation still owed to a song we are leaving.
 
@@ -551,6 +564,7 @@ class AppController:
         self.project.voice_profile_id = self.voices.default().id
         self.selection = None
         self._clear_ranking()
+        self._forget_the_previous_song()
         self._abandon_pending_requests("New song")
         self.dirty = not write
         self.undo.reset(self.project, "new project")
@@ -570,6 +584,7 @@ class AppController:
             self.project.voice_profile_id = self.voices.default().id
         self.selection = None
         self._clear_ranking()
+        self._forget_the_previous_song()
         self._abandon_pending_requests("Opened another song")
         self.dirty = False
         self.undo.reset(self.project, "opened")
@@ -2576,7 +2591,9 @@ class AppController:
                       f"(intensity {direction.intensity:.2f})")
 
     def render_vocal(self, kind: str = "preview", autoplay: bool = False,
-                     section_ids: Optional[Sequence[str]] = None) -> None:
+                     section_ids: Optional[Sequence[str]] = None,
+                     then_play: Optional[Tuple[float, float, bool]] = None
+                     ) -> None:
         """kind is 'preview' or 'master' (the studio vocal-only version).
 
         Rendering finishes quietly.  It used to start the player itself,
@@ -2588,6 +2605,13 @@ class AppController:
         ``section_ids`` sings only those sections, at their place in the
         song and over its full length, so the take still lines up with the
         arrangement and the two can be heard together.
+
+        ``then_play`` is a section preview's follow-on: mix the song and
+        play that span, once this take is in.  It travels in this job's
+        closure rather than on the controller.  It used to be a field, and
+        a field is reachable by every other render - so a preview whose
+        vocal failed, or whose song was replaced, left it lying there for
+        the next successful take to pick up and play.
         """
         self.take_the_floor("render the vocal")
         melody = self.project.melody()
@@ -2656,10 +2680,8 @@ class AppController:
                 where = f" ({', '.join(names)} only)" if names else ""
             self.status(f"Vocal {kind} ready{where} - "
                         f"{mastering.report(audio, self.sample_rate)}")
-            waiting = getattr(self, "_preview_after_vocal", None)
-            if waiting is not None:
-                self._preview_after_vocal = None
-                start, end, play = waiting
+            if then_play is not None:
+                start, end, play = then_play
                 self.render(kind="full", autoplay=play,
                             play_range=(start, end))
             elif autoplay:
@@ -2697,9 +2719,9 @@ class AppController:
             self.render(kind="full", autoplay=autoplay,
                         play_range=(section.start, section.end))
             return
-        self._preview_after_vocal = (section.start, section.end, autoplay)
         self.render_vocal(kind="preview", autoplay=False,
-                          section_ids=[section_id])
+                          section_ids=[section_id],
+                          then_play=(section.start, section.end, autoplay))
 
     def create_voice_from_recordings(self, paths: Sequence[str], name: str,
                                      gender: str = "") -> VoiceProfile:
