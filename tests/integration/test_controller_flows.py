@@ -1358,3 +1358,102 @@ def test_the_fact_listing_says_when_it_is_only_a_page(ready):
     _teach(app, "Keeravani")
     learned = app.ask_agent("what did it learn about Keeravani?")
     assert "a display limit, not the total" in learned, learned
+
+
+# --------------------------------------------------------------------------
+# Jam workspace: the raaga a creator names is the raaga they hear
+# (Arya's first named path, 2026-09-07 12:31)
+# --------------------------------------------------------------------------
+def _say(app, text):
+    """Interpret and act, the way the conversation panel does."""
+    from raagacomposer.speech.intent import interpret
+    cmd = interpret(text, app.context.time_context())
+    app.apply_utterance(text, cmd)
+    return cmd
+
+
+def test_composing_in_a_named_raaga_uses_that_raaga(ready, settle):
+    """Krish's own Jam example: ask for Hamsadhwani, get Hamsadhwani.
+
+    The interpreter parsed the name correctly all along; the dispatch called
+    generate_tune() and never read it, so the tune came back in whatever was
+    already selected.
+    """
+    app = ready
+    app.select_raaga("Keeravani", "the project starts here")
+    cmd = _say(app, "compose a tune in Hamsadhwani")
+    assert cmd.intent == "tune.generate" and cmd.raaga == "Hamsadhwani", cmd
+    settle()
+
+    melody = app.project.melody()
+    assert melody is not None, "no tune was composed"
+    assert melody.raaga == "Hamsadhwani", f"composed in {melody.raaga}"
+    assert app.project.raaga.selected == "Hamsadhwani", \
+        "the tune and the panel disagree about the raaga"
+
+
+def test_a_locked_raaga_is_not_silently_overridden_or_ignored(ready, settle):
+    """Neither answer is acceptable on its own: composing in the locked
+    raaga answers a question they did not ask, and switching anyway undoes
+    a decision they did.  So it says so and composes nothing."""
+    app = ready
+    app.select_raaga("Keeravani", "chosen deliberately")
+    app.set_raaga_lock(True)
+    # The workflow fixture has already composed once, so what has to stay
+    # unchanged is the number of versions, not their absence.
+    before = len(app.project.melodies)
+
+    _say(app, "compose a tune in Hamsadhwani")
+    settle()
+
+    assert app.project.raaga.selected == "Keeravani", "the lock was overridden"
+    assert len(app.project.melodies) == before, "it composed anyway"
+    assert "locked" in app.status_text.lower(), app.status_text
+
+
+def test_an_unknown_raaga_is_named_rather_than_substituted(ready, settle):
+    """A name the library does not have is said aloud, not swapped out.
+
+    The rule interpreter only extracts raaga names it recognises, so it
+    cannot deliver this case - "compose a tune in Nonexistentraaga" parses
+    with an empty raaga and is an ordinary compose request, which is also
+    what keeps "compose a tune in the morning" working.  The LLM
+    interpretation can return any string, so the guard is reached there,
+    and that is the path this exercises.
+    """
+    from raagacomposer.speech.intent import Command
+    app = ready
+    app.select_raaga("Keeravani", "the project starts here")
+    before = len(app.project.melodies)
+
+    app.apply_utterance("compose a tune in Nonexistentraaga",
+                        Command(intent="tune.generate",
+                                text="compose a tune in Nonexistentraaga",
+                                raaga="Nonexistentraaga", confidence=0.9))
+    settle()
+    assert len(app.project.melodies) == before, "it composed something anyway"
+    assert "do not know" in app.status_text.lower(), app.status_text
+
+
+def test_an_unrecognised_word_is_not_treated_as_a_raaga(ready, settle):
+    """The other side of it: "in the morning" is not a raaga, and neither
+    is an unknown word, so both stay ordinary compose requests."""
+    from raagacomposer.speech.intent import interpret
+    app = ready
+    for text in ("compose a tune in the morning",
+                 "compose a tune in Nonexistentraaga"):
+        cmd = interpret(text, app.context.time_context())
+        assert cmd.intent == "tune.generate", cmd
+        assert cmd.raaga == "", f"{text!r} invented a raaga: {cmd.raaga!r}"
+
+
+def test_composing_without_naming_a_raaga_still_works(ready, settle):
+    """The guard must not stand between the creator and the ordinary case."""
+    app = ready
+    app.select_raaga("Keeravani", "the project starts here")
+    before = len(app.project.melodies)
+    _say(app, "compose a tune")
+    settle()
+    melody = app.project.melody()
+    assert len(app.project.melodies) > before, "nothing was composed"
+    assert melody is not None and melody.raaga == "Keeravani", melody
