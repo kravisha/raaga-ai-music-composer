@@ -1681,13 +1681,17 @@ class AppController:
             return
         self.project.beats.append(version)
         self.project.approved_beat = version.version
+        self.status(f"{what} v{version.version}: {version.summary()}")
+        # The arrangement is updated before the undo point is taken, so one
+        # Add Beat is one step.  It used to commit after appending the beat
+        # and again after arranging it, and a single Undo then left the new
+        # beat selected while the song still played the old one.
+        self._beat_into_the_song(version, record=False)
         self._changed("beat.generate", f"{what} v{version.version}",
                       undoable=True)
-        self.status(f"{what} v{version.version}: {version.summary()}")
-        self._beat_into_the_song(version)
         self.render_beat(autoplay=autoplay)
 
-    def _beat_into_the_song(self, version) -> None:
+    def _beat_into_the_song(self, version, record: bool = True) -> None:
         """Make the beat part of what the song plays.
 
         Krish asked that adding a tala put percussion on the tune.  It laid
@@ -1719,7 +1723,8 @@ class AppController:
         said = arranger.apply_beat(arrangement, version,
                                    self.beat_instrument(), first_sung, total)
         self.status(said)
-        self._changed("arrange.beat", said)
+        if record:
+            self._changed("arrange.beat", said)
 
     def render_beat(self, autoplay: bool = False) -> None:
         """Sound the beat on its own, so it can be judged on its own."""

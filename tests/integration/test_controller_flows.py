@@ -2046,3 +2046,63 @@ def test_play_vocal_with_nothing_rendered_says_so(ready):
     app._renders.pop("vocal_preview", None)
     assert app.play_vocal() is False
     assert "render a vocal" in app.status_text.lower(), app.status_text
+
+
+def test_a_locked_percussion_region_is_not_replaced(ready, settle):
+    """Arya: guarding the track is not guarding what is in it.
+
+    apply_beat refused when the track was locked and then replaced its
+    regions wholesale, so a lock on a region was thrown away along with
+    the region.
+    """
+    app = ready
+    app.generate_beat()
+    settle()
+    track = next(t for t in app.project.arrangement().tracks
+                 if t.role == "rhythm")
+    assert track.regions, "no percussion region to lock"
+    track.regions[0].locked = True
+    before = [(r.meta.get("beat_version"), r.locked, len(r.notes))
+              for r in track.regions]
+
+    said = []
+    original = app.status
+    app.status = lambda text, *a, **k: (said.append(text), original(text))[1]
+    try:
+        app.beat_variation(strength="busier")
+        settle()
+    finally:
+        app.status = original
+
+    after = [(r.meta.get("beat_version"), r.locked, len(r.notes))
+             for r in track.regions]
+    assert after == before, "a locked percussion passage was replaced"
+    assert any("locked" in line.lower() for line in said), said
+
+
+def test_add_beat_is_one_undo_step(ready, settle):
+    """One thing the creator did should take one Undo to undo.
+
+    The beat was committed to the undo stack when it was stored and again
+    when it reached the arrangement, so a single Undo left the new beat
+    selected while the song still played the old one.
+    """
+    app = ready
+    app.generate_beat()
+    settle()
+    first = app.project.beat().version
+    first_in_mix = _rhythm_versions(app)
+
+    app.beat_variation(strength="busier")
+    settle()
+    second = app.project.beat().version
+    assert second != first, "the variation produced no new version"
+    assert _rhythm_versions(app) == [str(second)]
+
+    app.undo_action()
+    settle()
+
+    assert app.project.beat().version == first, \
+        f"one Undo left beat v{app.project.beat().version} selected"
+    assert _rhythm_versions(app) == first_in_mix, \
+        "the selected beat and the one in the mix disagree after Undo"
