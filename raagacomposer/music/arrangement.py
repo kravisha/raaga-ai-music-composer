@@ -279,6 +279,13 @@ def apply_beat(arrangement: ArrangementVersion, beat, percussion,
                 if t.role == "rhythm" and t.created_by == "beat"]
     if any(t.locked for t in existing):
         return "the percussion track is locked, so the new beat was not applied"
+    # A lock on a region is as much a decision as a lock on its track, and
+    # replacing the track's regions wholesale threw the locked one away
+    # along with its lock.  Guarding the track is not guarding what is in
+    # it.
+    if any(region.locked for track in existing for region in track.regions):
+        return ("a locked passage of percussion would be replaced, so the "
+                "new beat was not applied - unlock it first")
     fresh = beat_track(beat, percussion, first_sung, total)
     if existing:
         keep = existing[0]
