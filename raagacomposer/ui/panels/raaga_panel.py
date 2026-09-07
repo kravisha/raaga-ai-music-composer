@@ -29,6 +29,11 @@ class RaagaPanel(QGroupBox):
         #: it is still the current one.
         self._rendered_epoch = None
         self._rendered_brief = None
+        #: What the details pane is showing, so it can be rebuilt in place
+        #: when its basis changes: ("raaga", name) or ("compare", a, b).
+        self._showing = None
+        #: The provenance label the visible text was written with.
+        self._shown_provenance = ""
 
         self.suggestions = QListWidget()
         self.suggestions.setMinimumHeight(64)
@@ -305,18 +310,9 @@ class RaagaPanel(QGroupBox):
         if other is None:
             return
         if current is None or current.name == other.name:
-            self.details.setPlainText(self._describe_with_reason(other.name))
+            self._display(("raaga", other.name))
             return
-        # The catalogue comparison, followed by whatever this brief said
-        # about either raaga - the reason a raaga was put in front of the
-        # creator belongs beside the facts about it, not only in the list
-        # row it was clipped into.
-        text = compare(current, other)
-        notes = [n for n in (self._recommendation_note(current.name),
-                             self._recommendation_note(other.name)) if n]
-        if notes:
-            text += "\n\n" + "\n\n".join(notes)
-        self.details.setPlainText(text)
+        self._display(("compare", current.name, other.name))
 
     def _toggle_lock(self, checked: bool) -> None:
         if self.app.project.raaga.locked != checked:
@@ -326,9 +322,7 @@ class RaagaPanel(QGroupBox):
     def _show_details(self, row: int) -> None:
         if row < 0:
             return
-        name = str(self.suggestions.item(row).data(Qt.UserRole))
-        if self.app.raagas.get(name):
-            self.details.setPlainText(self._describe_with_reason(name))
+        self._show_named(str(self.suggestions.item(row).data(Qt.UserRole)))
 
     def _recommendation_note(self, name: str) -> str:
         """What this brief said about this raaga, if it suggested it.
@@ -382,6 +376,8 @@ class RaagaPanel(QGroupBox):
         self._rendered_epoch = None
         self._rendered_brief = None
         self.details.clear()
+        self._showing = None
+        self._shown_provenance = ""
 
     def _describe_with_reason(self, name: str) -> str:
         raaga = self.app.raagas.get(name)
@@ -392,11 +388,63 @@ class RaagaPanel(QGroupBox):
 
     def _show_named(self, name: str) -> None:
         if self.app.raagas.get(name):
-            self.details.setPlainText(self._describe_with_reason(name))
+            self._display(("raaga", name))
+
+    # -- the details pane --------------------------------------------------
+    def _comparison_text(self, current_name: str, other_name: str) -> str:
+        """The catalogue comparison, followed by whatever this brief said
+        about either raaga - the reason a raaga was put in front of the
+        creator belongs beside the facts about it, not only in the list row
+        it was clipped into."""
+        current = self.app.raagas.get(current_name)
+        other = self.app.raagas.get(other_name)
+        if current is None or other is None:
+            return self._describe_with_reason(other_name or current_name)
+        text = compare(current, other)
+        notes = [n for n in (self._recommendation_note(current.name),
+                             self._recommendation_note(other.name)) if n]
+        if notes:
+            text += "\n\n" + "\n\n".join(notes)
+        return text
+
+    def _display(self, subject) -> None:
+        """Put a subject in the details pane and remember what it was.
+
+        Remembering is what lets the pane be rebuilt in place later without
+        guessing: nothing here re-ranks, and the creator keeps the
+        comparison they were reading and their place in it.
+        """
+        if subject[0] == "compare":
+            text = self._comparison_text(subject[1], subject[2])
+        else:
+            text = self._describe_with_reason(subject[1])
+        bar = self.details.verticalScrollBar()
+        at = bar.value()
+        self.details.setPlainText(text)
+        bar.setValue(min(at, bar.maximum()))
+        self._showing = subject
+        self._shown_provenance = self._ranking_provenance()
+
+    def _relabel_what_is_already_shown(self) -> None:
+        """Rebuild the visible text when its basis stops being current.
+
+        _recommendation_note answered correctly the moment the brief was
+        edited, but the words already on screen were written before that and
+        nothing rewrote them: the pane went on calling an earlier brief's
+        reasoning "the current brief's ranking" until the creator happened
+        to click something.  A label that is only right when you touch it is
+        not a label.
+        """
+        if self._showing is None:
+            return
+        if self._ranking_provenance() == self._shown_provenance:
+            return
+        self._display(self._showing)
 
     # -- refresh -----------------------------------------------------------
     def refresh(self) -> None:
         self._drop_a_ranking_that_is_no_longer_ours()
+        self._relabel_what_is_already_shown()
         choice = self.app.project.raaga
         self.selected_label.setText(
             f"Selected: {choice.selected or '-'}"
@@ -407,4 +455,4 @@ class RaagaPanel(QGroupBox):
         if choice.selected and not self.details.toPlainText():
             raaga = self.app.current_raaga()
             if raaga:
-                self.details.setPlainText(raaga.describe())
+                self._display(("raaga", raaga.name))
