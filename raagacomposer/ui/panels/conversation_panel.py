@@ -126,10 +126,13 @@ class ConversationPanel(QWidget):
         text = self.entry.text().strip()
         if not text:
             return
-        self.entry.clear()
         # Queued, not inline: interpreting here would block the thread that
-        # has to redraw this box.
-        self.app.say(text)
+        # has to redraw this box.  The box is cleared only once the
+        # instruction has been accepted - clearing first threw away what a
+        # full queue had just refused, leaving the creator with a warning
+        # and no way to retry but to type it again.
+        if self.app.say(text):
+            self.entry.clear()
         self.refresh()
         self.changed.emit()
 
