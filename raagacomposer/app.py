@@ -216,6 +216,12 @@ class AppController:
         self._interpreting: Optional[str] = None
         self._interpreting_id: int = 0
         self._request_seq: int = 0
+        #: Which vocal render is the current one.  A ticket describes the
+        #: song, and two renders of the same unchanged song are identical
+        #: to it - so the older one's queued completion still wrote its
+        #: take and played its follow-on after a newer render was asked
+        #: for.  What distinguishes them is which was asked for last.
+        self._vocal_request: int = 0
         self.last_suggestions: List = []
         #: The brief ``last_suggestions`` were made for, so selection
         #: feedback is attached to what was actually asked.
@@ -2668,6 +2674,8 @@ class AppController:
         ticket = self.song_work_ticket(chosen)
         ticket["lyric_fingerprint"] = self.lyric_fingerprint(lyrics)
         ticket["voice_profile_id"] = profile.id
+        self._vocal_request += 1
+        request_id = self._vocal_request
 
         def work(ctx: JobContext) -> Tuple[VocalRender, np.ndarray]:
             ctx.progress(0.2, "Singing the line")
@@ -2692,6 +2700,15 @@ class AppController:
             # song we have left would otherwise be saved into the new
             # song's renders directory and then played to the creator as
             # theirs.
+            # Checked before the artifact is written and before anything
+            # is played.  A worker can finish while its completion waits in
+            # the queue for the interface timer, and in that window the
+            # creator can ask for another render; the one they asked for
+            # second is the one they are waiting to hear.
+            if request_id != self._vocal_request:
+                self.status("I did not keep that take: you asked for another "
+                            "one while it was rendering.")
+                return
             stale = self.stale_reason(ticket)
             if stale:
                 self.status(f"I did not keep that take: {stale}.")
@@ -3169,6 +3186,55 @@ class AppController:
 
     def rendered(self, kind: str) -> Optional[RenderedAudio]:
         return self._renders.get(kind)
+
+    def current_vocal_take(self):
+        """The vocal take to play, and which render holds its audio.
+
+        Newest wins.  The window asked for "vocal_master" first and
+        "vocal_preview" only if there was none, which is a preference by
+        kind rather than by recency: a master rendered an hour ago, to
+        different words and in a different voice, outranked a preview
+        rendered a moment before the creator pressed Play.
+        """
+        best_kind, best = None, None
+        for kind in ("vocal_master", "vocal_preview"):
+            rendered = self._renders.get(kind)
+            if rendered is None:
+                continue
+            if best is None or rendered.created_at > best.created_at:
+                best_kind, best = kind, rendered
+        if best_kind is None:
+            return None
+        wanted = "master" if best_kind == "vocal_master" else "preview"
+        take = next((t for t in reversed(self.project.vocal_renders)
+                     if t.kind == wanted), None)
+        return best_kind, take
+
+    def play_vocal(self) -> bool:
+        """Play the current vocal take, and say what is being played.
+
+        Which take, in whose voice, and a word when that is not the voice
+        now selected - a listening test on the wrong take is worse than no
+        listening test, because it looks like an answer.
+        """
+        current = self.current_vocal_take()
+        if current is None:
+            self.status("Render a vocal take first.")
+            return False
+        kind, take = current
+        singer = self.voices.get(take.voice_profile_id) if take else None
+        who = singer.name if singer else "an unknown voice"
+        what = "studio master" if kind == "vocal_master" else "preview"
+        note = f"Playing the {what}"
+        if take is not None:
+            note += f" v{take.version}"
+        note += f", sung by {who}."
+        chosen = self.current_voice()
+        if take is not None and singer is not None and singer.id != chosen.id:
+            note += (f" This take was made before you chose {chosen.name}; "
+                     f"render again to hear that voice.")
+        self.status(note)
+        return self.play_render(kind)
 
     def best_render(self) -> Optional[str]:
         for kind in ("full", "instrumental", "vocal_master", "vocal_preview", "tune"):

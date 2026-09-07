@@ -83,11 +83,10 @@ class VoicePanel(QWidget):
         self.changed.emit()
 
     def _play_vocal(self) -> None:
-        for kind in ("vocal_master", "vocal_preview"):
-            if self.app.rendered(kind) is not None:
-                self.app.play_render(kind)
-                return
-        self.app.status("Render a vocal take first.")
+        # The controller decides which take is current; the window asking
+        # for a master first is what let a stale one outrank a fresh
+        # preview.
+        self.app.play_vocal()
 
     def _create_profile(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(
