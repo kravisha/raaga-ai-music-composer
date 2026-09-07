@@ -152,3 +152,44 @@ def test_open_project_discards_old_inflight_input(app, monkeypatch):
         release.set()
     finish(app)
     assert app.project.raaga.selected == "Keeravani"
+
+
+def test_late_charanam_draft_preserves_new_pallavi_edit(app, monkeypatch):
+    pallavi = prepare_song(app)
+    app.generate_lyrics(seed=3, section_ids=[pallavi.id])
+    finish(app)
+    line = next(l for l in app.project.lyrics_version().lines
+                if l.section_id == pallavi.id and l.text)
+    charanam = next(s for s in app.project.melody().sections if s.name == "Charanam 1")
+    release = hold_lyrics(app, monkeypatch, charanam)
+    edited = "nenjam paadum puthiya varigal"
+    try:
+        app.edit_lyric_line(line.id, edited)
+    finally:
+        release.set()
+    finish(app)
+    current = [l.text for l in app.project.lyrics_version().lines if l.section_id == pallavi.id]
+    assert edited in current, "a late Charanam draft erased a newer edit to the unselected Pallavi"
+
+
+def test_late_vocal_cannot_land_in_a_replacement_song(app, monkeypatch):
+    import numpy as np
+    pallavi = prepare_song(app)
+    app.generate_lyrics(seed=3, section_ids=[pallavi.id])
+    finish(app)
+    started, release = threading.Event(), threading.Event()
+
+    def held(melody, lyrics, profile, direction, sample_rate, duration, **kwargs):
+        started.set()
+        assert release.wait(5)
+        return np.zeros(int(sample_rate * 0.2), dtype=np.float32)
+
+    monkeypatch.setattr(app.providers.voice, "render_vocal", held)
+    app.render_vocal("preview", autoplay=False)
+    assert started.wait(3)
+    try:
+        app.new_project("Replacement for vocal", write=False)
+    finally:
+        release.set()
+    finish(app)
+    assert not app.project.vocal_renders, "the previous song's vocal take was appended to the replacement song"
