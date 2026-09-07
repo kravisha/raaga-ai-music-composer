@@ -22,6 +22,7 @@ cycle so they hold at any tempo and in any nadai.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -101,24 +102,24 @@ _POINTERS: Tuple[Tuple[str, str, str], ...] = (
     ("khanda chapu", "Khanda Chapu", "you named it"),
     ("misra chapu", "Misra Chapu", "you named it"),
     ("tisra eka", "Tisra Eka", "you named it"),
-    ("chase", "Khanda Chapu", "a chase wants a short driving cycle"),
-    ("urgent", "Khanda Chapu", "urgency wants a short driving cycle"),
-    ("frantic", "Khanda Chapu", "frantic wants a short driving cycle"),
-    ("restless", "Khanda Chapu", "restlessness wants a short driving cycle"),
-    ("nervous", "Khanda Chapu", "nervousness wants a short driving cycle"),
+    ("chase", "Khanda Chapu", "a chase often wants a short driving cycle"),
+    ("urgent", "Khanda Chapu", "urgency often wants a short driving cycle"),
+    ("frantic", "Khanda Chapu", "frantic often wants a short driving cycle"),
+    ("restless", "Khanda Chapu", "restlessness often wants a short driving cycle"),
+    ("nervous", "Khanda Chapu", "nervousness often wants a short driving cycle"),
     ("waltz", "Tisra Eka", "a waltz is three beats to a cycle"),
-    ("lullaby", "Tisra Eka", "a lullaby sways in three"),
-    ("cradle", "Tisra Eka", "a cradle song sways in three"),
-    ("sway", "Tisra Eka", "swaying sits in three"),
-    ("folk", "Misra Chapu", "folk songs lilt in seven"),
+    ("lullaby", "Tisra Eka", "a lullaby often sways in three"),
+    ("cradle", "Tisra Eka", "a cradle song often sways in three"),
+    ("sway", "Tisra Eka", "swaying often sits in three"),
+    ("folk", "Misra Chapu", "folk songs often lilt in seven"),
     ("lilting", "Misra Chapu", "a lilt is the seven-beat cycle"),
-    ("playful", "Misra Chapu", "playfulness suits the asymmetric seven"),
-    ("skipping", "Misra Chapu", "skipping suits the asymmetric seven"),
+    ("playful", "Misra Chapu", "playfulness often suits the asymmetric seven"),
+    ("skipping", "Misra Chapu", "skipping often suits the asymmetric seven"),
     ("brisk", "Rupaka", "brisk and song-like is the six-beat cycle"),
-    ("light", "Rupaka", "a light song sits in six"),
-    ("marching", "Adi", "a march wants the even eight"),
-    ("stately", "Adi", "stateliness wants the even eight"),
-    ("devotional", "Adi", "devotional songs sit in the eight-beat cycle"),
+    ("light", "Rupaka", "a light song often sits in six"),
+    ("marching", "Adi", "a march often wants the even eight"),
+    ("stately", "Adi", "stateliness often wants the even eight"),
+    ("devotional", "Adi", "devotional songs often sit in the eight-beat cycle"),
 )
 
 
@@ -131,8 +132,13 @@ class TalaChoice:
     chosen_by_creator: bool = False
 
     def describe(self) -> str:
-        who = "you chose" if self.chosen_by_creator else "I chose"
-        return f"{who} {self.tala.describe()} - {self.reason}"
+        if self.chosen_by_creator:
+            return f"you chose {self.tala.describe()} - {self.reason}"
+        # Said as a suggestion, because it is one.  No lullaby has to be in
+        # three and no folk song in seven; these are starting points read
+        # off the words, and the picker beside this changes them.
+        return (f"I suggest {self.tala.describe()} - {self.reason}. "
+                f"Change it with the picker if it is not what you hear.")
 
 
 def suggest(brief, raaga=None) -> TalaChoice:
@@ -147,16 +153,71 @@ def suggest(brief, raaga=None) -> TalaChoice:
     if named is not None:
         return TalaChoice(named, "you asked for this cycle", True)
 
-    blob = " ".join(str(getattr(brief, field, "") or "") for field in
-                    ("feel", "mood", "situation", "notes", "song_type")).lower()
-    for phrase, tala_name, why in _POINTERS:
-        if phrase in blob:
-            found = find(tala_name)
-            if found is not None:
-                return TalaChoice(found, f"{why} (\"{phrase}\" in the brief)")
+    # Read the most specific statement first.  A named scene beats a mood
+    # adjective, and the default mood - "tense, upbeat, nervous, excited,
+    # hopeful" - is on every new brief, so scanning one merged blob meant
+    # every song in the application suggested the same driving cycle
+    # whatever it was about.
+    for field in ("situation", "feel", "notes", "song_type", "mood"):
+        blob = str(getattr(brief, field, "") or "").lower()
+        if not blob:
+            continue
+        choice = _read(blob, field)
+        if choice is not None:
+            return choice
     return TalaChoice(require(DEFAULT_TALA),
                       "nothing in the brief pointed elsewhere, and Adi is "
                       "where a Carnatic song starts")
+
+
+def _read(blob: str, field: str) -> Optional["TalaChoice"]:
+    """The first cycle this one piece of the brief points at, if any."""
+    for phrase, tala_name, why in _POINTERS:
+        if not _mentions(blob, phrase):
+            continue
+        if _rejected(blob, phrase):
+            # "a lullaby, not a chase" names a chase in order to rule it
+            # out.  Reading that as a request for one, and then citing it
+            # as the reason, is worse than not reading it at all.
+            continue
+        found = find(tala_name)
+        if found is not None:
+            where = "the situation" if field == "situation" else f"the {field}"
+            return TalaChoice(found, f"{why} (\"{phrase}\" in {where})")
+    return None
+
+
+#: Words that turn the phrase after them into something the creator does
+#: not want.  Kept short and near: "not" three words back is a rejection,
+#: "not" a sentence back is usually about something else.
+_NEGATORS = ("not", "no", "never", "without", "avoid", "instead of",
+             "rather than", "isn't", "is not", "anything but")
+
+
+def _mentions(blob: str, phrase: str) -> bool:
+    """Whole words only.
+
+    "chase" is inside "purchase", and a brief about a quiet purchase of a
+    gift was read as a chase.  The library's voice lookup already had this
+    fixed for the same reason - "male" must not match "Female - Warm" -
+    and I did not carry it across.
+    """
+    return re.search(rf"(?<![a-z]){re.escape(phrase)}(?![a-z])",
+                     blob) is not None
+
+
+def _rejected(blob: str, phrase: str) -> bool:
+    """Whether the brief names this idea only to turn it down."""
+    for match in re.finditer(rf"(?<![a-z]){re.escape(phrase)}(?![a-z])", blob):
+        before = blob[max(0, match.start() - 40):match.start()]
+        tail = re.split(r"[.;]", before)[-1]
+        words = re.findall(r"[a-z']+", tail)[-4:]
+        window = " ".join(words)
+        if any(re.search(rf"(?<![a-z]){re.escape(n)}(?![a-z])", window)
+               for n in _NEGATORS):
+            continue                    # this mention is a rejection
+        return False                    # some mention is a genuine request
+    return True
 
 
 def require(name: str) -> Tala:
