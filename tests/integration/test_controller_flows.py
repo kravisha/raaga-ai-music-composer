@@ -1901,3 +1901,148 @@ def test_a_locked_percussion_track_is_not_replaced(ready, settle):
     assert [r.meta.get("beat_version") for r in track.regions] == before, \
         "a locked percussion track was replaced"
     assert any("locked" in line.lower() for line in said), said
+
+
+def test_a_superseded_vocal_completion_neither_lands_nor_plays(ready, settle):
+    """Arya's timing case: a worker finishes, its completion waits in the
+    queue for the interface timer, and in that window the creator asks for
+    another render.  The ticket cannot tell the two apart - same song, same
+    words, same voice - so the older one still wrote its take and played
+    its follow-on.  What separates them is which was asked for last.
+    """
+    app = ready
+    melody, by_name = _sections(app)
+    pallavi = by_name.get("Pallavi")
+    assert pallavi is not None, list(by_name)
+    app.generate_lyrics(seed=3, section_ids=[pallavi.id])
+    settle()
+
+    asked = []
+    original_render = app.render
+    app.render = lambda **kw: asked.append(kw)
+
+    said = []
+    original_status = app.status
+    app.status = lambda text, *a, **k: (said.append(text),
+                                        original_status(text))[1]
+    takes_before = len(app.project.vocal_renders)
+    try:
+        # The first request is a section preview, which wants to play.
+        app.preview_section(pallavi.id, autoplay=True)
+        # Before its completion is drained, the creator asks for another.
+        app.render_vocal(kind="preview", autoplay=False)
+        settle()
+    finally:
+        app.render = original_render
+        app.status = original_status
+
+    played = [kw for kw in asked if kw.get("autoplay")]
+    assert not played, f"a superseded preview still played: {played}"
+    # Only one take is kept.  Which mechanism stopped the other - the job
+    # manager superseding it on the shared target, or the ownership check
+    # in its completion - depends on how far it got before the second
+    # request arrived.  The creator does not care which; what matters is
+    # that one render was asked for last and one take exists.
+    assert len(app.project.vocal_renders) == takes_before + 1, \
+        f"{len(app.project.vocal_renders) - takes_before} takes kept: {said}"
+
+
+def test_the_newest_vocal_request_is_still_kept_and_heard(ready, settle):
+    """The guard must not make the last request disappear along with the
+    superseded one."""
+    app = ready
+    melody, by_name = _sections(app)
+    pallavi = by_name["Pallavi"]
+    app.generate_lyrics(seed=3, section_ids=[pallavi.id])
+    settle()
+
+    asked = []
+    original = app.render
+    app.render = lambda **kw: asked.append(kw)
+    try:
+        app.preview_section(pallavi.id, autoplay=True)
+        settle()
+    finally:
+        app.render = original
+
+    assert any(kw.get("autoplay") for kw in asked), \
+        "the only preview asked for did not play"
+
+
+# --------------------------------------------------------------------------
+# Play Vocal plays the current take (Krish's fifth walkthrough item)
+# --------------------------------------------------------------------------
+def _cache_take(app, kind, when, voice_id="", version=1):
+    """Put a rendered take in the cache, as a render would have."""
+    import numpy as np
+    from raagacomposer.app import RenderedAudio
+    from raagacomposer.core.models import VocalRender
+    app._renders[kind] = RenderedAudio(
+        kind=kind, audio=np.zeros(1000, dtype=np.float32),
+        sample_rate=app.sample_rate, created_at=when)
+    app.project.vocal_renders.append(VocalRender(
+        version=version, kind="master" if kind == "vocal_master" else "preview",
+        voice_profile_id=voice_id or app.current_voice().id))
+
+
+def test_play_vocal_plays_the_newest_take_not_the_master(ready):
+    """A master rendered an hour ago outranked a preview rendered a moment
+    ago, because the window asked by kind rather than by recency."""
+    app = ready
+    app._renders.pop("vocal_master", None)
+    app._renders.pop("vocal_preview", None)
+    _cache_take(app, "vocal_master", when=1000.0, version=1)
+    _cache_take(app, "vocal_preview", when=2000.0, version=2)
+
+    played = []
+    original = app.play_render
+    app.play_render = lambda kind=None, **kw: played.append(kind) or True
+    try:
+        assert app.play_vocal() is True
+    finally:
+        app.play_render = original
+    assert played == ["vocal_preview"], played
+    assert "preview" in app.status_text.lower(), app.status_text
+
+
+def test_play_vocal_still_prefers_a_master_when_it_is_the_newer_one(ready):
+    app = ready
+    app._renders.pop("vocal_master", None)
+    app._renders.pop("vocal_preview", None)
+    _cache_take(app, "vocal_preview", when=1000.0, version=1)
+    _cache_take(app, "vocal_master", when=2000.0, version=2)
+
+    played = []
+    original = app.play_render
+    app.play_render = lambda kind=None, **kw: played.append(kind) or True
+    try:
+        app.play_vocal()
+    finally:
+        app.play_render = original
+    assert played == ["vocal_master"], played
+
+
+def test_play_vocal_says_when_the_take_is_in_another_voice(ready):
+    """A listening test on the wrong voice looks like an answer."""
+    app = ready
+    app._renders.pop("vocal_master", None)
+    app._renders.pop("vocal_preview", None)
+    other = next(v for v in app.voices.all() if v.id != app.current_voice().id)
+    _cache_take(app, "vocal_preview", when=2000.0, voice_id=other.id, version=3)
+
+    original = app.play_render
+    app.play_render = lambda kind=None, **kw: True
+    try:
+        app.play_vocal()
+    finally:
+        app.play_render = original
+    assert other.name in app.status_text, app.status_text
+    assert "render again" in app.status_text.lower(), app.status_text
+
+
+def test_play_vocal_with_nothing_rendered_says_so(ready):
+    app = ready
+    app._renders.pop("vocal_master", None)
+    app._renders.pop("vocal_preview", None)
+    assert app.play_vocal() is False
+    assert "render a vocal" in app.status_text.lower(), app.status_text
