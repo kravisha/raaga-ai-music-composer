@@ -208,8 +208,13 @@ class AppController:
         self._typed_queue: "queue.Queue[str]" = queue.Queue(maxsize=64)
         #: How many phrases were discarded because the queue was full.
         self._utterances_dropped = 0
-        #: The interpretation currently in flight, if any.
+        #: The interpretation currently in flight, if any, and which
+        #: request it belongs to.  A cancelled older request must not clear
+        #: a newer one's marker: doing so let a third request start beside
+        #: the second and supersede it on the same target, losing it.
         self._interpreting: Optional[str] = None
+        self._interpreting_id: int = 0
+        self._request_seq: int = 0
         self.last_suggestions: List = []
         #: The brief ``last_suggestions`` were made for, so selection
         #: feedback is attached to what was actually asked.
@@ -390,6 +395,45 @@ class AppController:
     # ==================================================================
     # project lifecycle
     # ==================================================================
+    def song_work_ticket(self, section_ids: Sequence[str] = ()) -> Dict:
+        """What a background job about the song has to still be true for.
+
+        Written down when the work is submitted and checked again when it
+        comes back.  Everything between those two moments belongs to the
+        creator: they can start another song, rewrite the tune, or lock the
+        very section being worked on, and a result that ignores any of that
+        overwrites a decision they made while waiting.
+
+        Every job that changes the song takes one of these.  Guarding them
+        one at a time is how the same fault reappeared three times in a day
+        - the interpretation path was fixed and the lyric path, written
+        afterwards, had the identical hole.
+        """
+        melody = self.project.melody()
+        return {"generation": self._project_generation,
+                "melody_version": melody.version if melody else None,
+                "sections": tuple(section_ids)}
+
+    def stale_reason(self, ticket: Dict) -> str:
+        """Why a finished job must not be committed, or "" when it may be."""
+        if ticket.get("generation") != self._project_generation:
+            return "the song changed while I was working"
+        melody = self.project.melody()
+        expected = ticket.get("melody_version")
+        if expected is not None:
+            if melody is None:
+                return "the tune it was written for is gone"
+            if melody.version != expected:
+                return "the tune changed while I was working"
+        known = {sec.id: sec for sec in (melody.sections if melody else ())}
+        for sid in ticket.get("sections") or ():
+            section = known.get(sid)
+            if section is None:
+                return "that section is no longer part of the tune"
+            if section.locked:
+                return f"{section.name} was locked while I was working"
+        return ""
+
     def _abandon_pending_requests(self, what: str) -> int:
         """Drop conversation still owed to a song we are leaving.
 
@@ -414,6 +458,7 @@ class AppController:
         if self._interpreting is not None:
             dropped += 1
         self._interpreting = None
+        self._interpreting_id = 0
         if dropped:
             self.status(f"{what}: {dropped} unfinished request(s) were about "
                         f"the previous song, so I have let them go.")
@@ -2252,6 +2297,7 @@ class AppController:
         version = max((l.version for l in self.project.lyrics), default=0) + 1
         previous = self.project.lyrics_version()
         llm = self.providers.llm
+        ticket = self.song_work_ticket(chosen)
         self.status("Writing lyrics to fit the tune...")
 
         def work(ctx: JobContext) -> LyricsVersion:
@@ -2262,6 +2308,10 @@ class AppController:
                 previous=previous, section_ids=chosen)
 
         def done(lyrics: LyricsVersion) -> None:
+            stale = self.stale_reason(ticket)
+            if stale:
+                self.status(f"I did not keep those lyrics: {stale}.")
+                return
             self.project.lyrics.append(lyrics)
             self.project.approved_lyrics = lyrics.version
             self.project.current_stage = Stage.VOICE
@@ -3051,6 +3101,7 @@ class AppController:
         # alongside the first.
         if not self.jobs.active_jobs():
             self._interpreting = None
+            self._interpreting_id = 0
         if dropped:
             self.status(f"Microphone off - {dropped} unheard phrase(s) discarded")
         else:
@@ -3147,8 +3198,17 @@ class AppController:
                         f"different song.")
             return
 
+        self._request_seq += 1
+        request_id = self._request_seq
         self._interpreting = text
+        self._interpreting_id = request_id
         self.status(f"Working on what you said: {text[:48]!r}")
+
+        def release() -> None:
+            """Give up the in-flight marker, but only if we still hold it."""
+            if self._interpreting_id == request_id:
+                self._interpreting = None
+                self._interpreting_id = 0
 
         def work(ctx: JobContext) -> Command:
             self._sync_context()
@@ -3157,7 +3217,7 @@ class AppController:
                              last_instrument=self.context.last_instrument)
 
         def done(cmd: Command) -> None:
-            self._interpreting = None
+            release()
             if generation != self._project_generation:
                 # The song changed while this was being interpreted.  It
                 # would apply against whatever is open now, which is not
@@ -3172,7 +3232,7 @@ class AppController:
                 self.error("voice", f"I could not act on that: {exc}")
 
         def failed(exc: Exception) -> None:
-            self._interpreting = None
+            release()
             log.warning("interpreting %r failed: %s", text[:60], exc)
             self.status(f"I could not work out what {text[:40]!r} meant.")
 
@@ -3183,7 +3243,7 @@ class AppController:
         # choice was simply never applied.
         self.jobs.submit(f"{origin}.interpret", origin, work,
                          on_done=done, on_error=failed,
-                         on_cancelled=lambda: setattr(self, "_interpreting", None),
+                         on_cancelled=release,
                          description=("Interpret what was typed" if origin == "typed"
                                       else "Interpret what was heard"))
 
