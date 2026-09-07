@@ -16,6 +16,7 @@ import pytest
 
 pytest.importorskip("PySide6")
 
+from PySide6.QtCore import Qt                         # noqa: E402
 from PySide6.QtWidgets import QApplication            # noqa: E402
 
 from raagacomposer.app import AppController           # noqa: E402
@@ -569,3 +570,84 @@ def test_the_tala_picker_offers_the_cycles_and_their_shape(window):
     panel._tala_chosen(index)
     assert window.app.project.brief.tala == "Misra Chapu"
     assert window.app.current_tala().aksharas == 7
+
+
+# --------------------------------------------------------------------------
+# Choosing a raaga the brief did not suggest (Arya, 2026-09-06 20:16:42)
+# --------------------------------------------------------------------------
+def test_a_raaga_the_brief_did_not_suggest_can_still_be_heard(window):
+    """Krish's case: the raaga he wants is not suggested, so pick it and listen.
+
+    The panel read the suggestions list first and fell back to the box only
+    when nothing was highlighted.  Applying a brief always highlights a row,
+    so from then on the box was unreachable - choosing a raaga there and
+    pressing "Hear the scale" played whichever suggestion was selected.
+    """
+    panel = window.raaga_panel
+    heard = []
+    panel.app.audition_raaga = lambda name, play=True: heard.append(name)
+
+    window.app.apply_brief_sync(mood="hopeful, romantic", feel="")
+    panel.suggest()
+    suggested = [panel.suggestions.item(i).data(Qt.UserRole)
+                 for i in range(panel.suggestions.count())]
+    assert suggested, "the brief suggested nothing, so the case is untestable"
+
+    # Whichever raaga the ranking left out.  Naming one outright makes the
+    # test depend on how the brief happens to rank today - the first version
+    # asserted Keeravani was absent, and it was suggested first.
+    unsuggested = next(n for n in window.app.raagas.names()
+                       if n not in suggested)
+
+    panel.suggestions.setCurrentRow(0)          # as applying a brief leaves it
+    panel.all_raagas.setCurrentText(unsuggested)
+    panel.all_raagas.activated.emit(panel.all_raagas.currentIndex())
+
+    panel.audition_selected()
+    assert heard == [unsuggested], \
+        f"heard {heard} - the highlighted suggestion won over the creator's pick"
+
+    heard.clear()
+    panel.preview_chosen()
+    assert heard == [unsuggested]
+
+
+def test_the_scale_preview_never_plays_a_suggestion(window):
+    """`Play this scale` always means the box, whatever is highlighted."""
+    panel = window.raaga_panel
+    heard = []
+    panel.app.audition_raaga = lambda name, play=True: heard.append(name)
+
+    window.app.apply_brief_sync(mood="hopeful, romantic", feel="")
+    panel.refresh()
+    panel.suggestions.setCurrentRow(0)
+    panel._chose("suggestions")                 # creator last touched the list
+    panel.all_raagas.setCurrentText("Keeravani")
+
+    panel.preview_chosen()
+    assert heard == ["Keeravani"]
+
+
+def test_clicking_a_suggestion_still_wins_afterwards(window):
+    """The fix must not strand the suggestions list."""
+    panel = window.raaga_panel
+    window.app.apply_brief_sync(mood="hopeful, romantic", feel="")
+    panel.suggest()
+    assert panel.suggestions.count(), "nothing was suggested to click"
+
+    panel.all_raagas.setCurrentText("Keeravani")
+    panel.all_raagas.activated.emit(panel.all_raagas.currentIndex())
+    assert panel._current_name() == "Keeravani"
+
+    panel.suggestions.setCurrentRow(0)
+    panel.suggestions.itemClicked.emit(panel.suggestions.item(0))
+    assert panel._current_name() == panel.suggestions.item(0).data(Qt.UserRole)
+
+
+def test_every_library_raaga_is_offered(window):
+    """Ninety-three raagas, not just the ones a brief happened to rank."""
+    panel = window.raaga_panel
+    offered = {panel.all_raagas.itemText(i)
+               for i in range(panel.all_raagas.count())}
+    assert "Keeravani" in offered
+    assert offered == set(window.app.raagas.names())
