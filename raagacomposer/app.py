@@ -3098,10 +3098,16 @@ class AppController:
         sr = self.sample_rate
         total = max(melody.duration, self.project.duration) + 0.5
         arrangement = self.project.arrangement()
-        vocal_take = (self.project.vocal_master or self.project.latest_vocal)
+        # The same selection Play Vocal uses.  Fixing the button and
+        # leaving the mix reading "master first, preview otherwise" meant
+        # the creator could hear the newer take on its own and the older
+        # one inside the song - the wrong voice or the wrong words, in the
+        # thing they were actually judging.
+        current = self.current_vocal_take()
+        vocal_take = current[1] if current else self.project.latest_vocal
         vocal_audio = None
-        if kind in ("full", "vocal_only"):
-            cached = self._renders.get("vocal_master") or self._renders.get("vocal_preview")
+        if kind in ("full", "vocal_only") and current is not None:
+            cached = self._renders.get(current[0])
             if cached is not None:
                 vocal_audio = cached.audio
         raaga = self.require_raaga()
@@ -3238,8 +3244,14 @@ class AppController:
         if take is not None and singer is not None and singer.id != chosen.id:
             note += (f" This take was made before you chose {chosen.name}; "
                      f"render again to hear that voice.")
-        self.status(note)
-        return self.play_render(kind)
+        # Said after playback starts, not before: play_render writes its own
+        # line, so setting this first meant the creator saw "Playing vocal
+        # preview" and never learned which take or whose voice.  A failure
+        # keeps play_render's message, which is the one that matters then.
+        started = self.play_render(kind)
+        if started:
+            self.status(note)
+        return started
 
     def best_render(self) -> Optional[str]:
         for kind in ("full", "instrumental", "vocal_master", "vocal_preview", "tune"):

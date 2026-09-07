@@ -2106,3 +2106,77 @@ def test_add_beat_is_one_undo_step(ready, settle):
         f"one Undo left beat v{app.project.beat().version} selected"
     assert _rhythm_versions(app) == first_in_mix, \
         "the selected beat and the one in the mix disagree after Undo"
+
+
+def test_the_full_mix_sings_the_take_play_vocal_would_play(ready, settle):
+    """Arya: fixing the button and leaving the mix reading "master first".
+
+    The creator could hear the newer take on its own and the older one
+    inside the song - the wrong voice or the wrong words, in the thing they
+    were actually judging.
+    """
+    import numpy as np
+    app = ready
+    app._renders.pop("vocal_master", None)
+    app._renders.pop("vocal_preview", None)
+    _cache_take(app, "vocal_master", when=1000.0, version=1)
+    _cache_take(app, "vocal_preview", when=2000.0, version=2)
+    # Distinguishable audio, so the assertion is about which one arrived.
+    app._renders["vocal_master"].audio = np.full(1000, 0.25, dtype=np.float32)
+    app._renders["vocal_preview"].audio = np.full(1000, 0.75, dtype=np.float32)
+
+    seen = {}
+    from raagacomposer.music import mixer
+    original = mixer.mix
+
+    def watch(arrangement, vocal, *a, **kw):
+        seen["vocal"] = None if vocal is None else float(np.mean(vocal))
+        return original(arrangement, vocal, *a, **kw)
+
+    mixer.mix = watch
+    try:
+        app.render(kind="full", autoplay=False)
+        settle()
+    finally:
+        mixer.mix = original
+
+    assert "vocal" in seen, "the mixer was never asked for a full mix"
+    assert seen["vocal"] is not None, "the mix went out with no vocal at all"
+    assert abs(seen["vocal"] - 0.75) < 1e-3, \
+        f"the mix used the older master (mean {seen['vocal']:.2f})"
+
+
+def test_playing_a_take_leaves_its_name_on_screen(ready):
+    """play_render writes its own line, so saying which take it was before
+    starting playback meant the creator only ever saw "Playing vocal
+    preview" and never learned whose voice it was."""
+    app = ready
+    app._renders.pop("vocal_master", None)
+    app._renders.pop("vocal_preview", None)
+    other = next(v for v in app.voices.all() if v.id != app.current_voice().id)
+    _cache_take(app, "vocal_preview", when=2000.0, voice_id=other.id, version=4)
+
+    assert app.play_vocal() is True
+    assert other.name in app.status_text, app.status_text
+    assert "render again" in app.status_text.lower(), app.status_text
+
+
+def test_a_playback_failure_keeps_its_own_message(ready):
+    """When playback fails, the reason it failed is the useful line."""
+    app = ready
+    app._renders.pop("vocal_master", None)
+    app._renders.pop("vocal_preview", None)
+    _cache_take(app, "vocal_preview", when=2000.0, version=5)
+
+    original = app.play_render
+
+    def refuse(kind=None, **kw):
+        app.status("The audio device is not available.")
+        return False
+
+    app.play_render = refuse
+    try:
+        assert app.play_vocal() is False
+    finally:
+        app.play_render = original
+    assert "device" in app.status_text.lower(), app.status_text

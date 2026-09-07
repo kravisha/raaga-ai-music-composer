@@ -113,7 +113,31 @@ def test_a_silent_recording_is_rejected_clearly(tmp_path):
     ("", "", "a"),
 ])
 def test_syllables_split_into_consonant_and_vowel(syllable, consonant, vowel):
-    assert split_syllable(syllable) == (consonant, vowel)
+    assert split_syllable(syllable)[:2] == (consonant, vowel)
+
+
+@pytest.mark.parametrize("syllable,coda", [
+    ("vaan", "n"),
+    ("kal", "l"),
+    ("nee", ""),
+    ("thaayk", "yk"),
+    ("iravu", ""),
+    ("", ""),
+])
+def test_a_syllable_keeps_the_consonant_that_closes_it(syllable, coda):
+    """The coda used to be discarded, so "vaan" was sung "vaa".
+
+    A large part of what makes a word recognisable is at its end.
+    """
+    assert split_syllable(syllable)[2] == coda
+
+
+def test_a_second_vowel_is_not_taken_as_a_coda():
+    """"iravu" is more than one syllable written into one slot.  Guessing
+    where to split it would put sounds on notes nobody wrote them for."""
+    onset, vowel, coda = split_syllable("iravu")
+    assert (onset, vowel) == ("", "i")
+    assert coda == ""
 
 
 def test_segments_skip_the_instrumental_sections(melody, lyrics):
@@ -358,3 +382,67 @@ def test_the_tune_is_hummed_with_a_closed_mouth(ready_melody=None):
                                       vowel="hum")
     assert segments and all(s.vowel == "hum" for s in segments)
     assert all(s.consonant == "" for s in segments), "a hum has no consonants"
+
+
+# --------------------------------------------------------------------------
+# A syllable is closed, not left open (Krish's fifth walkthrough item)
+# --------------------------------------------------------------------------
+def _one_note(coda, vowel="aa", sr=44100):
+    from raagacomposer.core.models import VocalDirection
+    from raagacomposer.voice.profiles import BUILTIN
+    from raagacomposer.voice.renderer import SungSegment, render
+    seg = SungSegment(start=0.2, end=0.9, midi=60, syllable="x",
+                      vowel=vowel, consonant="v", coda=coda)
+    return render([seg], BUILTIN[2], VocalDirection(), sr,
+                  total_seconds=1.2, seed=3)
+
+
+def test_a_closing_consonant_reaches_the_audio():
+    """The coda was discarded, so "vaan" was sung "vaa"."""
+    import numpy as np
+    assert not np.allclose(_one_note("n"), _one_note("")), \
+        "the closing consonant made no difference to the sound"
+
+
+def test_different_closing_consonants_sound_different():
+    """A coda that renders identically whatever it is has not been read."""
+    import numpy as np
+    nasal, fricative = _one_note("n"), _one_note("s")
+    assert not np.allclose(nasal, fricative)
+
+
+def test_a_fricative_close_is_brighter_than_a_nasal_one():
+    """Not a claim about intelligibility - only that the kinds differ in
+    the direction they should.  Both are measured against each other
+    rather than against the vowel: replacing tonal energy with filtered
+    noise raises a spectral centroid whatever the consonant is."""
+    import numpy as np
+    sr = 44100
+
+    def centroid(a, lo=0.83, hi=0.90):
+        w = a[int(lo * sr):int(hi * sr)] * np.hanning(int((hi - lo) * sr))
+        spec = np.abs(np.fft.rfft(w))
+        freqs = np.fft.rfftfreq(len(w), 1 / sr)
+        return float((spec * freqs).sum() / max(spec.sum(), 1e-12))
+
+    assert centroid(_one_note("s")) > centroid(_one_note("n")) * 1.5
+
+
+def test_a_coda_stays_inside_its_own_note():
+    """A closing consonant must not arrive on top of the next vowel."""
+    import numpy as np
+    from raagacomposer.core.models import VocalDirection
+    from raagacomposer.voice.profiles import BUILTIN
+    from raagacomposer.voice.renderer import SungSegment, render
+    sr = 44100
+    pair = [SungSegment(start=0.2, end=0.5, midi=60, vowel="aa", coda="s"),
+            SungSegment(start=0.5, end=0.8, midi=62, vowel="ee")]
+    plain = [SungSegment(start=0.2, end=0.5, midi=60, vowel="aa"),
+             SungSegment(start=0.5, end=0.8, midi=62, vowel="ee")]
+    with_coda = render(pair, BUILTIN[2], VocalDirection(), sr,
+                       total_seconds=1.0, seed=3)
+    without = render(plain, BUILTIN[2], VocalDirection(), sr,
+                     total_seconds=1.0, seed=3)
+    after = np.abs(with_coda[int(0.52 * sr):int(0.78 * sr)]
+                   - without[int(0.52 * sr):int(0.78 * sr)]).max()
+    assert after < 1e-6, f"the coda bled into the next note by {after:.6f}"
