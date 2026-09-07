@@ -93,6 +93,72 @@ def find(name: str) -> Optional[Tala]:
     return None
 
 
+#: Words that point at a cycle, and why.  Each cycle is chosen for what
+#: it does rather than by frequency: five beats drive, seven lilt, three
+#: sway, six move briskly.  Longest phrase first, so "slow waltz" is read
+#: as a waltz rather than as slow.
+_POINTERS: Tuple[Tuple[str, str, str], ...] = (
+    ("khanda chapu", "Khanda Chapu", "you named it"),
+    ("misra chapu", "Misra Chapu", "you named it"),
+    ("tisra eka", "Tisra Eka", "you named it"),
+    ("chase", "Khanda Chapu", "a chase wants a short driving cycle"),
+    ("urgent", "Khanda Chapu", "urgency wants a short driving cycle"),
+    ("frantic", "Khanda Chapu", "frantic wants a short driving cycle"),
+    ("restless", "Khanda Chapu", "restlessness wants a short driving cycle"),
+    ("nervous", "Khanda Chapu", "nervousness wants a short driving cycle"),
+    ("waltz", "Tisra Eka", "a waltz is three beats to a cycle"),
+    ("lullaby", "Tisra Eka", "a lullaby sways in three"),
+    ("cradle", "Tisra Eka", "a cradle song sways in three"),
+    ("sway", "Tisra Eka", "swaying sits in three"),
+    ("folk", "Misra Chapu", "folk songs lilt in seven"),
+    ("lilting", "Misra Chapu", "a lilt is the seven-beat cycle"),
+    ("playful", "Misra Chapu", "playfulness suits the asymmetric seven"),
+    ("skipping", "Misra Chapu", "skipping suits the asymmetric seven"),
+    ("brisk", "Rupaka", "brisk and song-like is the six-beat cycle"),
+    ("light", "Rupaka", "a light song sits in six"),
+    ("marching", "Adi", "a march wants the even eight"),
+    ("stately", "Adi", "stateliness wants the even eight"),
+    ("devotional", "Adi", "devotional songs sit in the eight-beat cycle"),
+)
+
+
+@dataclass(frozen=True)
+class TalaChoice:
+    """A cycle, and why it was chosen - so the creator can disagree."""
+
+    tala: Tala
+    reason: str
+    chosen_by_creator: bool = False
+
+    def describe(self) -> str:
+        who = "you chose" if self.chosen_by_creator else "I chose"
+        return f"{who} {self.tala.describe()} - {self.reason}"
+
+
+def suggest(brief, raaga=None) -> TalaChoice:
+    """Pick a cycle for a new tune, and say why.
+
+    A default is not a choice.  Every new tune used to be composed in Adi
+    because Adi is what ``require`` falls back to, and nothing told the
+    creator that a decision had been made on their behalf or offered them
+    another.  This reads the brief the way infer_tempo reads it for speed.
+    """
+    named = find(getattr(brief, "tala", ""))
+    if named is not None:
+        return TalaChoice(named, "you asked for this cycle", True)
+
+    blob = " ".join(str(getattr(brief, field, "") or "") for field in
+                    ("feel", "mood", "situation", "notes", "song_type")).lower()
+    for phrase, tala_name, why in _POINTERS:
+        if phrase in blob:
+            found = find(tala_name)
+            if found is not None:
+                return TalaChoice(found, f"{why} (\"{phrase}\" in the brief)")
+    return TalaChoice(require(DEFAULT_TALA),
+                      "nothing in the brief pointed elsewhere, and Adi is "
+                      "where a Carnatic song starts")
+
+
 def require(name: str) -> Tala:
     tala = find(name) or find(DEFAULT_TALA)
     assert tala is not None                     # DEFAULT_TALA is in TALAS

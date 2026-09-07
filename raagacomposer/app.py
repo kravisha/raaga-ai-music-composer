@@ -1557,13 +1557,31 @@ class AppController:
         """
         from .music import tala as tala_module
 
+        return self.tala_choice().tala
+
+    def tala_choice(self):
+        """The cycle, and why - so the window can show it and be argued with.
+
+        Order matters and is the same as everywhere else: what the creator
+        asked for, then what the song is already in, then what the brief
+        suggests.  Adding a tala to an existing tune keeps that tune's
+        timing: the beat is written against this cycle, and the notes are
+        not touched.
+        """
+        from .music import tala as tala_module
+
         named = tala_module.find(getattr(self.project.brief, "tala", ""))
         if named is not None:
-            return named
+            return tala_module.TalaChoice(named, "you asked for this cycle",
+                                          True)
         melody = self.project.melody()
         if melody is not None:
-            return tala_module.for_beats(melody.beats_per_cycle)
-        return tala_module.require(tala_module.DEFAULT_TALA)
+            existing = tala_module.for_beats(melody.beats_per_cycle)
+            return tala_module.TalaChoice(
+                existing, "the tune is already in this cycle, and adding a "
+                          "beat does not rewrite it")
+        raaga = self.raagas.get(self.project.raaga.selected or "")
+        return tala_module.suggest(self.project.brief, raaga)
 
     def generate_beat(self, density: str = "", seed: Optional[int] = None,
                       autoplay: bool = False) -> None:
