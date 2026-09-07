@@ -1817,3 +1817,87 @@ def test_opening_a_song_does_not_inherit_the_last_ones_judgement(ready, settle,
     app.open_project(where)
     assert app.last_evaluation is None, \
         "opening a song brought the other song's evaluation with it"
+
+
+# --------------------------------------------------------------------------
+# Adding a tala puts percussion on the tune (Arya, 2026-09-07 18:15)
+# --------------------------------------------------------------------------
+def _rhythm_versions(app):
+    arrangement = app.project.arrangement()
+    if arrangement is None:
+        return None
+    return [r.meta.get("beat_version") for t in arrangement.tracks
+            if t.role == "rhythm" for r in t.regions]
+
+
+def test_a_beat_reaches_the_song_without_finding_auto_arrange(ready, settle):
+    """Krish asked for percussion on the tune, and got a beat that only
+    played on its own: the full mix takes its parts from the arrangement,
+    and there was none, so the beat was simply absent from the song."""
+    app = ready
+    app.generate_beat()
+    settle()
+
+    versions = _rhythm_versions(app)
+    assert versions, "the beat never became part of the song"
+    assert versions == [str(app.project.beat().version)]
+
+
+def test_only_one_percussion_layer_after_auto_arrange(ready, settle):
+    """Two code paths built a rhythm track, so the song ended up with two
+    percussionists playing the same part."""
+    app = ready
+    app.generate_beat()
+    settle()
+    app.auto_arrange()
+    settle()
+
+    versions = _rhythm_versions(app)
+    assert len(versions) == 1, f"{len(versions)} rhythm regions: {versions}"
+
+
+def test_a_newer_beat_replaces_the_one_in_the_song(ready, settle):
+    """The selected beat was v2 while the song still played v1."""
+    app = ready
+    app.generate_beat()
+    settle()
+    app.auto_arrange()
+    settle()
+    others = [(t.instrument, t.role, t.locked, len(t.regions))
+              for t in app.project.arrangement().tracks if t.role != "rhythm"]
+
+    app.beat_variation(strength="busier")
+    settle()
+
+    selected = app.project.beat()
+    assert _rhythm_versions(app) == [str(selected.version)], \
+        "the song still plays an older beat than the selected one"
+    after = [(t.instrument, t.role, t.locked, len(t.regions))
+             for t in app.project.arrangement().tracks if t.role != "rhythm"]
+    assert after == others, "changing the beat rebuilt the accompaniment"
+
+
+def test_a_locked_percussion_track_is_not_replaced(ready, settle):
+    """A lock is a decision, and a new beat is not a reason to undo it."""
+    app = ready
+    app.generate_beat()
+    settle()
+    track = next(t for t in app.project.arrangement().tracks
+                 if t.role == "rhythm")
+    track.locked = True
+    before = [r.meta.get("beat_version") for r in track.regions]
+
+    # status_text holds only the latest line, and rendering the beat speaks
+    # after this does, so what was said is collected rather than sampled.
+    said = []
+    original = app.status
+    app.status = lambda text, *a, **k: (said.append(text), original(text))[1]
+    try:
+        app.beat_variation(strength="busier")
+        settle()
+    finally:
+        app.status = original
+
+    assert [r.meta.get("beat_version") for r in track.regions] == before, \
+        "a locked percussion track was replaced"
+    assert any("locked" in line.lower() for line in said), said

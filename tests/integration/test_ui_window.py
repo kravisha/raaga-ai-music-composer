@@ -893,7 +893,10 @@ def test_the_chosen_cycle_and_its_reason_are_on_screen(window):
     note = window.tune.tala_note.text()
     assert "Khanda Chapu" in note, note
     assert "chase" in note, "the reason does not say what decided it"
-    assert note.startswith("I chose"), "an automatic choice must own itself"
+    # Stated as a suggestion, because that is what it is: no lullaby has to
+    # be in three.  It still owns the choice and says what decided it.
+    assert note.startswith("I suggest"), note
+    assert "Change it with the picker" in note, "no way offered to disagree"
 
     # And it is overridable: choosing one makes it the creator's.
     index = next(i for i in range(window.tune.tala.count())

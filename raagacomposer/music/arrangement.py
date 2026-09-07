@@ -245,6 +245,53 @@ def _drone_part(melody: MelodyVersion, raaga: Raaga, req: PartRequest,
     return out
 
 
+def beat_track(beat, percussion, first_sung: float, total: float) -> Track:
+    """One place that turns a beat into a rhythm track.
+
+    Both the arranger and "apply this beat to the song" build it, and they
+    were two different pieces of code doing the same thing until the second
+    one existed - which is how a song ended up arranged around beat v1
+    while v2 was the selected one.
+    """
+    strokes = [n for n in beat.notes if n.start >= first_sung]
+    track = Track(instrument=percussion.key, role="rhythm",
+                  display_name=percussion.name,
+                  gain=percussion.default_gain,
+                  pan=percussion.default_pan, created_by="beat")
+    track.regions = [Region(start=first_sung, end=total, role="rhythm",
+                            notes=strokes, seed=beat.seed,
+                            generated_by="beat",
+                            meta={"tala": beat.tala,
+                                  "beat_version": str(beat.version)})]
+    return track
+
+
+def apply_beat(arrangement: ArrangementVersion, beat, percussion,
+               first_sung: float, total: float) -> str:
+    """Put *beat* into the arrangement's rhythm layer, and touch nothing else.
+
+    Returns what happened, for the creator to read.  A locked rhythm track
+    is a decision, so it is left alone and said so rather than quietly
+    replaced; every other track keeps its regions, its gain and its lock,
+    because changing the beat is not a reason to rebuild the accompaniment.
+    """
+    existing = [t for t in arrangement.tracks
+                if t.role == "rhythm" and t.created_by == "beat"]
+    if any(t.locked for t in existing):
+        return "the percussion track is locked, so the new beat was not applied"
+    fresh = beat_track(beat, percussion, first_sung, total)
+    if existing:
+        keep = existing[0]
+        keep.instrument = fresh.instrument
+        keep.display_name = fresh.display_name
+        keep.regions = fresh.regions
+        for spare in existing[1:]:
+            arrangement.tracks.remove(spare)
+        return f"the percussion now plays beat v{beat.version}"
+    arrangement.tracks.append(fresh)
+    return f"added percussion playing beat v{beat.version}"
+
+
 def _rhythm_part(melody: MelodyVersion, raaga: Raaga, req: PartRequest,
                  inst: Instrument, low: int, high: int) -> List[Note]:
     beat = beat_seconds(melody.tempo_bpm)
@@ -589,19 +636,13 @@ def auto_arrange(melody: MelodyVersion, raaga: Raaga, brief, seed: int = 5,
             # A beat the creator made is the beat.  Generating another one
             # here would silently replace it - two rhythm parts from one
             # song, and only one of them the one they heard and approved.
-            strokes = [n for n in beat.notes if n.start >= first_sung]
-            track = Track(instrument=percussion.key, role="rhythm",
-                          display_name=percussion.name,
-                          gain=percussion.default_gain,
-                          pan=percussion.default_pan, created_by="beat")
-            track.regions = [Region(start=first_sung, end=total, role="rhythm",
-                                    notes=strokes, seed=beat.seed,
-                                    generated_by="beat",
-                                    meta={"tala": beat.tala,
-                                          "beat_version": str(beat.version)})]
-            arrangement.tracks.append(track)
-            log.info("arranged the creator's beat v%d (%s, %d strokes)",
-                     beat.version, beat.tala, len(strokes))
+            # apply_beat rather than append: a rhythm track carried over
+            # from the previous arrangement is the same layer, and adding
+            # beside it gave the song two percussionists playing the same
+            # part.  One layer, replaced.
+            apply_beat(arrangement, beat, percussion, first_sung, total)
+            log.info("arranged the creator's beat v%d (%s)",
+                     beat.version, beat.tala)
         else:
             add_instrument(arrangement, melody, raaga, percussion.key,
                            first_sung, total, role="rhythm", intensity=0.6,

@@ -1678,7 +1678,42 @@ class AppController:
         self._changed("beat.generate", f"{what} v{version.version}",
                       undoable=True)
         self.status(f"{what} v{version.version}: {version.summary()}")
+        self._beat_into_the_song(version)
         self.render_beat(autoplay=autoplay)
+
+    def _beat_into_the_song(self, version) -> None:
+        """Make the beat part of what the song plays.
+
+        Krish asked that adding a tala put percussion on the tune.  It laid
+        the beat down and stopped: the full mix takes its parts from the
+        arrangement, so a song with no arrangement mixed without the beat,
+        and a song with one kept playing whichever beat happened to be in
+        it when Auto Arrange last ran - v1, while v2 was selected.  Neither
+        is discoverable; both look like the beat simply not working.
+
+        Only the rhythm layer is touched.  Changing the beat is not a
+        reason to rebuild the accompaniment or to overwrite anything the
+        creator has locked.
+        """
+        melody = self.project.melody()
+        if melody is None or not version.notes:
+            return
+        arrangement = self.project.arrangement()
+        if arrangement is None:
+            # Nothing to add to yet.  A rhythm layer on its own is what was
+            # asked for; inventing the rest of an arrangement is not.
+            arrangement = ArrangementVersion(
+                version=max((a.version for a in self.project.arrangements),
+                            default=0) + 1,
+                label="Percussion")
+            self.project.arrangements.append(arrangement)
+        first_sung = next((s.start for s in melody.sections
+                           if not s.kind.instrumental), 0.0)
+        total = max(melody.duration, self.project.duration)
+        said = arranger.apply_beat(arrangement, version,
+                                   self.beat_instrument(), first_sung, total)
+        self.status(said)
+        self._changed("arrange.beat", said)
 
     def render_beat(self, autoplay: bool = False) -> None:
         """Sound the beat on its own, so it can be judged on its own."""
