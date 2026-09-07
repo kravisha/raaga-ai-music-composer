@@ -197,6 +197,10 @@ class AppController:
         # with the backlog still growing.  A queue fed by the room has to be
         # allowed to drop, and to say that it dropped.
         self._utterance_queue: "queue.Queue[str]" = queue.Queue(maxsize=8)
+        #: Which song is open.  Bumped whenever the project is replaced, so
+        #: anything queued or in flight can tell that the song it was asked
+        #: about is not the song that would receive it.
+        self._project_generation = 0
         #: Typed instructions, which are deliberate and must not be dropped.
         #: Overheard speech may be discarded when the room outruns the
         #: interpreter; something the creator sat and typed may not, and it
@@ -386,6 +390,35 @@ class AppController:
     # ==================================================================
     # project lifecycle
     # ==================================================================
+    def _abandon_pending_requests(self, what: str) -> int:
+        """Drop conversation still owed to a song we are leaving.
+
+        Applying it to the new song would edit a song nobody was talking
+        about.  This is the same fault as a ranking outliving its project,
+        which is why the answer is the same one: the request carries the
+        generation it was made in, and a generation that has moved on is a
+        request that no longer has a subject.
+        """
+        self._project_generation += 1
+        dropped = 0
+        for q in (self._typed_queue, self._utterance_queue):
+            while True:
+                try:
+                    q.get_nowait()
+                except queue.Empty:
+                    break
+                dropped += 1
+        # Whatever is already interpreting belongs to the previous song too.
+        self.jobs.cancel_target("voice")
+        self.jobs.cancel_target("typed")
+        if self._interpreting is not None:
+            dropped += 1
+        self._interpreting = None
+        if dropped:
+            self.status(f"{what}: {dropped} unfinished request(s) were about "
+                        f"the previous song, so I have let them go.")
+        return dropped
+
     def _clear_ranking(self) -> None:
         """Forget the suggestions and the brief they were ranked for.
 
@@ -412,6 +445,7 @@ class AppController:
         self.project.voice_profile_id = self.voices.default().id
         self.selection = None
         self._clear_ranking()
+        self._abandon_pending_requests("New song")
         self.dirty = not write
         self.undo.reset(self.project, "new project")
         self.context = ConversationContext()
@@ -430,6 +464,7 @@ class AppController:
             self.project.voice_profile_id = self.voices.default().id
         self.selection = None
         self._clear_ranking()
+        self._abandon_pending_requests("Opened another song")
         self.dirty = False
         self.undo.reset(self.project, "opened")
         self.context = ConversationContext()
@@ -3010,7 +3045,12 @@ class AppController:
         self.context.listening = False
         dropped = self._clear_utterances()
         self.jobs.cancel_target("voice")
-        self._interpreting = None
+        # Only what was heard.  A typed instruction interpreting right now
+        # stays, and so does the flag that says something is in flight -
+        # clearing it unconditionally would let a second phrase start
+        # alongside the first.
+        if not self.jobs.active_jobs():
+            self._interpreting = None
         if dropped:
             self.status(f"Microphone off - {dropped} unheard phrase(s) discarded")
         else:
@@ -3031,6 +3071,7 @@ class AppController:
             except queue.Empty:
                 return discarded
             discarded += 1
+
 
     def toggle_listening(self) -> bool:
         return self.stop_listening() if self.context.listening else self.start_listening()
@@ -3059,7 +3100,7 @@ class AppController:
         """
         self.context.partial = ""
         try:
-            self._utterance_queue.put_nowait(text)
+            self._utterance_queue.put_nowait((text, self._project_generation))
         except queue.Full:
             # Never block here: this runs on the capture thread, and making
             # the microphone wait for the interpreter is how the backlog
@@ -3091,13 +3132,20 @@ class AppController:
             return                      # one in flight is enough
         # Typed first.  A deliberate instruction should not queue behind
         # whatever the room happened to say while it was being typed.
+        origin = "typed"
         try:
-            text = self._typed_queue.get_nowait()
+            text, generation = self._typed_queue.get_nowait()
         except queue.Empty:
+            origin = "voice"
             try:
-                text = self._utterance_queue.get_nowait()
+                text, generation = self._utterance_queue.get_nowait()
             except queue.Empty:
                 return
+        if generation != self._project_generation:
+            # Queued about a song that is no longer open.
+            self.status(f"Not acting on {text[:40]!r}: it was about a "
+                        f"different song.")
+            return
 
         self._interpreting = text
         self.status(f"Working on what you said: {text[:48]!r}")
@@ -3110,6 +3158,13 @@ class AppController:
 
         def done(cmd: Command) -> None:
             self._interpreting = None
+            if generation != self._project_generation:
+                # The song changed while this was being interpreted.  It
+                # would apply against whatever is open now, which is not
+                # what was being talked about.
+                self.status(f"Not acting on {text[:40]!r}: the song changed "
+                            f"while I was working it out.")
+                return
             try:
                 self.apply_utterance(text, cmd)
             except Exception as exc:  # noqa: BLE001
@@ -3121,10 +3176,16 @@ class AppController:
             log.warning("interpreting %r failed: %s", text[:60], exc)
             self.status(f"I could not work out what {text[:40]!r} meant.")
 
-        self.jobs.submit("voice.interpret", "voice", work,
+        # Typed instructions run under their own target.  Stop Listening
+        # cancels the microphone's work, and a deliberate instruction that
+        # happened to be interpreting at that moment is not the
+        # microphone's work - it was cancelled with it, and the creator's
+        # choice was simply never applied.
+        self.jobs.submit(f"{origin}.interpret", origin, work,
                          on_done=done, on_error=failed,
                          on_cancelled=lambda: setattr(self, "_interpreting", None),
-                         description="Interpret what was heard")
+                         description=("Interpret what was typed" if origin == "typed"
+                                      else "Interpret what was heard"))
 
     def say(self, text: str) -> bool:
         """Take one typed instruction, and interpret it off this thread.
@@ -3143,7 +3204,7 @@ class AppController:
         if not text:
             return False
         try:
-            self._typed_queue.put_nowait(text)
+            self._typed_queue.put_nowait((text, self._project_generation))
         except queue.Full:
             self.status("I am still working through what you have already "
                         "said. Give me a moment.")
