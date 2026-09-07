@@ -1516,3 +1516,104 @@ def test_stop_listening_does_not_discard_what_was_typed(ready):
     discarded = app._clear_utterances()
     assert discarded == 1, discarded
     assert app._typed_queue.qsize() == 1, "the typed instruction was discarded"
+
+
+# --------------------------------------------------------------------------
+# Selected-section song production (Krish's priority before Jam, 12:48)
+# --------------------------------------------------------------------------
+def _sections(app):
+    melody = app.project.melody()
+    assert melody is not None, "no tune to work from"
+    return melody, {s.name: s for s in melody.sections}
+
+
+def _written(app, section_id):
+    lyrics = app.project.lyrics_version()
+    return [l.text for l in lyrics.lines
+            if l.section_id == section_id and l.text.strip()]
+
+
+def test_lyrics_can_be_written_for_one_section(ready, settle):
+    """Krish settles the Pallavi first, against the tune it already has."""
+    app = ready
+    melody, by_name = _sections(app)
+    pallavi = by_name.get("Pallavi")
+    assert pallavi is not None, f"no Pallavi in {list(by_name)}"
+
+    app.generate_lyrics(seed=3, section_ids=[pallavi.id])
+    settle()
+
+    lyrics = app.project.lyrics_version()
+    assert lyrics is not None, "no lyrics were produced"
+    assert _written(app, pallavi.id), "the Pallavi got no words"
+    elsewhere = [s.name for s in melody.sections
+                 if s.id != pallavi.id and _written(app, s.id)]
+    assert not elsewhere, f"words were written outside the selection: {elsewhere}"
+    assert "Pallavi" in app.status_text, app.status_text
+
+
+def test_writing_a_second_section_leaves_the_first_alone(ready, settle):
+    """The whole point of choosing: settling one part must not cost another."""
+    app = ready
+    melody, by_name = _sections(app)
+    pallavi, charanam = by_name.get("Pallavi"), by_name.get("Charanam 1")
+    assert pallavi is not None and charanam is not None, list(by_name)
+
+    app.generate_lyrics(seed=3, section_ids=[pallavi.id])
+    settle()
+    settled = _written(app, pallavi.id)
+    assert settled, "the Pallavi got no words to begin with"
+
+    app.generate_lyrics(seed=9, section_ids=[charanam.id])
+    settle()
+
+    assert _written(app, pallavi.id) == settled, "the Pallavi words changed"
+    assert _written(app, charanam.id), "the Charanam got no words"
+
+
+def test_an_instrumental_section_is_told_it_is_instrumental(ready, settle):
+    """Instrumental regions need music, not compulsory lyrics."""
+    app = ready
+    melody, _ = _sections(app)
+    instrumental = next(s for s in melody.sections if s.kind.instrumental)
+    before = len(app.project.lyrics)
+
+    app.generate_lyrics(seed=3, section_ids=[instrumental.id])
+    settle()
+
+    assert len(app.project.lyrics) == before, "it wrote words anyway"
+    assert "instrumental" in app.status_text.lower(), app.status_text
+
+
+def test_a_locked_section_is_not_rewritten(ready, settle):
+    app = ready
+    melody, by_name = _sections(app)
+    pallavi = by_name["Pallavi"]
+    pallavi.locked = True
+    before = len(app.project.lyrics)
+
+    app.generate_lyrics(seed=3, section_ids=[pallavi.id])
+    settle()
+
+    assert len(app.project.lyrics) == before, "a locked section was rewritten"
+    assert "locked" in app.status_text.lower(), app.status_text
+
+
+def test_a_section_this_tune_does_not_have_is_refused(ready, settle):
+    app = ready
+    before = len(app.project.lyrics)
+    app.generate_lyrics(seed=3, section_ids=["sec_not_in_this_tune"])
+    settle()
+    assert len(app.project.lyrics) == before, "it wrote something anyway"
+    assert "not part of this tune" in app.status_text.lower(), app.status_text
+
+
+def test_asking_for_no_section_still_writes_the_whole_song(ready, settle):
+    """Every existing caller passes nothing, and must keep working."""
+    app = ready
+    melody, _ = _sections(app)
+    app.generate_lyrics(seed=3)
+    settle()
+    sung = [s for s in melody.sections if not s.kind.instrumental]
+    with_words = [s.name for s in sung if _written(app, s.id)]
+    assert len(with_words) > 1, f"only {with_words} got words"

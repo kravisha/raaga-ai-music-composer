@@ -218,17 +218,36 @@ def generate_lines(slots: Sequence[PhraseSlot], brief: CreativeBrief,
 
 def generate(melody: MelodyVersion, brief: CreativeBrief, version: int = 1,
              seed: int = 3, llm=None,
-             previous: Optional[LyricsVersion] = None) -> LyricsVersion:
-    """Produce a lyrics version fitted to *melody*."""
+             previous: Optional[LyricsVersion] = None,
+             section_ids: Optional[Sequence[str]] = None) -> LyricsVersion:
+    """Produce a lyrics version fitted to *melody*.
+
+    ``section_ids`` writes words for those sections only.  Every other
+    phrase keeps the words it already had, so a creator who has settled the
+    Pallavi and wants the Charanam rewritten does not lose the Pallavi to
+    get it.  Passing none means the whole song, which is what every existing
+    caller asks for.
+    """
     slots = build_slots(melody)
     if not slots:
         return LyricsVersion(version=version, language=brief.language,
                              melody_version=melody.version,
                              notes="The tune has no vocal phrases yet.")
+
+    chosen = set(section_ids or ())
+    targets = [i for i, slot in enumerate(slots)
+               if not chosen or slot.section_id in chosen]
+    if chosen and not targets:
+        # Asked for sections that have no sung phrases: say so rather than
+        # quietly rewriting the whole song, which is the one outcome the
+        # selection was meant to prevent.
+        raise ValueError("The chosen sections have no phrases to sing.")
+    wanted = [slots[i] for i in targets]
+
     lines: List[str] = []
     if llm is not None and getattr(llm, "available", False):
         try:
-            lines = llm.write_lyrics(slots, brief)
+            lines = llm.write_lyrics(wanted, brief)
             log.info("lyrics drafted by %s", getattr(llm, "name", "llm"))
         except Exception as exc:  # noqa: BLE001 - fall back, never block
             log.warning("LLM lyrics failed (%s); using the local engine", exc)
@@ -247,13 +266,24 @@ def generate(melody: MelodyVersion, brief: CreativeBrief, version: int = 1,
             continue
         log.warning("unsingable lyric line discarded: %r", text[:40])
         if fallback is None:
-            fallback = generate_lines(slots, brief, seed)
+            fallback = generate_lines(wanted, brief, seed)
         kept.append(fallback[i] if i < len(fallback) else "")
     lines = kept
-    if len(lines) < len(slots):
-        local = generate_lines(slots, brief, seed)
+    if len(lines) < len(wanted):
+        local = generate_lines(wanted, brief, seed)
         lines = lines + local[len(lines):]
-    return fit_lines(lines, melody, brief.language, version=version,
+
+    # Lay the new lines back onto the whole song by slot, so unselected
+    # phrases keep the words they had.  fit_lines takes it from here and
+    # preserves locked lines by slot index as it already did.
+    whole = [""] * len(slots)
+    if previous is not None:
+        for i, line in enumerate(previous.lines):
+            if i < len(whole):
+                whole[i] = line.text
+    for position, index in enumerate(targets):
+        whole[index] = lines[position] if position < len(lines) else ""
+    return fit_lines(whole, melody, brief.language, version=version,
                      previous=previous)
 
 
