@@ -2196,11 +2196,22 @@ class AppController:
     # ==================================================================
     # lyrics
     # ==================================================================
-    def generate_lyrics(self, seed: Optional[int] = None) -> None:
+    def generate_lyrics(self, seed: Optional[int] = None,
+                        section_ids: Optional[Sequence[str]] = None) -> None:
+        """Write words for the tune, or for chosen sections of it.
+
+        Krish's path is to settle the Pallavi before anything else exists:
+        select that section, write words fitted to the tune it already has,
+        and leave every other section - and every locked line - as it was.
+        Passing no selection writes for the whole song, as before.
+        """
         self.take_the_floor("write lyrics")
         melody = self.project.melody()
         if melody is None:
             self.status("Write a tune first - the lyrics are fitted to it.")
+            return
+        chosen = self._singable_sections(melody, section_ids)
+        if chosen is None:
             return
         brief = self.project.brief
         version = max((l.version for l in self.project.lyrics), default=0) + 1
@@ -2213,18 +2224,57 @@ class AppController:
             return lyric_generator.generate(
                 melody, brief, version=version,
                 seed=seed if seed is not None else version * 17, llm=llm,
-                previous=previous)
+                previous=previous, section_ids=chosen)
 
         def done(lyrics: LyricsVersion) -> None:
             self.project.lyrics.append(lyrics)
             self.project.approved_lyrics = lyrics.version
             self.project.current_stage = Stage.VOICE
             self._changed("lyrics.version", f"Lyrics v{lyrics.version}")
-            self.status(f"Lyrics v{lyrics.version}: {len(lyrics.lines)} lines fitted")
+            where = ""
+            if chosen:
+                names = [s.name for s in melody.sections if s.id in set(chosen)]
+                where = f" for {', '.join(names)}" if names else ""
+            self.status(f"Lyrics v{lyrics.version}: {len(lyrics.lines)} lines "
+                        f"fitted{where}")
 
         self.jobs.submit("lyrics.generate", "lyrics", work, on_done=done,
                          on_error=lambda e: self.error("lyrics", f"Lyrics failed: {e}"),
                          description="Write lyrics for the tune")
+
+    def _singable_sections(self, melody, section_ids
+                           ) -> Optional[Tuple[str, ...]]:
+        """Settle which sections a request is about.  None means refuse.
+
+        An empty tuple means the whole song, which is what no selection has
+        always meant.  A selection that names an instrumental section, or a
+        section this tune does not have, is answered rather than quietly
+        widened - silently writing for the whole song is the one outcome
+        choosing a section was meant to prevent.
+        """
+        if not section_ids:
+            return ()
+        known = {s.id: s for s in melody.sections}
+        unknown = [sid for sid in section_ids if sid not in known]
+        if unknown:
+            self.status("That section is not part of this tune.")
+            return None
+        singable = tuple(sid for sid in section_ids
+                         if not known[sid].kind.instrumental)
+        if not singable:
+            names = ", ".join(known[sid].name for sid in section_ids)
+            self.status(f"{names} is instrumental - it has music but no "
+                        f"words to sing.")
+            return None
+        skipped = [known[sid].name for sid in section_ids
+                   if known[sid].kind.instrumental]
+        if skipped:
+            self.status(f"Leaving {', '.join(skipped)} instrumental.")
+        locked = [known[sid].name for sid in singable if known[sid].locked]
+        if locked:
+            self.status(f"{', '.join(locked)} is locked. Unlock it first.")
+            return None
+        return singable
 
     def edit_lyric_line(self, line_id: str, text: str) -> List[str]:
         lyrics = self.project.lyrics_version()
