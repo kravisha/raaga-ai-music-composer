@@ -1847,17 +1847,31 @@ class AppController:
             # learned" says the same thing the training answer refuses to
             # say two lines above it, so the heading follows the same rule:
             # learning is what was retained from something studied.
+            kinds = ev["facts_by_kind"]
+            only_library = (kinds["reference"]
+                            and not kinds["generated"]
+                            and not kinds["unattributed"])
             if ev["learned_total"] or ev["learned_facts"]:
                 rows = [f"What I have learned about {raaga}:"]
-            elif ev["facts_by_kind"]["reference"]:
+            elif only_library:
                 rows = [f"Nothing has been learned from a recording for "
                         f"{raaga} yet. What the library ships with:"]
             else:
                 rows = [f"Nothing has been learned from a recording for "
                         f"{raaga} yet. What is on file:"]
+            # Each row says where it came from.  A heading cannot: a store
+            # holding one library fact, one this system wrote and one with
+            # no source at all had all three listed under whichever heading
+            # the first of them earned, and once a single human phrase
+            # arrives the heading becomes "what I have learned" and the
+            # other two inherit a claim that was never made about them.
             for f in facts[:6]:
                 rows.append(f"  {f.key}: {f.value} (confidence "
-                            f"{f.confidence:.2f})")
+                            f"{f.confidence:.2f}) - "
+                            f"{self._fact_source(f, ev)}")
+            if len(facts) > 6:
+                rows.append(f"  (6 of {len(facts)} fact(s) shown - a display "
+                            f"limit, not the total)")
             if ev["from_recordings"]:
                 rows.append(f"  and {ev['from_recordings']} phrase(s) heard in "
                             f"real recordings, the most trusted being:")
@@ -1993,6 +2007,7 @@ class AppController:
             "from_reference": from_reference,
             "learned_facts": learned_facts,
             "facts_by_kind": by_kind,
+            "source_origins": origin_of,
             "heard_ids": heard_ids,
             "kept_ids": kept_ids,
             "heard_sources": len(heard_ids),
@@ -2004,6 +2019,19 @@ class AppController:
             "reference_packs": len(by_status(self._SOURCE_ANALYSED, True)),
             "sources_total": len(index),
         }
+
+    @staticmethod
+    def _fact_source(fact, ev: Dict) -> str:
+        """Where one fact came from, by the source it names.
+
+        The same classification the totals use, applied to the row the
+        creator is actually reading.
+        """
+        source_id = getattr(fact, "source_id", "")
+        origin = ev["source_origins"].get(source_id, "") if source_id else ""
+        if not origin or origin == provenance.UNKNOWN:
+            return "no identified source"
+        return provenance.describe(origin)
 
     @staticmethod
     def _unlearned_facts(ev: Dict) -> str:

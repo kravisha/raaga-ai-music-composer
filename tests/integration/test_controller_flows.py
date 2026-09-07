@@ -1285,3 +1285,76 @@ def test_a_later_failure_is_reported_as_history_not_as_denial(ready):
     assert "Latest analysis status" in trained, trained
     assert "not learning" not in trained
     assert "3 phrase(s) heard in 1 recording(s)" in trained
+
+
+def _fact_keyed(app, key, origin, raaga="Keeravani", with_source=True):
+    """A fact under a chosen key, so it sorts into the displayed page.
+
+    facts() orders by key, and a fresh install seeds fifteen; a fixture key
+    beginning with "aa_" is therefore visible rather than paged out.
+    """
+    from raagacomposer.agent.knowledge import Fact, Source
+    source_id = ""
+    if with_source:
+        source, _ = app.agent.repo.add_source(Source(
+            locator=f"fixture://{key}", title=f"fixture {key}", raaga=raaga,
+            origin=origin, status="analysed"))
+        source_id = source.id
+    app.agent.repo.add_fact(Fact(raaga=raaga, key=key, value="review only",
+                                 confidence=0.8, source_id=source_id))
+
+
+def _fact_rows(answer):
+    """The displayed fact lines, excluding headings and phrase lines."""
+    return [line for line in answer.split("\n")
+            if line.startswith("  aa_") or line.startswith("  fixture")]
+
+
+def test_each_displayed_fact_says_where_it_came_from(ready):
+    """Arya's finding: the heading assigned every row to the library.
+
+    A store holding one library fact, one this system wrote and one with no
+    source at all listed all three under whichever heading the first of them
+    earned.  A heading cannot carry per-row provenance; the rows must.
+    """
+    from raagacomposer.core import provenance
+    app = ready
+    _fact_keyed(app, "aa_reference", provenance.REFERENCE)
+    _fact_keyed(app, "aa_generated", provenance.GENERATED)
+    _fact_keyed(app, "aa_unknown", provenance.UNKNOWN)
+
+    learned = app.ask_agent("what did it learn about Keeravani?")
+    assert "the library ships with" not in learned, learned
+    assert "What is on file" in learned
+    assert "aa_generated" in learned and "written by this system" in learned
+    assert "aa_unknown" in learned and "no identified source" in learned
+    assert "aa_reference" in learned
+    assert "rendered for practice" in learned
+    for row in _fact_rows(learned):
+        assert " - " in row, f"a displayed fact carried no source: {row!r}"
+
+
+def test_learned_facts_do_not_lend_their_standing_to_the_others(ready):
+    """The second half: once anything is genuinely learned, the heading
+    becomes "What I have learned" and the unlearned rows must not inherit
+    that claim."""
+    from raagacomposer.core import provenance
+    app = ready
+    _teach(app, "Keeravani")
+    _fact_keyed(app, "aa_generated", provenance.GENERATED)
+    _fact_keyed(app, "aa_unknown", provenance.UNKNOWN)
+
+    learned = app.ask_agent("what did it learn about Keeravani?")
+    assert learned.startswith("What I have learned about Keeravani:"), learned
+    assert "aa_generated" in learned and "written by this system" in learned
+    assert "aa_unknown" in learned and "no identified source" in learned
+    for row in _fact_rows(learned):
+        assert " - " in row, f"a displayed fact carried no source: {row!r}"
+
+
+def test_the_fact_listing_says_when_it_is_only_a_page(ready):
+    """Fifteen seeded facts, six shown: the same limit-as-total error."""
+    app = ready
+    _teach(app, "Keeravani")
+    learned = app.ask_agent("what did it learn about Keeravani?")
+    assert "a display limit, not the total" in learned, learned
