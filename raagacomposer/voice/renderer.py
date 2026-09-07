@@ -83,21 +83,37 @@ class SungSegment:
     velocity: int = 90
     gamaka: str = ""
     legato: bool = False
+    coda: str = ""
 
 
-def split_syllable(syllable: str) -> Tuple[str, str]:
-    """Return (onset consonant, vowel) for a transliterated syllable."""
+def split_syllable(syllable: str) -> Tuple[str, str, str]:
+    """Return (onset consonant, vowel, coda consonant) for a syllable.
+
+    The coda used to be discarded.  "vaan" was sung "vaa" and "kal" was
+    sung "ka", and a large part of what makes a word recognisable is at
+    its end - so the words came out as vowels with a scratch in front of
+    them.  This returns three parts now rather than two; the callers are
+    few and the third one is the point.
+    """
     s = re.sub(r"[^a-zA-Z]", "", (syllable or "")).lower()
     if not s:
-        return "", "a"
+        return "", "a", ""
     m = re.match(r"^([bcdfghjklmnpqrstvwxyz]{1,2})?(.*)$", s)
     cons = (m.group(1) or "") if m else ""
     rest = (m.group(2) or "") if m else s
     vowels = re.findall(r"(aa|ee|oo|ai|au|ae|[aeiou])", rest)
     vowel = vowels[0] if vowels else "a"
+    coda = ""
+    if vowels:
+        after = rest[rest.index(vowel) + len(vowel):]
+        # Only what closes this syllable: a following vowel means another
+        # syllable was written into one slot, and guessing where to split
+        # it would put sounds on notes nobody wrote them for.
+        tail = re.match(r"^([bcdfghjklmnpqrstvwxyz]{1,2})(?![a-z])", after)
+        coda = tail.group(1) if tail else ""
     if vowel not in VOWEL_FORMANTS:
         vowel = vowel[0] if vowel and vowel[0] in VOWEL_FORMANTS else "a"
-    return cons, vowel
+    return cons, vowel, coda
 
 
 def plan_segments(melody: MelodyVersion,
@@ -124,12 +140,13 @@ def plan_segments(melody: MelodyVersion,
             continue
         syl = syllable_for.get(i, "")
         if vowel:
-            cons, sound = "", vowel
+            cons, sound, coda = "", vowel, ""
         else:
-            cons, sound = split_syllable(syl) if syl else ("", "a")
+            cons, sound, coda = (split_syllable(syl) if syl
+                                 else ("", "a", ""))
         segments.append(SungSegment(
             start=note.start, end=note.end, midi=note.midi, syllable=syl,
-            vowel=sound, consonant=cons, velocity=note.velocity,
+            vowel=sound, consonant=cons, coda=coda, velocity=note.velocity,
             gamaka=note.gamaka, legato=(note.start - prev_end) < 0.06))
         prev_end = note.end
     return segments
@@ -296,6 +313,19 @@ def render(segments: Sequence[SungSegment], profile: VoiceProfile,
         out = _add_consonant(out, seg.consonant, a, sr, rng,
                              level=0.35 * style["intensity"] + 0.1)
 
+    # Codas.  A closing consonant is not something added on top of a
+    # vowel - it is the vowel stopping.  Measured on one note, adding it
+    # over the top left it about eighteen decibels under the vowel and
+    # inaudible, which is a coda that exists in the buffer and not in the
+    # room.  So the vowel is faded across the coda's span and the
+    # consonant is set against how loud the voice actually is there,
+    # rather than against a constant.
+    for a, b, seg in spans:
+        if not seg.coda:
+            continue
+        out = _close_with_consonant(out, seg.coda, a, b, sr, rng,
+                                    style["intensity"])
+
     # Breaths in the gaps between phrases.
     if style["breath"] > 0.3:
         for i in range(1, len(spans)):
@@ -315,8 +345,51 @@ def render(segments: Sequence[SungSegment], profile: VoiceProfile,
     return out.astype(np.float32)
 
 
+def _close_with_consonant(buf: np.ndarray, cons: str, a: int, b: int,
+                          sr: int, rng: np.random.Generator,
+                          intensity: float) -> np.ndarray:
+    """End a note on its closing consonant, by closing the vowel into it."""
+    length = _consonant_length(cons, sr)
+    if length < 4:
+        return buf
+    start = max(a, b - length)
+    length = min(length, b - start)
+    if length < 4 or start + length > len(buf):
+        return buf
+    voice = float(np.sqrt(np.mean(buf[start:start + length] ** 2)))
+    # The mouth closes: the vowel falls away rather than continuing under
+    # the consonant.  Not to silence - a nasal is voiced, and cutting it
+    # dead sounds like an edit.
+    fade = np.linspace(1.0, 0.3, length).astype(np.float32)
+    buf[start:start + length] *= fade
+    level = max(0.05, voice * (0.9 + 0.5 * intensity))
+    return _add_consonant(buf, cons, b, sr, rng, level=level,
+                          trailing=True, limit=a)
+
+
+def _consonant_length(cons: str, sr: int) -> int:
+    c = cons[:2] if cons[:2] in PLOSIVES | FRICATIVES | NASALS else cons[:1]
+    if c in PLOSIVES:
+        return int(0.028 * sr)
+    if c in FRICATIVES:
+        return int(0.075 * sr)
+    if c in NASALS:
+        return int(0.06 * sr)
+    if c in LIQUIDS:
+        return int(0.045 * sr)
+    return 0
+
+
 def _add_consonant(buf: np.ndarray, cons: str, at: int, sr: int,
-                   rng: np.random.Generator, level: float = 0.3) -> np.ndarray:
+                   rng: np.random.Generator, level: float = 0.3,
+                   trailing: bool = False, limit: int = 0) -> np.ndarray:
+    """Put a consonant at *at*.
+
+    ``trailing`` places it ending at *at* rather than beginning there,
+    which is what a coda is: the close of the note it belongs to.
+    ``limit`` is that note's start, so a short note cannot have its
+    closing consonant pushed back over the note before it.
+    """
     c = cons[:2] if cons[:2] in PLOSIVES | FRICATIVES | NASALS else cons[:1]
     if c in PLOSIVES:
         dur, colour, gap = 0.028, 4200.0, 0.012
@@ -328,9 +401,12 @@ def _add_consonant(buf: np.ndarray, cons: str, at: int, sr: int,
         dur, colour, gap = 0.045, 1400.0, 0.0
     else:
         return buf
-    start = max(0, at - int((dur + gap) * sr))
     length = int(dur * sr)
-    if start + length >= len(buf) or length < 4:
+    if trailing:
+        start = max(limit, at - length)
+    else:
+        start = max(0, at - int((dur + gap) * sr))
+    if start + length >= len(buf) or length < 4 or start < 0:
         return buf
     noise = rng.standard_normal(length).astype(np.float32)
     alpha = float(np.exp(-2 * np.pi * colour / sr))
