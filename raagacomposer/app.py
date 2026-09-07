@@ -11,6 +11,7 @@ project.  Completion callbacks run on the UI thread via
 from __future__ import annotations
 
 import copy
+import hashlib
 import queue
 import re
 import time
@@ -444,9 +445,28 @@ class AppController:
             if existing.section_id in wanted and not existing.locked:
                 lines.append(line)
             else:
-                lines.append(existing)
+                # Copied, not shared.  Appending the object itself put the
+                # same LyricLine in two versions, so editing a line in the
+                # current version silently rewrote the older one that was
+                # supposed to be a record of what it had said.
+                lines.append(copy.deepcopy(existing))
         merged = replace(draft, lines=lines)
         return merged
+
+    @staticmethod
+    def lyric_fingerprint(lyrics) -> str:
+        """What the words actually are, not which version they are.
+
+        edit_lyric_line changes a lyric version in place, so its number is
+        unchanged after an edit and a render made from the old words passes
+        any check that compares numbers.  This compares the words.
+        """
+        if lyrics is None:
+            return ""
+        parts = [f"{line.id}:{line.text}:{int(bool(line.locked))}:"
+                 f"{','.join(str(i) for i in line.note_indices)}"
+                 for line in lyrics.lines]
+        return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
 
     def stale_reason(self, ticket: Dict) -> str:
         """Why a finished job must not be committed, or "" when it may be."""
@@ -459,6 +479,13 @@ class AppController:
                 return "the tune it was written for is gone"
             if melody.version != expected:
                 return "the tune changed while I was working"
+        expected_words = ticket.get("lyric_fingerprint")
+        if expected_words is not None:
+            if self.lyric_fingerprint(self.project.lyrics_version()) != expected_words:
+                return "the words changed while I was working"
+        expected_voice = ticket.get("voice_profile_id")
+        if expected_voice is not None and self.current_voice().id != expected_voice:
+            return "you chose a different voice while I was working"
         known = {sec.id: sec for sec in (melody.sections if melody else ())}
         for sid in ticket.get("sections") or ():
             section = known.get(sid)
@@ -2562,7 +2589,7 @@ class AppController:
                     else "Producing the studio vocal-only master...")
 
         ticket = self.song_work_ticket(chosen)
-        ticket["lyrics_version"] = lyrics.version if lyrics else 0
+        ticket["lyric_fingerprint"] = self.lyric_fingerprint(lyrics)
         ticket["voice_profile_id"] = profile.id
 
         def work(ctx: JobContext) -> Tuple[VocalRender, np.ndarray]:
@@ -2589,10 +2616,6 @@ class AppController:
             # song's renders directory and then played to the creator as
             # theirs.
             stale = self.stale_reason(ticket)
-            if not stale:
-                now = self.project.lyrics_version()
-                if (now.version if now else 0) != ticket["lyrics_version"]:
-                    stale = "the words changed while I was singing"
             if stale:
                 self.status(f"I did not keep that take: {stale}.")
                 return

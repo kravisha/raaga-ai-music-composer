@@ -193,3 +193,65 @@ def test_late_vocal_cannot_land_in_a_replacement_song(app, monkeypatch):
         release.set()
     finish(app)
     assert not app.project.vocal_renders, "the previous song's vocal take was appended to the replacement song"
+
+
+def test_later_lyric_edit_does_not_rewrite_an_older_version(app):
+    pallavi = prepare_song(app)
+    app.generate_lyrics(seed=3, section_ids=[pallavi.id])
+    finish(app)
+    old = app.project.lyrics_version()
+    old_text = [line.text for line in old.lines]
+    charanam = next(s for s in app.project.melody().sections if s.name == "Charanam 1")
+    app.generate_lyrics(seed=9, section_ids=[charanam.id])
+    finish(app)
+    current_line = next(l for l in app.project.lyrics_version().lines
+                        if l.section_id == pallavi.id and l.text)
+    app.edit_lyric_line(current_line.id, "nenjam paadum puthiya varigal")
+    assert [line.text for line in old.lines] == old_text, "editing the current merged version rewrote a previously saved lyric version"
+
+
+def _hold_vocal(app, monkeypatch):
+    import numpy as np
+    started, release = threading.Event(), threading.Event()
+
+    def held(melody, lyrics, profile, direction, sample_rate, duration, **kwargs):
+        started.set()
+        assert release.wait(5)
+        return np.zeros(int(sample_rate * 0.2), dtype=np.float32)
+
+    monkeypatch.setattr(app.providers.voice, "render_vocal", held)
+    app.render_vocal("preview", autoplay=False)
+    assert started.wait(3)
+    return release
+
+
+def test_inplace_lyric_edit_rejects_outdated_vocal_preview(app, monkeypatch):
+    pallavi = prepare_song(app)
+    app.generate_lyrics(seed=3, section_ids=[pallavi.id])
+    finish(app)
+    line = next(l for l in app.project.lyrics_version().lines if l.text)
+    version = app.project.lyrics_version().version
+    release = _hold_vocal(app, monkeypatch)
+    try:
+        app.edit_lyric_line(line.id, "nenjam paadum puthiya varigal")
+        assert app.project.lyrics_version().version == version
+    finally:
+        release.set()
+    finish(app)
+    assert "vocal_preview" not in app._renders, "audio made from old words became the current preview after an in-place lyric edit"
+
+
+def test_changing_voice_rejects_outdated_vocal_preview(app, monkeypatch):
+    pallavi = prepare_song(app)
+    app.generate_lyrics(seed=3, section_ids=[pallavi.id])
+    finish(app)
+    current = app.current_voice()
+    other = next(v for v in app.voices.all() if v.id != current.id)
+    release = _hold_vocal(app, monkeypatch)
+    try:
+        app.set_voice(other.id)
+    finally:
+        release.set()
+    finish(app)
+    assert app.current_voice().id == other.id
+    assert "vocal_preview" not in app._renders, "audio from the old singer became the current preview after choosing another singer"
