@@ -348,7 +348,8 @@ def render_melody(melody: MelodyVersion, lyrics: Optional[LyricsVersion],
                   sr: int = 44100, total_seconds: Optional[float] = None,
                   seed: int = 11,
                   vocal_sections_only: bool = True,
-                  vowel: str = "") -> np.ndarray:
+                  vowel: str = "",
+                  section_ids: Optional[Sequence[str]] = None) -> np.ndarray:
     """Sing a melody, with words or without them.
 
     ``vocal_sections_only`` is right for a take with lyrics - nobody sings
@@ -356,9 +357,49 @@ def render_melody(melody: MelodyVersion, lyrics: Optional[LyricsVersion],
     note has to sound.  On a 53-note tune it was the difference between the
     whole line and 33 notes with holes where the prelude, interlude and
     outro should be.
+
+    ``section_ids`` sings only those sections, in their place in the song,
+    so a creator settling the Pallavi hears the Pallavi rather than the
+    whole take.  The rest of the timeline stays silent at full length: the
+    take still lines up with the arrangement, which is what lets the two be
+    heard together.
     """
-    segments = plan_segments(melody, lyrics,
-                             vocal_sections_only=vocal_sections_only,
-                             vowel=vowel)
+    if section_ids:
+        segments = _segments_for_sections(melody, lyrics, section_ids, vowel)
+    else:
+        segments = plan_segments(melody, lyrics,
+                                 vocal_sections_only=vocal_sections_only,
+                                 vowel=vowel)
     return render(segments, profile, direction, sr,
                   total_seconds or (melody.duration + 1.0), seed)
+
+
+def _segments_for_sections(melody: MelodyVersion,
+                           lyrics: Optional[LyricsVersion],
+                           section_ids: Sequence[str],
+                           vowel: str = "") -> List[SungSegment]:
+    """The sung segments belonging to the chosen sections, and no others.
+
+    Planned unfiltered so there is one segment per note and the two can be
+    walked together - a segment does not carry its section, and the note
+    does.  Instrumental sections stay silent unless they were chosen: this
+    answers "sing the Pallavi", not "sing everything the singer could".
+    """
+    wanted = set(section_ids)
+    sections = {section.id: section for section in melody.sections}
+    planned = plan_segments(melody, lyrics, vocal_sections_only=False,
+                            vowel=vowel)
+    kept: List[SungSegment] = []
+    previous_end = -1.0
+    for note, segment in zip(melody.notes, planned):
+        if note.section_id not in wanted:
+            continue
+        section = sections.get(note.section_id)
+        if section is None:
+            continue
+        # A note excluded from the take is not a preceding sung note, so a
+        # note that follows a gap must not slur into silence.
+        segment.legato = (segment.start - previous_end) < 0.06
+        kept.append(segment)
+        previous_end = segment.end
+    return kept
