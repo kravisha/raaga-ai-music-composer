@@ -121,6 +121,21 @@ class VoiceProfileManager:
         return BUILTIN[0]
 
     # -- editing -----------------------------------------------------------
+    def set_identity(self, profile_id: str, gender: str) -> Optional[VoiceProfile]:
+        """Record what the creator says this voice is.
+
+        Only the label moves.  The recordings, the measured pitch, range,
+        brightness and breathiness, and the formant shift are all left
+        exactly as they are - correcting a description is not a reason to
+        re-synthesise somebody's voice, and the old code's habit of
+        deriving acoustics from the label is the fault being removed.
+        """
+        profile = self.get(profile_id)
+        if profile is None:
+            return None
+        profile.gender = (gender or "").strip().lower() or "unspecified"
+        return self.update(profile)
+
     def add(self, profile: VoiceProfile) -> VoiceProfile:
         profile.builtin = False
         self._user[profile.id] = profile
@@ -182,12 +197,24 @@ class VoiceProfileManager:
         low_f0 = float(np.percentile(f0s, 5))
         high_f0 = float(np.percentile(f0s, 95))
         base = int(round(freq_to_midi(median_f0)))
-        detected_gender = gender or ("male" if median_f0 < 165 else "female")
-        shift = 1.0 if detected_gender == "male" else 1.16
+        # A pitch measurement is not a statement about who somebody is.
+        # This used to read "male" below 165 Hz and "female" above it, and
+        # then *act* on that label by scaling every formant by 1.16 - so a
+        # singer whose median pitch sat above the threshold had their
+        # resonances moved 16% away from the ones they actually have.
+        # Measured on the creator's own three recordings: median 190.5 Hz,
+        # so the label said female and the shift pushed his largest vowel
+        # cluster from 657 Hz towards 870.
+        #
+        # The identity is now whatever the creator says it is, and nothing
+        # at all when they have not said.  No acoustic transformation is
+        # derived from it in either case; a voice is rendered as measured.
+        stated_gender = (gender or "").strip().lower() or "unspecified"
+        shift = 1.0
         profile = VoiceProfile(
             id=f"voice_user_{abs(hash(name)) % 10 ** 8:08d}",
             name=name or "My Voice",
-            gender=detected_gender,
+            gender=stated_gender,
             base_midi=base,
             range_low=max(30, int(round(freq_to_midi(low_f0))) - 3),
             range_high=min(96, int(round(freq_to_midi(high_f0))) + 5),
@@ -197,7 +224,11 @@ class VoiceProfileManager:
             source_samples=used,
             builtin=False,
             notes=f"Derived from {len(used)} recording(s); median pitch "
-                  f"{median_f0:.0f} Hz.")
+                  f"{median_f0:.0f} Hz. Voice identity: {stated_gender}"
+                  f"{' (not stated)' if stated_gender == 'unspecified' else ''}."
+                  f" Pitch, range, brightness and breathiness are measured; "
+                  f"the vowel resonances are still the shipped reference "
+                  f"table, so this is not a reproduction of the singer.")
         return self.add(profile)
 
 

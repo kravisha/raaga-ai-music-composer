@@ -44,10 +44,12 @@ class LocalVoiceProvider(VoiceProvider):
                      sample_rate: int, total_seconds: Optional[float] = None,
                      seed: int = 0,
                      vocal_sections_only: bool = True,
-                     vowel: str = "") -> np.ndarray:
+                     vowel: str = "",
+                     section_ids: Optional[Any] = None) -> np.ndarray:
         return voice_renderer.render_melody(
             melody, lyrics, profile, direction, sample_rate, total_seconds,
-            seed, vocal_sections_only=vocal_sections_only, vowel=vowel)
+            seed, vocal_sections_only=vocal_sections_only, vowel=vowel,
+            section_ids=section_ids)
 
     def voices(self) -> List[str]:
         from ..voice.profiles import BUILTIN

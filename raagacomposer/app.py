@@ -208,6 +208,8 @@ class AppController:
         self._typed_queue: "queue.Queue[str]" = queue.Queue(maxsize=64)
         #: How many phrases were discarded because the queue was full.
         self._utterances_dropped = 0
+        #: A section preview waiting for its vocal take before the mix.
+        self._preview_after_vocal = None
         #: The interpretation currently in flight, if any, and which
         #: request it belongs to.  A cancelled older request must not clear
         #: a newer one's marker: doing so let a third request start beside
@@ -926,9 +928,10 @@ class AppController:
             return self._run_apply_brief_pipeline(
                 brief_snapshot, limit=4, deliver_now=False, ctx=ctx)
 
+        brief_ticket = {"generation": self._project_generation, "sections": ()}
         job = self.jobs.submit(
             "brief.apply", "brief", work,
-            on_done=self._apply_brief_done,
+            on_done=lambda r: self._apply_brief_done(r, brief_ticket),
             on_error=self._apply_brief_job_error,
             on_cancelled=lambda: self._apply_brief_cancelled(job.epoch),
             description="Apply the creative brief")
@@ -991,8 +994,16 @@ class AppController:
         # suits a feeling nobody was asking about.
         self.suggested_for = replace(self.project.brief)
 
-    def _apply_brief_done(self, result: Tuple[ActionStatus, List]) -> None:
+    def _apply_brief_done(self, result: Tuple[ActionStatus, List],
+                          ticket: Optional[Dict] = None) -> None:
         status, suggestions = result
+        stale = self.stale_reason(ticket) if ticket else ""
+        if stale:
+            # A ranking written for the song we left would become the new
+            # song's alternatives and the brief its feedback is attached
+            # to, which is the same fault in a tenth place.
+            self.status(f"I did not keep those suggestions: {stale}.")
+            return
         if status.state == ActionState.COMPLETED:
             self._store_brief_suggestions(suggestions)
             self.dirty = True
@@ -1392,10 +1403,20 @@ class AppController:
         raaga = self.require_raaga()
         profile = self.current_voice()
         brief = self.project.brief
-        tempo = infer_tempo(brief, raaga)
         melody = self.project.melody()
+        # One place decides the tempo, in this order: what the creator asked
+        # for, then what the tune is already at, then what the brief and the
+        # raaga suggest.  generate_tune used to overwrite this a line after
+        # asking for it, which is how an explicit 200 bpm became 80 again on
+        # the next Generate Tune.
+        if brief.tempo_preference:
+            tempo = int(brief.tempo_preference)
+        elif melody is not None:
+            tempo = melody.tempo_bpm
+        else:
+            tempo = infer_tempo(brief, raaga)
         return MelodyOptions(
-            tempo_bpm=melody.tempo_bpm if melody else tempo,
+            tempo_bpm=tempo,
             # The tune and the beat take their cycle from the same place,
             # which is what keeps them synchronised (specification 11.3).
             # A brief that names a tala wins over the tune's current cycle,
@@ -1410,7 +1431,6 @@ class AppController:
         self.take_the_floor("generate tune")
         raaga = self.composing_raaga()
         opts = self.melody_options(seed)
-        opts.tempo_bpm = infer_tempo(self.project.brief, raaga)
         version = (max((m.version for m in self.project.melodies), default=0)) + 1
         self.status(f"Composing a tune in {raaga.name}...")
 
@@ -1744,10 +1764,18 @@ class AppController:
                          description=f"Rewrite {section.name}")
 
     def set_tempo(self, bpm: int) -> None:
+        """Set the tempo, and remember that the creator chose it.
+
+        Recording the preference is what makes the choice survive.  It used
+        to be written only when there was no tune yet: change the tempo on
+        an existing tune and the new speed lived in that melody alone, so
+        the next Generate Tune - which starts from the brief - had nothing
+        to tell it the creator had asked for anything.
+        """
         self.take_the_floor("change the tempo")
+        self.project.brief.tempo_preference = int(bpm)
         melody = self.project.melody()
         if melody is None:
-            self.project.brief.tempo_preference = int(bpm)
             self._changed("tune.tempo", f"Tempo preference {bpm} bpm")
             return
         version = max(m.version for m in self.project.melodies) + 1
@@ -2502,12 +2530,27 @@ class AppController:
                       f"Vocal direction: {direction.style} "
                       f"(intensity {direction.intensity:.2f})")
 
-    def render_vocal(self, kind: str = "preview", autoplay: bool = True) -> None:
-        """kind is 'preview' or 'master' (the studio vocal-only version)."""
+    def render_vocal(self, kind: str = "preview", autoplay: bool = False,
+                     section_ids: Optional[Sequence[str]] = None) -> None:
+        """kind is 'preview' or 'master' (the studio vocal-only version).
+
+        Rendering finishes quietly.  It used to start the player itself,
+        which meant a creator who asked for a studio master got sound in
+        the room without asking for it, and an unattended test made noise.
+        Play Vocal is the action that plays; this one is the action that
+        prepares something to play.
+
+        ``section_ids`` sings only those sections, at their place in the
+        song and over its full length, so the take still lines up with the
+        arrangement and the two can be heard together.
+        """
         self.take_the_floor("render the vocal")
         melody = self.project.melody()
         if melody is None:
             self.status("There is no tune to sing yet.")
+            return
+        chosen = self._singable_sections(melody, section_ids)
+        if chosen is None:
             return
         lyrics = self.project.lyrics_version()
         profile = self.current_voice()
@@ -2518,14 +2561,15 @@ class AppController:
         self.status("Rendering the vocal..." if kind == "preview"
                     else "Producing the studio vocal-only master...")
 
-        ticket = self.song_work_ticket()
+        ticket = self.song_work_ticket(chosen)
         ticket["lyrics_version"] = lyrics.version if lyrics else 0
         ticket["voice_profile_id"] = profile.id
 
         def work(ctx: JobContext) -> Tuple[VocalRender, np.ndarray]:
             ctx.progress(0.2, "Singing the line")
             raw = provider.render_vocal(melody, lyrics, profile, direction, sr,
-                                        melody.duration + 1.0, seed=version * 7)
+                                        melody.duration + 1.0, seed=version * 7,
+                                        section_ids=chosen or None)
             ctx.progress(0.6, "Vocal production chain")
             if kind == "master":
                 produced = mastering.master_vocal_only(raw, sr, direction)
@@ -2564,13 +2608,57 @@ class AppController:
                                audio, str(path))
             self._changed("voice.render",
                           f"Vocal {kind} take v{take.version}")
-            self.status(f"Vocal {kind} ready - {mastering.report(audio, self.sample_rate)}")
-            if autoplay:
-                self.play_render("vocal_master" if kind == "master" else "vocal_preview")
+            where = ""
+            if chosen:
+                names = [sec.name for sec in melody.sections
+                         if sec.id in set(chosen)]
+                where = f" ({', '.join(names)} only)" if names else ""
+            self.status(f"Vocal {kind} ready{where} - "
+                        f"{mastering.report(audio, self.sample_rate)}")
+            waiting = getattr(self, "_preview_after_vocal", None)
+            if waiting is not None:
+                self._preview_after_vocal = None
+                start, end, play = waiting
+                self.render(kind="full", autoplay=play,
+                            play_range=(start, end))
+            elif autoplay:
+                self.play_render("vocal_master" if kind == "master"
+                                 else "vocal_preview")
 
         self.jobs.submit(f"voice.{kind}", "vocal", work, on_done=done,
                          on_error=lambda e: self.error("voice", f"Vocal render failed: {e}"),
                          description=f"Render the {kind} vocal")
+
+    def preview_section(self, section_id: str, autoplay: bool = True) -> None:
+        """Hear one section: its words sung, over its accompaniment.
+
+        Krish asked to hear the words and the tune together with the
+        instruments behind them, not a bare vocal - so this is not a second
+        rendering path.  It sings the chosen section, then asks for the
+        ordinary full mix and plays only that section's span of it, which
+        is why the vocal take is rendered at full song length with silence
+        around it: the two line up because they are the same timeline.
+        """
+        melody = self.project.melody()
+        if melody is None:
+            self.status("There is no tune yet.")
+            return
+        section = next((sec for sec in melody.sections
+                        if sec.id == section_id), None)
+        if section is None:
+            self.status("That section is not part of this tune.")
+            return
+        if section.kind.instrumental:
+            # Nothing is sung here, so there is nothing to wait for: the
+            # accompaniment alone is the honest answer.
+            self.status(f"{section.name} is instrumental - playing its "
+                        f"accompaniment.")
+            self.render(kind="full", autoplay=autoplay,
+                        play_range=(section.start, section.end))
+            return
+        self._preview_after_vocal = (section.start, section.end, autoplay)
+        self.render_vocal(kind="preview", autoplay=False,
+                          section_ids=[section_id])
 
     def create_voice_from_recordings(self, paths: Sequence[str], name: str,
                                      gender: str = "") -> VoiceProfile:

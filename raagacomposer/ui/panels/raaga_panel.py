@@ -43,7 +43,11 @@ class RaagaPanel(QGroupBox):
         # splitter decides how tall this is; the list does not get a vote.
         self.suggestions.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Ignored)
         self.suggestions.currentRowChanged.connect(self._show_details)
-        self.suggestions.itemDoubleClicked.connect(lambda _: self.accept_selected())
+        # Looking is not choosing.  Double-clicking a suggestion accepted
+        # it outright, so a creator who opened Keeravani to read about it
+        # had chosen it by the time they finished reading.  Acceptance is
+        # the button that says so.
+        self.suggestions.itemDoubleClicked.connect(self._open_details_popup)
 
         # Every raaga the library knows, whether the brief suggested it or
         # not, and searchable because there are ninety-three of them.
@@ -385,6 +389,24 @@ class RaagaPanel(QGroupBox):
             return f"{name} is not in the library."
         note = self._recommendation_note(name)
         return f"{raaga.describe()}\n\n{note}" if note else raaga.describe()
+
+    def _open_details_popup(self, item) -> None:
+        """Show what is known about a raaga, and change nothing.
+
+        The same text the details pane shows, evidence and provenance
+        labels included, in a window the creator can dismiss.  Opening or
+        closing it leaves the accepted raaga exactly as it was.
+        """
+        name = str(item.data(Qt.UserRole))
+        if not self.app.raagas.get(name):
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle(name)
+        box.setText(name)
+        box.setInformativeText(self._describe_with_reason(name))
+        box.setStandardButtons(QMessageBox.Close)
+        box.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        box.exec()
 
     def _show_named(self, name: str) -> None:
         if self.app.raagas.get(name):

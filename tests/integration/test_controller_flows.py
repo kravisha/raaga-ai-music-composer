@@ -1617,3 +1617,56 @@ def test_asking_for_no_section_still_writes_the_whole_song(ready, settle):
     sung = [s for s in melody.sections if not s.kind.instrumental]
     with_words = [s.name for s in sung if _written(app, s.id)]
     assert len(with_words) > 1, f"only {with_words} got words"
+
+
+# --------------------------------------------------------------------------
+# An explicit tempo survives Generate Tune (Krish's walkthrough, 14:35)
+# --------------------------------------------------------------------------
+def test_an_explicit_tempo_survives_generating_again(ready, settle):
+    """Krish set 200 bpm, pressed Generate Tune, and got 80 back.
+
+    melody_options carried the tune's tempo and generate_tune overwrote it
+    on the next line, and set_tempo only recorded the creator's choice when
+    there was no tune to apply it to - so on an existing tune the choice
+    lived in that melody alone and the next generation never saw it.
+    """
+    app = ready
+    app.set_tempo(200)
+    settle()
+    assert app.project.brief.tempo_preference == 200, \
+        "the choice was not remembered"
+    assert app.project.melody().tempo_bpm == 200
+
+    app.generate_tune(seed=6)
+    settle()
+    assert app.project.melody().tempo_bpm == 200, "the tempo was reset"
+
+
+def test_generating_again_still_makes_a_song_of_the_asked_for_length(ready,
+                                                                     settle):
+    """The other half: a time-scaled tune is shorter, and that shortness is
+    not a new request.  The duration target comes from the brief."""
+    app = ready
+    app.project.brief.duration_target = 60
+    app.set_tempo(200)
+    settle()
+    shortened = app.project.melody().duration
+
+    app.generate_tune(seed=6)
+    settle()
+    fresh = app.project.melody()
+    assert fresh.tempo_bpm == 200
+    assert fresh.duration > shortened + 5, \
+        f"the song shrank to the time-scaled length: {fresh.duration:.0f}s"
+
+
+def test_the_tempo_is_still_inferred_when_nobody_has_chosen_one(ready, settle):
+    """The automatic path has to keep working: only an explicit choice
+    takes precedence over it."""
+    app = ready
+    assert not app.project.brief.tempo_preference, "the fixture chose one"
+    before = app.project.melody().tempo_bpm
+    app.generate_tune(seed=7)
+    settle()
+    assert app.project.melody().tempo_bpm == before, \
+        "an inferred tempo should stay stable across regeneration"
