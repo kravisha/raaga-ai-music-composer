@@ -965,7 +965,7 @@ def test_the_training_question_is_answered_from_records(ready):
     _teach(app, "Keeravani")
     answer = app.ask_agent("has Keeravani been trained?")
     assert answer.lower().startswith("yes")
-    assert "3 phrase(s) heard in 1 analysed recording(s)" in answer
+    assert "3 phrase(s) heard in 1 recording(s)" in answer
     assert "person's recording" in answer
 
 
@@ -1011,7 +1011,7 @@ def test_a_failed_analysis_is_reported_without_claiming_training(ready):
     _register(app, status="failed")
     answer = app.ask_agent("has Keeravani been trained?")
     assert answer.lower().startswith("no"), answer
-    assert "whose analysis failed" in answer
+    assert "whose most recent analysis failed" in answer
 
 
 def test_a_later_failure_does_not_discount_earlier_learning(ready):
@@ -1021,8 +1021,8 @@ def test_a_later_failure_does_not_discount_earlier_learning(ready):
     _register(app, status="failed")
     answer = app.ask_agent("has Keeravani been trained?")
     assert answer.lower().startswith("yes"), answer
-    assert "3 phrase(s) heard in 1 analysed recording(s)" in answer
-    assert "whose analysis failed" in answer, "the failure was hidden instead"
+    assert "3 phrase(s) heard in 1 recording(s)" in answer
+    assert "most recent analysis failed" in answer, "the failure was hidden"
 
 
 def test_reference_practice_is_not_described_as_a_performance(ready):
@@ -1042,7 +1042,7 @@ def test_reference_practice_is_not_described_as_a_performance(ready):
 
     trained = app.ask_agent("has Keeravani been trained?")
     assert trained.lower().startswith("yes"), "reference practice still counts"
-    assert "no phrase yet from a performance" in trained
+    assert "Nothing heard from a recording yet" in trained
     assert "1 phrase(s) heard in" not in trained
 
 
@@ -1062,7 +1062,7 @@ def test_totals_are_totals_and_not_the_size_of_the_page(ready):
     _register(app, status="analysed", n=21, phrases=1)
 
     trained = app.ask_agent("has Keeravani been trained?")
-    assert "21 phrase(s) heard in 21 analysed recording(s)" in trained, trained
+    assert "21 phrase(s) heard in 21 recording(s)" in trained, trained
 
     listing = app.ask_agent("which recordings support that?")
     assert "a listing limit, not the total" in listing, listing
@@ -1116,3 +1116,93 @@ def test_asking_never_changes_the_song(ready, settle):
 
     assert app.project.melody().version == before
     assert app.agent.repo.count_phrases("Keeravani") == phrases_before
+
+
+def _fail_the_source(app, source):
+    """The same source re-run, its second attempt failing, findings kept.
+
+    add_source returns an existing row untouched, so the state has to be
+    reached the way research reaches it: by updating the source in place.
+    """
+    app.agent.repo.update_source(source.id, status="failed",
+                                 error="fixture: reprocessing failed")
+    return app.agent.repo.source(source.id)
+
+
+def test_a_failure_on_the_same_source_does_not_erase_its_findings(ready):
+    """Arya's finding: my earlier test failed a *different* source.
+
+    The state that contradicts itself is one source whose findings were
+    kept and whose most recent attempt then failed.  Status is the history
+    of the last attempt; it is not a statement about what is still held.
+    """
+    app = ready
+    source = _teach(app, "Keeravani")
+    refreshed = _fail_the_source(app, source)
+    assert refreshed.status == "failed", "the fixture did not reach the state"
+
+    trained = app.ask_agent("has Keeravani been trained?")
+    assert trained.lower().startswith("yes"), trained
+    assert "3 phrase(s) heard in 1 recording(s)" in trained
+    assert "0 recording(s)" not in trained
+    assert "most recent analysis failed" in trained
+
+    listing = app.ask_agent("which recordings support that?")
+    assert "was learned from" in listing, listing
+    assert "none of it analysed yet" not in listing
+    assert "kept" in listing
+
+    gaps = app.ask_agent("what is missing for Keeravani?")
+    assert "Nothing has been heard from a recording" not in gaps, gaps
+
+
+def test_a_fact_learned_from_a_recording_is_not_called_the_library(ready):
+    """Arya's finding: every fact was attributed to the built-in reference
+    whenever no analysed source or learned phrase remained."""
+    from raagacomposer.agent.knowledge import Fact, Source
+    from raagacomposer.core import provenance
+    app = ready
+    source, _ = app.agent.repo.add_source(Source(
+        locator="rec://facts-only", title="a real recording", raaga="Keeravani",
+        origin=provenance.HUMAN, status="analysed"))
+    app.agent.repo.add_fact(Fact(raaga="Keeravani", key="fixture_fact",
+                                 value="heard in the recording",
+                                 confidence=0.8, source_id=source.id))
+    _fail_the_source(app, source)
+
+    trained = app.ask_agent("has Keeravani been trained?")
+    assert trained.lower().startswith("yes"), trained
+    assert "fact(s) learned from a recording" in trained
+    assert "no training" not in trained.lower()
+
+
+def test_an_analysis_that_kept_nothing_is_not_training(ready):
+    """Arya's finding: "analysed" only means the attempt finished.
+
+    research marks a source analysed whether or not anything was retained,
+    so reading the status as learning claimed training while the content
+    answer correctly said nothing had been learned.
+    """
+    app = ready
+    _register(app, status="analysed", n=1, phrases=0)
+
+    trained = app.ask_agent("has Keeravani been trained?")
+    assert trained.lower().startswith("no"), trained
+    assert "analysed with nothing kept from it" in trained
+
+    # The library's own structural facts are seeded on a fresh install, so
+    # the honest answer is not "nothing" - it is that nothing was learned
+    # from a recording, which is what the training answer just said.
+    learned = app.ask_agent("what did it learn about Keeravani?")
+    assert "Nothing has been learned from a recording" in learned, learned
+    assert "What I have learned about" not in learned
+
+
+def test_a_source_listing_states_what_a_source_is_not_what_it_taught(ready):
+    """Arya's finding: a queued recording listed as "learned from"."""
+    app = ready
+    _register(app, status="pending")
+    listing = app.ask_agent("which recordings support that?")
+    assert "a person's recording" in listing, listing
+    assert "learned from a person's recording" not in listing
+    assert "nothing kept" in listing
