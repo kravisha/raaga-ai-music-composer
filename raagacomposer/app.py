@@ -1763,15 +1763,13 @@ class AppController:
 
         repo = self.agent.repo
         facts = repo.facts(raaga)
-        ev = self._raaga_evidence(raaga)
+        ev = self._raaga_evidence(raaga, facts)
         # Only what is displayed is fetched.  Every number below comes from a
-        # count, because the previous version tallied a page of rows and then
+        # count, because an earlier version tallied a page of rows and then
         # reported the page size as the total: twenty-one recordings were
         # answered as twenty, and one was silently left out of the list.
-        heard_phrases = repo.phrases(
-            raaga=raaga, limit=4,
-            origins=tuple(o for o in provenance.LEARNED_FROM
-                          if o != provenance.REFERENCE))
+        heard_phrases = repo.phrases(raaga=raaga, limit=4,
+                                     origins=self._HEARD_ORIGINS)
         reference_phrases = repo.phrases(raaga=raaga, limit=4,
                                          origins=(provenance.REFERENCE,))
 
@@ -1780,12 +1778,23 @@ class AppController:
             if not listed:
                 return (f"Nothing has been ingested for {raaga}, so there are "
                         f"no recordings or references behind what I have.")
-            studied = ev["analysed"] or ev["reference_packs"]
-            rows = [f"What {raaga} was learned from:" if studied
-                    else f"On file for {raaga}, none of it analysed yet:"]
+            if ev["kept_ids"]:
+                heading = f"What {raaga} was learned from:"
+            elif ev["analysed_without_result"]:
+                heading = (f"On file for {raaga} - analysed, but nothing was "
+                           f"kept from it:")
+            else:
+                heading = f"On file for {raaga}, none of it analysed yet:"
+            rows = [heading]
             for s_ in listed:
+                # What the source *is*, not what has been learned from it:
+                # calling a queued recording "learned from a person's
+                # recording" states the outcome of an analysis that has not
+                # run, directly under a heading saying it has not run.
+                kept = "kept" if s_.id in ev["kept_ids"] else "nothing kept"
                 rows.append(f"  {s_.title[:60]} - "
-                            f"{provenance.describe(s_.origin)}, {s_.status}")
+                            f"{provenance.describe_source(s_.origin)}, "
+                            f"{s_.status}, {kept}")
             total = ev["sources_total"]
             if total > len(listed):
                 rows.append(f"  (the {len(listed)} most recent of {total} - "
@@ -1813,7 +1822,7 @@ class AppController:
             # which is not something a source count can settle.  Saying "a
             # second recording would help" while holding twenty-one of them
             # was a sentence written for one case and printed for all of them.
-            heard = ev["analysed"]
+            heard = ev["heard_sources"]
             if heard >= 2:
                 corroboration = (f"Whether those {heard} recordings agree with "
                                  f"each other is something I have not "
@@ -1826,15 +1835,26 @@ class AppController:
             else:
                 corroboration = ("Nothing has been heard from a recording, so "
                                  "there is nothing yet to corroborate.")
-            return (f"For {raaga} I have {ev['learned_total']} learned "
-                    f"phrase(s), {len(facts)} fact(s) and "
-                    f"{ev['sources_total']} source(s). {corroboration}")
+            answer = (f"For {raaga} I have {ev['learned_total']} learned "
+                      f"phrase(s), {len(facts)} fact(s) and "
+                      f"{ev['sources_total']} source(s). {corroboration}")
+            note = self._availability_note(ev)
+            return f"{answer} {note}" if note else answer
 
         if wants_content:
             if not ev["learned_total"] and not facts:
                 return (f"Nothing yet for {raaga} beyond the library's own "
                         f"reference.")
-            rows = [f"What I have learned about {raaga}:"]
+            # A fresh installation seeds fifteen structural facts per raaga
+            # from the shipped library.  Listing those under "what I have
+            # learned" says the same thing the training answer refuses to
+            # say two lines above it, so the heading follows the same rule:
+            # learning is what was retained from something studied.
+            if ev["learned_total"] or ev["learned_facts"]:
+                rows = [f"What I have learned about {raaga}:"]
+            else:
+                rows = [f"Nothing has been learned from a recording for "
+                        f"{raaga} yet. What the library ships with:"]
             for f in facts[:6]:
                 rows.append(f"  {f.key}: {f.value} (confidence "
                             f"{f.confidence:.2f})")
@@ -1857,32 +1877,40 @@ class AppController:
                                 f"(confidence {p.confidence:.2f})")
             return "\n".join(rows)
 
-        # wants_training.  "Trained" means something was heard and kept, not
-        # that the shipped library was copied in - a fresh installation seeds
-        # fifteen structural facts per raaga - and not that a recording was
-        # registered.  A source sitting at "pending", or one whose analysis
-        # failed, is something the agent has available; it is not something it
-        # has learned from.  Retained evidence decides, so a later failed
-        # attempt cannot discount learning that already happened.
-        if not ev["learned_total"] and not ev["analysed"]:
+        # wants_training.  What decides is what has been retained, never a
+        # source's latest status.  A source is marked "analysed" when the
+        # attempt finished, whether or not anything came of it; and a source
+        # whose findings were kept can be re-run later and end at "failed".
+        # Reading status as though it meant learning made the application
+        # claim training from a recording it had kept nothing from, and deny
+        # training it had genuinely done.
+        learned_facts = ev["learned_facts"]
+        reference_facts = len(facts) - learned_facts
+        if not ev["learned_total"] and not learned_facts:
             reference = (f" I have the library's built-in reference for it "
-                         f"({len(facts)} fact(s)), which is not the same as "
-                         f"having heard it.") if facts else ""
+                         f"({reference_facts} fact(s)), which is not the same "
+                         f"as having heard it.") if reference_facts else ""
             note = self._availability_note(ev)
             return (f"No - {raaga} has had no training.{reference}"
                     + (f" {note}" if note else ""))
         parts = [f"Yes - {raaga} has been trained."]
+        held = []
         if ev["from_recordings"]:
-            parts.append(f"  {ev['from_recordings']} phrase(s) heard in "
-                         f"{ev['analysed']} analysed recording(s), and "
-                         f"{len(facts)} fact(s).")
-        else:
-            parts.append(f"  {len(facts)} fact(s), and no phrase yet from a "
-                         f"performance.")
+            held.append(f"{ev['from_recordings']} phrase(s) heard in "
+                        f"{ev['heard_sources']} recording(s)")
+        if learned_facts:
+            held.append(f"{learned_facts} fact(s) learned from a recording")
         if ev["from_reference"]:
-            parts.append(f"  {ev['from_reference']} phrase(s) come from the "
-                         f"reference pack: the library's own material rendered "
-                         f"for practice, not a performance.")
+            held.append(f"{ev['from_reference']} phrase(s) practised from the "
+                        f"reference pack, which is the library's own material "
+                        f"and not a performance")
+        parts.append("  " + ", ".join(held) + ".")
+        if not ev["from_recordings"] and not learned_facts:
+            parts.append("  Nothing heard from a recording yet.")
+        if reference_facts:
+            parts.append(f"  Alongside the library's built-in reference "
+                         f"({reference_facts} fact(s)), which is not the same "
+                         f"as having heard it.")
         if ev["by_origin"]:
             described = ", ".join(f"{n} {provenance.describe(o)}"
                                   for o, n in sorted(ev["by_origin"].items()))
@@ -1892,61 +1920,97 @@ class AppController:
             parts.append(f"  {note}")
         return "\n".join(parts)
 
-    #: Source statuses, as research.py writes them.  "analysed" is the only
-    #: one that means the attempt finished and its findings were kept.
+    #: Source statuses, as research.py writes them.  None of them means
+    #: "something was learned" - see ``_raaga_evidence``.
     _SOURCE_ANALYSED = ("analysed",)
     _SOURCE_WAITING = ("pending", "queued")
     _SOURCE_FAILED = ("failed",)
     _SOURCE_FOUND_NOTHING = ("empty",)
+    #: Learnable origins that mean somebody performed something, as against
+    #: the shipped library rendered for practice.
+    _HEARD_ORIGINS = tuple(o for o in provenance.LEARNED_FROM
+                           if o != provenance.REFERENCE)
 
-    def _raaga_evidence(self, raaga: str) -> Dict[str, int]:
+    def _raaga_evidence(self, raaga: str, facts: Sequence = ()) -> Dict:
         """What is actually retained about a raaga, counted rather than sampled.
 
         Every answer above reads this one view, so "has it been trained",
         "what did it learn", "which recordings" and "what is missing" cannot
         disagree with each other about the same database.
+
+        The organising rule is that evidence is what was kept, and a source's
+        status is only the history of the last attempt on it.  The two are
+        reported side by side and neither is inferred from the other.
         """
         repo = self.agent.repo
         by_origin = repo.count_phrases_by_origin(raaga, learned_only=True)
-        sources = repo.count_sources_by_status(raaga)
+        index = repo.source_index(raaga)
+        origin_of = {sid: origin for sid, _status, origin in index}
 
-        def count(statuses: Sequence[str], reference: bool) -> int:
-            return sum(n for (status, origin), n in sources.items()
-                       if status in statuses
-                       and provenance.may_be_learned_from(origin)
-                       and (origin == provenance.REFERENCE) is reference)
+        # Sources that actually yielded something still held: a phrase, or a
+        # fact that names them.  A fact whose source is the shipped library
+        # is the reference book, not a recording.
+        heard_ids = set(repo.phrase_source_ids(raaga,
+                                               origins=self._HEARD_ORIGINS))
+        kept_ids = set(repo.phrase_source_ids(
+            raaga, origins=tuple(provenance.LEARNED_FROM)))
+        learned_facts = 0
+        for f in facts:
+            origin = origin_of.get(getattr(f, "source_id", ""), "")
+            if not provenance.may_be_learned_from(origin):
+                continue
+            kept_ids.add(f.source_id)
+            if origin in self._HEARD_ORIGINS:
+                learned_facts += 1
+                heard_ids.add(f.source_id)
 
+        def by_status(statuses: Sequence[str], reference: bool) -> List[str]:
+            return [sid for sid, status, origin in index
+                    if status in statuses
+                    and provenance.may_be_learned_from(origin)
+                    and (origin == provenance.REFERENCE) is reference]
+
+        analysed = by_status(self._SOURCE_ANALYSED, False)
         from_reference = by_origin.get(provenance.REFERENCE, 0)
         return {
             "by_origin": by_origin,
             "learned_total": sum(by_origin.values()),
             "from_recordings": sum(by_origin.values()) - from_reference,
             "from_reference": from_reference,
-            "analysed": count(self._SOURCE_ANALYSED, False),
-            "waiting": count(self._SOURCE_WAITING, False),
-            "failed": count(self._SOURCE_FAILED, False),
-            "found_nothing": count(self._SOURCE_FOUND_NOTHING, False),
-            "reference_packs": count(self._SOURCE_ANALYSED, True),
-            "sources_total": sum(sources.values()),
+            "learned_facts": learned_facts,
+            "heard_ids": heard_ids,
+            "kept_ids": kept_ids,
+            "heard_sources": len(heard_ids),
+            "analysed_without_result": len([s for s in analysed
+                                            if s not in kept_ids]),
+            "waiting": len(by_status(self._SOURCE_WAITING, False)),
+            "failed": len(by_status(self._SOURCE_FAILED, False)),
+            "found_nothing": len(by_status(self._SOURCE_FOUND_NOTHING, False)),
+            "reference_packs": len(by_status(self._SOURCE_ANALYSED, True)),
+            "sources_total": len(index),
         }
 
     @staticmethod
-    def _availability_note(ev: Dict[str, int]) -> str:
+    def _availability_note(ev: Dict) -> str:
         """Sources on hand that have not become learning.
 
-        Named separately because registering a recording and learning from
-        one are different events, and reporting the first as the second is
-        how the application came to say a raaga had been trained from a
-        recording it had never opened.
+        Named separately because having a recording and having heard one are
+        different events, and reporting the first as the second is how the
+        application came to say a raaga had been trained from a recording it
+        had never opened.  This is the history of the attempts; it never
+        contradicts what was kept, because it never speaks about it.
         """
         bits = []
         if ev["waiting"]:
             bits.append(f"{ev['waiting']} waiting to be analysed")
         if ev["failed"]:
-            bits.append(f"{ev['failed']} whose analysis failed")
+            bits.append(f"{ev['failed']} whose most recent analysis failed")
         if ev["found_nothing"]:
             bits.append(f"{ev['found_nothing']} analysed without yielding a "
                         f"phrase")
+        if ev["analysed_without_result"]:
+            bits.append(f"{ev['analysed_without_result']} analysed with "
+                        f"nothing kept from it")
         if not bits:
             return ""
         return ("Also on file, and not learning: " + ", ".join(bits)

@@ -86,6 +86,25 @@ def describe(origin: str) -> str:
     return _DESCRIPTIONS.get(origin, f"of unrecorded origin ({origin!r})")
 
 
+#: What a source *is*, as against what has been learned from it.  Listing a
+#: queued or failed recording as "learned from a person's recording" states
+#: the outcome of an analysis that has not happened, under a heading saying
+#: it has not happened.  These describe the thing on file; ``describe``
+#: describes the standing of what came out of it.
+_SOURCE_KINDS = {
+    HUMAN: "a person's recording",
+    INTERNET: "material found online",
+    REFERENCE: "the shipped library's reference material",
+    UNKNOWN: "of unrecorded origin",
+    GENERATED: "written by this system",
+}
+
+
+def describe_source(origin: str) -> str:
+    """What kind of thing a source is, making no claim about learning."""
+    return _SOURCE_KINDS.get(origin, f"of unrecorded origin ({origin!r})")
+
+
 def coerce(origin: str, *, source_id: str = "") -> str:
     """Settle a phrase's origin, preferring what can be derived over what
     was merely left at its default.

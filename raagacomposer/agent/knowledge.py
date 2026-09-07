@@ -790,26 +790,42 @@ class KnowledgeRepository:
                 params).fetchall()
             return {r["origin"]: int(r["n"]) for r in rows}
 
-    def count_sources_by_status(self, raaga: str = ""
-                                ) -> Dict[Tuple[str, str], int]:
-        """Sources per (status, origin), counted in the database.
+    def source_index(self, raaga: str = "") -> List[Tuple[str, str, str]]:
+        """(id, status, origin) for a raaga's sources - three columns, no rows.
 
-        Status matters to every answer about training: a source that is
-        registered and still pending, or one whose analysis failed, is
-        something the agent has available and not something it has learned
-        from.  Keeping the two apart needs the status beside the origin.
+        Status alone cannot answer whether something was learned: research
+        marks a source "analysed" when the attempt finished, whether or not
+        it retained anything, and a source can be re-run and end at "failed"
+        long after its findings were kept.  The answers need the id as well,
+        so what a source actually yielded can be checked against it.
         """
         with self._lock:
             if raaga:
                 rows = self._conn.execute(
-                    "SELECT status, origin, count(*) AS n FROM sources"
-                    " WHERE raaga = ? GROUP BY status, origin",
+                    "SELECT id, status, origin FROM sources WHERE raaga = ?",
                     (raaga,)).fetchall()
             else:
                 rows = self._conn.execute(
-                    "SELECT status, origin, count(*) AS n FROM sources"
-                    " GROUP BY status, origin").fetchall()
-            return {(r["status"], r["origin"]): int(r["n"]) for r in rows}
+                    "SELECT id, status, origin FROM sources").fetchall()
+            return [(r["id"], r["status"], r["origin"]) for r in rows]
+
+    def phrase_source_ids(self, raaga: str = "",
+                          origins: Optional[Sequence[str]] = None
+                          ) -> List[str]:
+        """Which sources actually yielded a phrase that is still kept."""
+        with self._lock:
+            clauses = ["rejected = 0", "source_id != ''"]
+            params: List[Any] = []
+            if raaga:
+                clauses.append("raaga = ?")
+                params.append(raaga)
+            if origins:
+                clauses.append("origin IN (%s)" % ",".join("?" * len(origins)))
+                params.extend(origins)
+            rows = self._conn.execute(
+                f"SELECT DISTINCT source_id FROM phrases"
+                f" WHERE {' AND '.join(clauses)}", params).fetchall()
+            return [r["source_id"] for r in rows]
 
     @staticmethod
     def _row_to_phrase(row: sqlite3.Row) -> Phrase:
