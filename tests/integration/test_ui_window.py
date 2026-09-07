@@ -558,7 +558,11 @@ def test_the_tala_picker_offers_the_cycles_and_their_shape(window):
     """Tala is chosen, not inferred from a beat count (specification 11.4)."""
     panel = window.tune
     labels = [panel.tala.itemText(i) for i in range(panel.tala.count())]
-    assert labels[0] == "From the tune", "there must be a way not to choose"
+    # The first entry is the one that leaves the choice to the application.
+    # It reads "Automatic" rather than "From the tune" because with no tune
+    # there is nothing to take it from: the cycle comes from the brief.
+    assert panel.tala.itemData(0) == "", "there must be a way not to choose"
+    assert labels[0] == "Automatic"
     assert any("Misra Chapu" in l and "3+2+2" in l for l in labels), \
         "the picker should show each cycle's shape, not only its name"
     assert any("Adi" in l and "4+2+2" in l for l in labels)
@@ -869,3 +873,33 @@ def test_typing_in_the_conversation_box_does_not_act_inline(window):
     assert panel.entry.text() == "", "the box did not clear"
     assert len(app.project.conversation) == before,         "the typed phrase was interpreted on the interface thread"
     assert app._typed_queue.qsize() == 1, "it was not queued either"
+
+
+def test_the_chosen_cycle_and_its_reason_are_on_screen(window):
+    """A choice made for the creator is shown as one.
+
+    Every new tune was composed in Adi because Adi is what the lookup falls
+    back to, and nothing said a decision had been made or offered another.
+    """
+    app = window.app
+    # The window fixture is module-scoped, so an earlier test may have left
+    # a tala on the brief.  This test is about the automatic choice, so it
+    # says so rather than depending on the order it happens to run in.
+    app.update_brief(tala="")
+    app.apply_brief_sync(mood="tense, nervous", feel="",
+                         situation="a chase through a city at night")
+    window.refresh()
+
+    note = window.tune.tala_note.text()
+    assert "Khanda Chapu" in note, note
+    assert "chase" in note, "the reason does not say what decided it"
+    assert note.startswith("I chose"), "an automatic choice must own itself"
+
+    # And it is overridable: choosing one makes it the creator's.
+    index = next(i for i in range(window.tune.tala.count())
+                 if window.tune.tala.itemData(i) == "Rupaka")
+    window.tune._tala_chosen(index)
+    window.refresh()
+    note = window.tune.tala_note.text()
+    assert note.startswith("you chose"), note
+    assert "Rupaka" in note

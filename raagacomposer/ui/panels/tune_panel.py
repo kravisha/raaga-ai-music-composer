@@ -43,7 +43,10 @@ class TunePanel(QWidget):
         # about rhythm, but it belongs to the song: the tune's sections
         # are built on the same cycle.
         self.tala = QComboBox()
-        self.tala.addItem("From the tune", "")
+        # "Automatic" rather than "From the tune": with no tune yet there
+        # is nothing to take it from, and the cycle is chosen from the
+        # brief.  The label beside it says which one and why.
+        self.tala.addItem("Automatic", "")
         for name in tala_module.names():
             self.tala.addItem(tala_module.require(name).describe(), name)
         self.tala.activated.connect(self._tala_chosen)
@@ -54,6 +57,11 @@ class TunePanel(QWidget):
         self.play_beat_btn = QPushButton("Play beat")
         self.play_beat_btn.clicked.connect(lambda: self.app.play_render("beat"))
         self.beat_label = QLabel("No beat yet")
+        #: Which cycle, and why it was chosen, under the picker that can
+        #: change it.
+        self.tala_note = QLabel("")
+        self.tala_note.setObjectName("hint")
+        self.tala_note.setWordWrap(True)
         self.beat_label.setObjectName("hint")
 
         self.versions = QComboBox()
@@ -114,6 +122,7 @@ class TunePanel(QWidget):
         layout.addLayout(top)
         layout.addLayout(second)
         layout.addLayout(beat_row)
+        layout.addWidget(self.tala_note)
         layout.addWidget(QLabel("Sections - each is separately playable, "
                                 "regeneratable and lockable:"))
         layout.addWidget(self.sections, 1)
@@ -215,6 +224,9 @@ class TunePanel(QWidget):
         if not self.tala.hasFocus():
             idx = self.tala.findData(chosen)
             self.tala.setCurrentIndex(idx if idx >= 0 else 0)
+        # A choice made on the creator's behalf is shown as one, with its
+        # reason, so it can be disagreed with rather than discovered.
+        self.tala_note.setText(self.app.tala_choice().describe())
 
         if melody is not None and not self.tempo.hasFocus():
             self.tempo.setValue(int(melody.tempo_bpm))

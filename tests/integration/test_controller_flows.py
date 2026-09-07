@@ -1670,3 +1670,83 @@ def test_the_tempo_is_still_inferred_when_nobody_has_chosen_one(ready, settle):
     settle()
     assert app.project.melody().tempo_bpm == before, \
         "an inferred tempo should stay stable across regeneration"
+
+
+# --------------------------------------------------------------------------
+# The cycle is chosen, not defaulted (Krish's component list, 14:35)
+# --------------------------------------------------------------------------
+def test_a_new_tune_is_composed_in_a_cycle_chosen_from_the_brief(ready, settle):
+    """Every new tune used to be Adi because Adi is the fallback.
+
+    A default is not a choice: nothing told the creator a decision had been
+    made for them, and nothing offered another.
+    """
+    app = ready
+    # A fresh song: with a tune in hand the cycle rightly comes from the
+    # tune, which is a different rule and has its own test below.
+    app.new_project("Cycle probe", write=False)
+    app.update_brief(tala="")
+    app.apply_brief_sync(mood="tense, nervous", feel="",
+                         situation="a chase through a city at night")
+    app.select_raaga("Keeravani", "for the test")
+    choice = app.tala_choice()
+    assert choice.tala.name == "Khanda Chapu", choice.describe()
+    assert not choice.chosen_by_creator
+    assert "chase" in choice.reason
+
+    app.generate_tune(seed=11)
+    settle()
+    melody = app.project.melody()
+    assert melody.beats_per_cycle == choice.tala.aksharas, \
+        "the tune was not composed in the cycle that was chosen"
+
+
+def test_an_explicitly_chosen_cycle_wins(ready, settle):
+    app = ready
+    app.new_project("Explicit cycle", write=False)
+    app.update_brief(tala="Rupaka")
+    app.select_raaga("Keeravani", "for the test")
+    choice = app.tala_choice()
+    assert choice.tala.name == "Rupaka"
+    assert choice.chosen_by_creator, "an explicit choice must read as theirs"
+
+    app.generate_tune(seed=12)
+    settle()
+    assert app.project.melody().beats_per_cycle == 6
+
+
+def test_adding_a_beat_keeps_the_tune_in_its_own_cycle(ready, settle):
+    """Krish: adding tala to an existing tune applies percussion to that
+    tune on its existing timing - not a disconnected beat, and not a
+    silent rewrite of the melody."""
+    from raagacomposer.music import tala as tala_module
+    app = ready
+    app.update_brief(tala="")
+    melody = app.project.melody()
+    before_notes = [(n.midi, round(n.start, 4)) for n in melody.notes]
+    cycle = melody.beats_per_cycle
+
+    app.generate_beat()
+    settle()
+    beat = app.project.beat()
+    assert beat is not None, "no beat was produced"
+    assert tala_module.require(beat.tala).aksharas == cycle, \
+        "the beat is in a different cycle from the tune"
+
+    after = app.project.melody()
+    assert [(n.midi, round(n.start, 4)) for n in after.notes] == before_notes, \
+        "adding a beat rewrote the tune"
+
+
+def test_the_reason_names_what_decided_it(ready):
+    """A reason the creator cannot check is not a reason."""
+    app = ready
+    for situation, expected in (("a lullaby for a child", "Tisra Eka"),
+                                ("a village folk festival", "Misra Chapu"),
+                                ("two friends talking quietly", "Adi")):
+        app.new_project(f"Reason probe {expected}", write=False)
+        app.update_brief(tala="", situation=situation, mood="")
+        choice = app.tala_choice()
+        assert choice.tala.name == expected, \
+            f"{situation!r} chose {choice.tala.name}: {choice.reason}"
+        assert choice.reason, "no reason given"
