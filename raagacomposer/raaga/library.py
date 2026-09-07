@@ -242,6 +242,40 @@ class Raaga:
                     break
         return hits / max(1.0, len(self.moods) ** 0.5)
 
+    def evidence_lines(self) -> List[str]:
+        """What is known about this raaga, each labelled with its basis.
+
+        Krish asked for this after selecting Chitrambari and seeing an empty
+        "moods" heading.  The raaga was not short of description - it has
+        block characters, tags and a "good for" list, and the ranker used
+        them to recommend it.  What it lacks is *curated* moods, and the
+        display printed only those, so the evidence that drove the
+        suggestion was invisible while the one absent field was prominent.
+
+        Everything that informed a recommendation belongs here, and the
+        label matters as much as the content: a descriptor inferred from
+        the scale's structure is not the same claim as a mood a person
+        wrote down, and presenting them alike would be the fabrication this
+        avoids.
+        """
+        rows: List[str] = []
+        if self.moods:
+            rows.append(f"  Moods (curated): {', '.join(self.moods)}")
+        else:
+            rows.append("  Moods (curated): none recorded for this raaga")
+        if self.tags:
+            rows.append(f"  Descriptors (reference pack, not studied): "
+                        f"{', '.join(self.tags)}")
+        if self.good_for:
+            rows.append(f"  Suited to (reference pack, not studied): "
+                        f"{', '.join(self.good_for)}")
+        summary = self.block_summary()
+        if summary:
+            rows.append(f"  Scale character (derived from its blocks): {summary}")
+        if self.notes:
+            rows.append(f"  Note (curated): {self.notes}")
+        return rows
+
     def describe(self) -> str:
         tempo = (f"{self.tempo_range[0]}-{self.tempo_range[-1]} bpm"
                  if self.tempo_range else "not known")
@@ -250,20 +284,38 @@ class Raaga:
                  f"  Avarohanam: {' '.join(self.avarohanam)}",
                  f"  Jeeva swaras: {', '.join(self.jeeva) or '-'}",
                  f"  Resting (nyasa): {', '.join(self.nyasa) or '-'}",
-                 f"  Moods: {', '.join(self.moods) or '-'}",
                  f"  Tempo: {tempo}"]
         if self.melakarta:
             chakra = f", chakra {self.chakra}" if self.chakra else ""
             lines.append(f"  Melakarta {self.melakarta}{chakra}")
-        summary = self.block_summary()
-        if summary:
-            lines.append(f"  Character: {summary}")
+        if self.aliases:
+            lines.append(f"  Also called: {', '.join(self.aliases)}")
+        # The specification's per-raaga list asks for characteristic phrases
+        # (item 6) and gamaka behaviour (item 9) by name, and the library has
+        # held both all along - they simply never reached the screen, so
+        # selecting a raaga showed a fraction of what was known about it.
+        if self.prayogas:
+            shown = ["  ".join(p) for p in self.prayogas[:4]]
+            more = (f"  (+{len(self.prayogas) - 4} more)"
+                    if len(self.prayogas) > 4 else "")
+            lines.append(f"  Characteristic phrases: {' | '.join(shown)}{more}")
+        if self.gamaka:
+            ornament = ", ".join(f"{swara} {how.replace('_', ' ')}"
+                                 for swara, how in self.gamaka.items())
+            lines.append(f"  Gamaka: {ornament}")
+        if self.graha:
+            lines.append(f"  Starts on: {', '.join(self.graha)}")
+        if self.avoid:
+            # Flattened: the data holds groups, and a reader wants the notes.
+            avoided = [s for group in self.avoid for s in group]
+            lines.append(f"  Avoid: {', '.join(avoided)}")
+        if self.time_of_day and self.time_of_day != "any":
+            lines.append(f"  Time of day: {self.time_of_day}")
+        lines.extend(self.evidence_lines())
         if self.scale_only:
             lines.append("  This is the parent scale and its character only - "
                          "no characteristic phrases, resting notes or gamaka "
                          "have been learned or curated for it yet.")
-        if self.notes:
-            lines.append(f"  {self.notes}")
         return "\n".join(lines)
 
 

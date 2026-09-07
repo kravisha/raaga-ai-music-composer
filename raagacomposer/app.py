@@ -28,6 +28,7 @@ from .kb.context import KnowledgeContextBuilder
 from .kb.service import KnowledgeBaseService
 from .audio import export as export_engine
 from .audio.playback import PlaybackEngine
+from .core import provenance
 from .core.actions import ActionState, ActionStatus
 from .core.jobs import JobCancelled, JobContext, JobManager
 from .core.logging_setup import export_diagnostics, get_logger, setup_logging
@@ -1660,13 +1661,158 @@ class AppController:
         self.status(message)
         return message
 
+    #: Words that mean the question is about the tune on the desk rather
+    #: than about a raaga.  "why" and "phrase" are not among them: they are
+    #: the natural words for asking why a raaga was suggested or what
+    #: phrases were learned, and routing on them sent every such question to
+    #: the tune explainer as soon as any tune existed.
+    #: "this phrase" and "you chose" belong here: they point at the line on
+    #: the desk.  "what phrases has Keeravani learned" does not - it names a
+    #: raaga and asks about records.  The discriminator is a demonstrative
+    #: or a reference to the act of composing, not the word "phrase" itself.
+    _ABOUT_THE_TUNE = ("this tune", "the tune", "this melody", "the melody",
+                       "this line", "what you wrote", "what it wrote",
+                       "this composition", "the composition",
+                       "this phrase", "that phrase", "these phrases",
+                       "you choose", "you chose", "did you choose",
+                       "you pick", "you picked")
+
     def ask_agent(self, question: str) -> str:
-        raaga = self.project.raaga.selected or ""
-        melody = self.project.melody()
+        """Answer a question about the music or about what has been learned.
+
+        Read-only: nothing here composes, trains, or changes the song.
+        """
         low = (question or "").lower()
-        if melody is not None and ("why" in low or "phrase" in low):
-            return self.agent.explain_choice(melody, raaga or melody.raaga)
-        return self.agent.explain(question, raaga)
+        melody = self.project.melody()
+        named = self.raagas.find_in_text(question or "")
+        subject = named.name if named else self.question_subject()
+
+        about_the_tune = any(p in low for p in self._ABOUT_THE_TUNE)
+        if melody is not None and about_the_tune:
+            return self.agent.explain_choice(melody, subject or melody.raaga)
+
+        if named:
+            # Asking about a raaga by name makes it the subject of whatever
+            # is asked next, so "what did it learn?" does not lose it.
+            self._question_subject = named.name
+        answer = self.knowledge_answer(subject, low)
+        if answer:
+            return answer
+        return self.agent.explain(question, subject)
+
+    def question_subject(self) -> str:
+        """Whichever raaga the conversation is currently about.
+
+        A follow-up rarely repeats the name.  Before this, every question
+        re-derived the subject from its own words, so "has Keeravani been
+        trained?" followed by "what did it learn?" answered the second
+        about whatever the curriculum happened to be studying.
+        """
+        return (getattr(self, "_question_subject", "")
+                or self.project.raaga.selected
+                or (self.agent.curriculum.current_raaga() if self.agent else ""))
+
+    def knowledge_answer(self, raaga: str, low: str) -> str:
+        """Answer "has it been trained" and its follow-ups from real records.
+
+        Returns "" when the question is not one of these, so the caller can
+        fall through to the agent's own explanations.
+        """
+        if not raaga or self.agent is None:
+            return ""
+        wants_training = any(w in low for w in
+                             ("trained", "training", "studied", "learned from",
+                              "learnt from", "know about", "knowledge of"))
+        wants_sources = any(w in low for w in
+                            ("recording", "source", "where did", "which file",
+                             "what did you hear", "evidence"))
+        wants_gaps = any(w in low for w in
+                         ("missing", "not know", "unknown", "gap", "lack"))
+        # "what did it learn" is the second question in the sequence Krish
+        # asked for, and it used to fall through to the curriculum branch,
+        # which answered with a study stage rather than with anything the
+        # agent had actually learned.
+        wants_content = any(w in low for w in
+                            ("what did it learn", "what has it learned",
+                             "what did you learn", "what have you learned",
+                             "what do you know", "what does it know"))
+        if not (wants_training or wants_sources or wants_gaps or wants_content):
+            return ""
+
+        repo = self.agent.repo
+        learned = repo.learned_phrases(raaga=raaga, limit=500)
+        facts = repo.facts(raaga)
+        sources = repo.sources(raaga=raaga, limit=20)
+        by_origin: Dict[str, int] = {}
+        for p in repo.phrases(raaga=raaga, limit=500):
+            by_origin[p.origin] = by_origin.get(p.origin, 0) + 1
+
+        if wants_sources:
+            if not sources:
+                return (f"Nothing has been ingested for {raaga}, so there are "
+                        f"no recordings or references behind what I have.")
+            rows = [f"What {raaga} was learned from:"]
+            for s in sources:
+                rows.append(f"  {s.title[:60]} - {provenance.describe(s.origin)}"
+                            f", {s.status}")
+            return "\n".join(rows)
+
+        if wants_gaps:
+            missing = []
+            if not learned:
+                missing.append("no phrases heard from any recording")
+            if not facts:
+                missing.append("no facts recorded")
+            if not sources:
+                missing.append("no source ingested")
+            entry = self.raagas.get(raaga)
+            if entry is not None and entry.scale_only:
+                missing.append("the library holds its scale only - no "
+                               "characteristic phrases, resting notes or gamaka")
+            if not missing:
+                return (f"For {raaga} I have {len(learned)} learned phrase(s), "
+                        f"{len(facts)} fact(s) and {len(sources)} source(s). "
+                        f"What is missing is corroboration: a second recording "
+                        f"would let me tell habit from accident.")
+            return f"For {raaga}, what I do not have: " + "; ".join(missing) + "."
+
+        if wants_content:
+            if not learned and not facts:
+                return (f"Nothing yet for {raaga} beyond the library's own "
+                        f"reference.")
+            rows = [f"What I have learned about {raaga}:"]
+            for f in facts[:6]:
+                rows.append(f"  {f.key}: {f.value} (confidence "
+                            f"{f.confidence:.2f})")
+            if learned:
+                rows.append(f"  and {len(learned)} phrase(s) heard in real "
+                            f"recordings, the most trusted being:")
+                for p in learned[:4]:
+                    rows.append(f"    {' '.join(p.swaras)}  "
+                                f"(confidence {p.confidence:.2f})")
+            return "\n".join(rows)
+
+        # wants_training.  "Trained" means something was heard, not that the
+        # shipped library was copied in: a fresh installation seeds fifteen
+        # structural facts for a raaga from its own reference data, and
+        # counting those made the application answer "yes, trained" about a
+        # raaga it had never heard a note of.
+        heard_from = [s for s in sources
+                      if provenance.may_be_learned_from(s.origin)
+                      and s.origin != provenance.REFERENCE]
+        if not learned and not heard_from:
+            reference = (" I have the library's built-in reference for it "
+                         f"({len(facts)} fact(s)), which is not the same as "
+                         f"having heard it.") if facts else ""
+            return f"No - {raaga} has had no training.{reference}"
+        parts = [f"Yes - {raaga} has been trained."]
+        parts.append(f"  {len(learned)} phrase(s) learned, {len(facts)} fact(s), "
+                     f"from {len(heard_from)} recording(s).")
+        if by_origin:
+            described = ", ".join(f"{n} {provenance.describe(o)}"
+                                  for o, n in sorted(by_origin.items()))
+            parts.append(f"  Where they came from: {described}.")
+        return "\n".join(parts)
 
     def agent_knowledge(self, name: str = "") -> str:
         return self.agent.knowledge_report(

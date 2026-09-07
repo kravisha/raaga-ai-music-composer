@@ -218,9 +218,14 @@ def compare(a: Raaga, b: Raaga) -> str:
     lines.append(f"Only in {a.name}: {', '.join(only_a) or '-'}")
     lines.append(f"Only in {b.name}: {', '.join(only_b) or '-'}")
     lines.append("")
-    lines.append(f"{a.name} moods: {', '.join(a.moods)}")
-    lines.append(f"{b.name} moods: {', '.join(b.moods)}")
-    lines.append("")
-    lines.append(f"{a.name}: {a.notes}")
-    lines.append(f"{b.name}: {b.notes}")
-    return "\n".join(lines)
+    # The same evidence the details pane shows, for both raagas, each
+    # line labelled with where it came from.  This printed only curated
+    # moods and notes, so comparing a curated raaga with one from the
+    # melakarta pack produced a populated column beside two blank headings -
+    # while the descriptors that actually drove the recommendation went
+    # unmentioned.
+    for raaga in (a, b):
+        lines.append(f"{raaga.name}:")
+        lines.extend(raaga.evidence_lines())
+        lines.append("")
+    return "\n".join(lines).rstrip()

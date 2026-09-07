@@ -919,3 +919,96 @@ def test_an_interpreted_phrase_is_still_acted_on(ready, settle):
             break
     assert acted or "did not understand" in app.status_text.lower(), \
         f"nothing happened and nothing was said: {app.status_text!r}"
+
+
+# --------------------------------------------------------------------------
+# Asking about what it knows (Krish's acceptance sequence, 2026-09-07 08:50)
+# --------------------------------------------------------------------------
+def _teach(app, raaga="Keeravani"):
+    from raagacomposer.agent.knowledge import Phrase, Source
+    from raagacomposer.core import provenance
+    source, _ = app.agent.repo.add_source(Source(
+        locator="rec://one", title="a real recording", raaga=raaga,
+        origin=provenance.HUMAN, status="analysed"))
+    for swaras in (["S", "R2", "G2"], ["G2", "M1", "P"], ["P", "D1", "N3"]):
+        app.agent.repo.add_phrase(Phrase(raaga=raaga, swaras=swaras,
+                                         source_id=source.id, confidence=0.7))
+    return source
+
+
+def test_a_follow_up_question_keeps_its_subject(ready):
+    """Ask about a raaga, then ask a follow-up without naming it.
+
+    Every question used to re-derive the subject from its own words, so
+    "what did it learn?" answered about whatever the curriculum was
+    studying rather than about the raaga just asked about.
+    """
+    app = ready
+    _teach(app, "Keeravani")
+
+    first = app.ask_agent("has Keeravani been trained?")
+    assert "Keeravani" in first
+    assert app.question_subject() == "Keeravani"
+
+    for follow_up in ("what did it learn?", "which recordings support that?",
+                      "what is missing?"):
+        answer = app.ask_agent(follow_up)
+        assert "Keeravani" in answer, \
+            f"{follow_up!r} lost the subject: {answer[:80]!r}"
+
+
+def test_the_training_question_is_answered_from_records(ready):
+    app = ready
+    assert "no training" in app.ask_agent("has Keeravani been trained?").lower()
+
+    _teach(app, "Keeravani")
+    answer = app.ask_agent("has Keeravani been trained?")
+    assert answer.lower().startswith("yes")
+    assert "3 phrase(s) learned" in answer
+    assert "person's recording" in answer
+
+
+def test_a_question_about_a_raaga_is_not_answered_about_the_tune(ready, settle):
+    """Arya's finding: any question containing "why" or "phrase" was routed
+    to the tune explainer as soon as a tune existed, which stole exactly the
+    questions this feature is for."""
+    app = ready
+    _teach(app, "Keeravani")
+    app.generate_tune(seed=3)
+    settle()
+    assert app.project.melody() is not None, "no tune, so the case is untested"
+
+    answer = app.ask_agent("what phrases has Keeravani learned?")
+    assert "Keeravani" in answer
+    # the tune explainer talks about the line it wrote, not about records
+    assert "learned" in answer.lower() or "heard" in answer.lower()
+
+
+def test_a_question_about_the_tune_still_reaches_the_tune(ready, settle):
+    """The fix must not strand the tune explanation."""
+    app = ready
+    app.generate_tune(seed=3)
+    settle()
+    assert app.project.melody() is not None
+
+    asked = []
+    app.agent.explain_choice = lambda melody, raaga: asked.append(raaga) or "ok"
+    app.ask_agent("why did you write this tune that way?")
+    assert asked, "a question about the tune no longer reaches explain_choice"
+
+
+def test_asking_never_changes_the_song(ready, settle):
+    """Informational questions must not compose, train, or alter anything."""
+    app = ready
+    _teach(app, "Keeravani")
+    app.generate_tune(seed=3)
+    settle()
+    before = app.project.melody().version
+    phrases_before = app.agent.repo.count_phrases("Keeravani")
+
+    for q in ("has Keeravani been trained?", "what did it learn?",
+              "what is missing?", "which recordings support that?"):
+        app.ask_agent(q)
+
+    assert app.project.melody().version == before
+    assert app.agent.repo.count_phrases("Keeravani") == phrases_before
