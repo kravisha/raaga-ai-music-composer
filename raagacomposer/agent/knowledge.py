@@ -764,6 +764,53 @@ class KnowledgeRepository:
                 params).fetchone()
             return int(row["n"])
 
+    def count_phrases_by_origin(self, raaga: str = "",
+                                learned_only: bool = True) -> Dict[str, int]:
+        """How many phrases came from each origin, counted in the database.
+
+        Counting by loading rows and tallying them in Python is only right
+        while the rows fit under whatever limit the caller passed, and the
+        answers that used it reported a display limit as a total.  One
+        GROUP BY is bounded by the number of origins, not by the number of
+        phrases.
+        """
+        with self._lock:
+            clauses = ["rejected = 0"]
+            params: List[Any] = []
+            if raaga:
+                clauses.append("raaga = ?")
+                params.append(raaga)
+            if learned_only:
+                clauses.append("origin IN (%s)"
+                               % ",".join("?" * len(provenance.LEARNED_FROM)))
+                params.extend(provenance.LEARNED_FROM)
+            rows = self._conn.execute(
+                f"SELECT origin, count(*) AS n FROM phrases"
+                f" WHERE {' AND '.join(clauses)} GROUP BY origin",
+                params).fetchall()
+            return {r["origin"]: int(r["n"]) for r in rows}
+
+    def count_sources_by_status(self, raaga: str = ""
+                                ) -> Dict[Tuple[str, str], int]:
+        """Sources per (status, origin), counted in the database.
+
+        Status matters to every answer about training: a source that is
+        registered and still pending, or one whose analysis failed, is
+        something the agent has available and not something it has learned
+        from.  Keeping the two apart needs the status beside the origin.
+        """
+        with self._lock:
+            if raaga:
+                rows = self._conn.execute(
+                    "SELECT status, origin, count(*) AS n FROM sources"
+                    " WHERE raaga = ? GROUP BY status, origin",
+                    (raaga,)).fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT status, origin, count(*) AS n FROM sources"
+                    " GROUP BY status, origin").fetchall()
+            return {(r["status"], r["origin"]): int(r["n"]) for r in rows}
+
     @staticmethod
     def _row_to_phrase(row: sqlite3.Row) -> Phrase:
         return Phrase(

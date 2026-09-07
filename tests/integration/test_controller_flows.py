@@ -1,6 +1,7 @@
 """Integration: controller-level workflow, jobs, undo and error handling."""
 from __future__ import annotations
 
+import re
 import time
 from pathlib import Path
 
@@ -964,8 +965,111 @@ def test_the_training_question_is_answered_from_records(ready):
     _teach(app, "Keeravani")
     answer = app.ask_agent("has Keeravani been trained?")
     assert answer.lower().startswith("yes")
-    assert "3 phrase(s) learned" in answer
+    assert "3 phrase(s) heard in 1 analysed recording(s)" in answer
     assert "person's recording" in answer
+
+
+# --------------------------------------------------------------------------
+# Arya's four reproduced answer errors (2026-09-07 11:08)
+# --------------------------------------------------------------------------
+def _register(app, raaga="Keeravani", status="pending", origin="", n=1,
+              phrases=0):
+    """Put sources on file without pretending they were learned from."""
+    from raagacomposer.agent.knowledge import Phrase, Source
+    from raagacomposer.core import provenance
+    made = []
+    for i in range(n):
+        source, _ = app.agent.repo.add_source(Source(
+            locator=f"rec://{status}-{i}", title=f"fixture {status} {i}",
+            raaga=raaga, origin=origin or provenance.HUMAN, status=status))
+        made.append(source)
+        for k in range(phrases):
+            app.agent.repo.add_phrase(Phrase(
+                raaga=raaga,
+                swaras=["S", "R2", "G2"] + ["M1"] * (i + k + 1),
+                source_id=source.id, confidence=0.8,
+                origin=origin or provenance.HUMAN))
+    return made
+
+
+def test_registering_a_recording_is_not_learning_from_it(ready):
+    """Arya's finding: a source alone answered "yes, trained".
+
+    A recording that is queued, or one whose analysis failed, is something
+    the agent has.  It is not something it has heard.
+    """
+    app = ready
+    _register(app, status="pending")
+    answer = app.ask_agent("has Keeravani been trained?")
+    assert answer.lower().startswith("no"), answer
+    assert "1 waiting to be analysed" in answer
+    assert "not the same as having heard it" in answer
+
+
+def test_a_failed_analysis_is_reported_without_claiming_training(ready):
+    app = ready
+    _register(app, status="failed")
+    answer = app.ask_agent("has Keeravani been trained?")
+    assert answer.lower().startswith("no"), answer
+    assert "whose analysis failed" in answer
+
+
+def test_a_later_failure_does_not_discount_earlier_learning(ready):
+    """The other half of the same rule: retained evidence decides."""
+    app = ready
+    _teach(app, "Keeravani")
+    _register(app, status="failed")
+    answer = app.ask_agent("has Keeravani been trained?")
+    assert answer.lower().startswith("yes"), answer
+    assert "3 phrase(s) heard in 1 analysed recording(s)" in answer
+    assert "whose analysis failed" in answer, "the failure was hidden instead"
+
+
+def test_reference_practice_is_not_described_as_a_performance(ready):
+    """Arya's finding: reference material reported as heard in recordings.
+
+    Practising against the library's own rendered material is legitimate
+    and is not listening to a singer.  Both facts have to survive.
+    """
+    from raagacomposer.core import provenance
+    app = ready
+    _register(app, status="analysed", origin=provenance.REFERENCE, phrases=1)
+
+    learned = app.ask_agent("what did it learn about Keeravani?")
+    assert "heard in real recordings" not in learned, learned
+    assert "reference pack" in learned
+    assert "not a performance" in learned
+
+    trained = app.ask_agent("has Keeravani been trained?")
+    assert trained.lower().startswith("yes"), "reference practice still counts"
+    assert "no phrase yet from a performance" in trained
+    assert "1 phrase(s) heard in" not in trained
+
+
+def test_a_second_recording_is_not_missing_when_two_are_on_file(ready):
+    """Arya's finding: a sentence written for one case, printed for all."""
+    app = ready
+    _register(app, status="analysed", n=2, phrases=1)
+    answer = app.ask_agent("what is missing for Keeravani?")
+    assert "a second recording would" not in answer, answer
+    assert "2 recordings" in answer, answer
+    assert "not assessed" in answer, "it must say what it has not checked"
+
+
+def test_totals_are_totals_and_not_the_size_of_the_page(ready):
+    """Arya's finding: twenty-one recordings answered as twenty."""
+    app = ready
+    _register(app, status="analysed", n=21, phrases=1)
+
+    trained = app.ask_agent("has Keeravani been trained?")
+    assert "21 phrase(s) heard in 21 analysed recording(s)" in trained, trained
+
+    listing = app.ask_agent("which recordings support that?")
+    assert "a listing limit, not the total" in listing, listing
+    # The stated total is whatever is on file - a fresh install also seeds a
+    # reference pack - and the point is only that it exceeds the page shown.
+    stated = int(re.search(r"the 20 most recent of (\d+)", listing).group(1))
+    assert stated >= 21, f"the page size was reported as the total: {stated}"
 
 
 def test_a_question_about_a_raaga_is_not_answered_about_the_tune(ready, settle):
