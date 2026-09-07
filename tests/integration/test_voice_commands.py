@@ -275,13 +275,19 @@ def test_speech_is_acted_on_by_the_thread_that_pumps(song, settle):
     """
     app = song
     acted_on = []
-    original = app.handle_utterance
+    original = app.apply_utterance
 
-    def record(text):
+    def record(text, cmd):
         acted_on.append(threading.current_thread().name)
-        return original(text)
+        return original(text, cmd)
 
-    app.handle_utterance = record
+    # Observed at ``apply_utterance`` rather than ``handle_utterance``: since
+    # the crash of 2026-09-06 the microphone interprets on a worker and
+    # applies the result through the job manager, whose callbacks are drained
+    # by ``pump``.  The property under test is unchanged - whoever pumps acts
+    # on the phrase - but the place where state is touched has moved, and a
+    # test that watches the old place would pass while watching nothing.
+    app.apply_utterance = record
     heard_on = []
 
     def speak():
@@ -340,10 +346,12 @@ def test_a_phrase_that_cannot_be_acted_on_does_not_take_the_app_down(song, settl
     """A microphone failure must never crash the whole application."""
     app = song
 
-    def explode(text):
-        raise RuntimeError("interpretation blew up")
+    def explode(text, cmd):
+        raise RuntimeError("acting on it blew up")
 
-    app.handle_utterance = explode
+    # Patched at the applying step for the same reason as the thread test
+    # above: that is where the microphone path now touches the project.
+    app.apply_utterance = explode
     app._on_transcript_final("Something impossible.")
     settle()          # pump drains it; the exception must stay contained
     assert "could not act on that" in app.status_text.lower() or \

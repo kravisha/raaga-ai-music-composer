@@ -17,14 +17,46 @@ class RaagaPanel(QGroupBox):
         super().__init__("Raaga", parent)
         self.app = app
 
+        #: Which control the creator last used - "suggestions" or "all".
+        self._picked_from = "suggestions"
+
         self.suggestions = QListWidget()
         self.suggestions.setFixedHeight(96)
         self.suggestions.currentRowChanged.connect(self._show_details)
         self.suggestions.itemDoubleClicked.connect(lambda _: self.accept_selected())
 
+        # Every raaga the library knows, whether the brief suggested it or
+        # not, and searchable because there are ninety-three of them.
         self.all_raagas = QComboBox()
+        self.all_raagas.setEditable(True)
+        self.all_raagas.setInsertPolicy(QComboBox.NoInsert)
         self.all_raagas.addItems(self.app.raagas.names())
+        self.all_raagas.setCurrentIndex(-1)
+        self.all_raagas.lineEdit().setPlaceholderText("Search any raaga...")
+        completer = self.all_raagas.completer()
+        completer.setCaseSensitivity(Qt.CaseInsensitive)
+        completer.setFilterMode(Qt.MatchContains)
         self.all_raagas.currentTextChanged.connect(self._show_named)
+        # ``activated`` fires only when a person chooses, where
+        # ``currentTextChanged`` also fires when the list is rebuilt.  The
+        # difference matters: refreshing the panel must not look like a
+        # choice.
+        self.all_raagas.activated.connect(lambda _: self._chose("all"))
+        self.suggestions.itemClicked.connect(lambda _: self._chose("suggestions"))
+
+        # Hear any raaga, straight from the selector, with no ambiguity about
+        # which one is meant.  ``Hear the scale`` acts on whichever control
+        # was last used; this one always means the box beside it.
+        self.preview_btn = QPushButton("Play this scale")
+        self.preview_btn.setToolTip(
+            "Play the scale of the raaga chosen in the box, whether or not "
+            "the brief suggested it. Does not change the song's raaga.")
+        self.preview_btn.clicked.connect(self.preview_chosen)
+
+        self.use_chosen_btn = QPushButton("Use this one")
+        self.use_chosen_btn.setToolTip(
+            "Compose in the raaga chosen in the box.")
+        self.use_chosen_btn.clicked.connect(self.use_chosen)
 
         self.details = QTextEdit()
         self.details.setReadOnly(True)
@@ -76,7 +108,11 @@ class RaagaPanel(QGroupBox):
         layout.addLayout(row1)
         layout.addLayout(row2)
         layout.addWidget(QLabel("Or choose any raaga:"))
-        layout.addWidget(self.all_raagas)
+        chooser = QHBoxLayout()
+        chooser.addWidget(self.all_raagas, 1)
+        chooser.addWidget(self.preview_btn)
+        chooser.addWidget(self.use_chosen_btn)
+        layout.addLayout(chooser)
         layout.addLayout(row3)
         layout.addWidget(self.details)
         layout.addWidget(self.selected_label)
@@ -115,11 +151,55 @@ class RaagaPanel(QGroupBox):
             self.suggestions.setCurrentRow(0)
         self.changed.emit()
 
+    def _chose(self, where: str) -> None:
+        """Remember which control the creator last used."""
+        self._picked_from = where
+
     def _current_name(self) -> str:
+        """The raaga the creator last pointed at, from either control.
+
+        This used to read the suggestions list first and fall back to the
+        box only when nothing was highlighted.  Applying a brief always
+        highlights a row, so from then on the box was unreachable: choosing
+        Keeravani there and pressing "Hear the scale" played whichever
+        suggestion happened to be selected.  The creator could see the
+        raaga they had picked and could not hear it.
+
+        The control that was last used decides, which is the same rule the
+        audition fix needed in the morning: what is acted on has to be what
+        the creator last touched.
+        """
+        if self._picked_from == "all":
+            chosen = self.all_raagas.currentText().strip()
+            if chosen:
+                return chosen
         item = self.suggestions.currentItem()
         if item is not None:
             return str(item.data(Qt.UserRole))
-        return self.all_raagas.currentText()
+        return self.all_raagas.currentText().strip()
+
+    def preview_chosen(self) -> None:
+        """Hear the scale of whatever is in the box - never a suggestion."""
+        name = self.all_raagas.currentText().strip()
+        if not name:
+            QMessageBox.information(self, "Raaga",
+                                    "Choose a raaga in the box first.")
+            return
+        self._chose("all")
+        try:
+            self.app.audition_raaga(name)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, "Raaga", str(exc))
+
+    def use_chosen(self) -> None:
+        """Compose in whatever is in the box - never a suggestion."""
+        name = self.all_raagas.currentText().strip()
+        if not name:
+            QMessageBox.information(self, "Raaga",
+                                    "Choose a raaga in the box first.")
+            return
+        self._chose("all")
+        self.accept_selected()
 
     def accept_selected(self) -> None:
         name = self._current_name()

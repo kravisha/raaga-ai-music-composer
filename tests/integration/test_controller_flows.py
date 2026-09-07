@@ -837,3 +837,85 @@ def test_a_dismissed_reading_stops_shaping_the_brief(ready, settle):
     status = app.apply_brief_sync(mood="nervy", feel="")
     settle()
     assert "Reading nervy" not in status.message, status.message
+
+
+# --------------------------------------------------------------------------
+# A live microphone must not be able to freeze the window.
+# Crash of 2026-09-06 20:25: a conversation held near the machine filled the
+# utterance queue faster than it drained, each phrase was interpreted on the
+# interface thread, and the application died with Stop Listening unserviced.
+# --------------------------------------------------------------------------
+def test_a_flood_of_speech_does_not_block_the_interface(ready, settle):
+    """104 phrases arrived and 89 were answered.  The gap was the crash."""
+    import time as _time
+
+    app = ready
+    slow = []
+
+    def crawl(text, *args, **kwargs):
+        slow.append(text)
+        _time.sleep(0.05)          # stands in for a language model
+        raise RuntimeError("unintelligible")
+
+    import raagacomposer.app as module
+    original = module.interpret
+    module.interpret = crawl
+    try:
+        for i in range(60):
+            app._on_transcript_final(f"phrase number {i}")
+
+        # The queue is bounded, so the room cannot make unbounded work.
+        assert app._utterance_queue.qsize() <= 8
+        assert app._utterances_dropped > 0, "nothing was dropped; the queue grew"
+
+        # One pump must start at most one interpretation and return at once.
+        started = _time.time()
+        app.pump()
+        assert _time.time() - started < 0.05, "pump blocked on interpretation"
+        assert app._interpreting is not None
+    finally:
+        module.interpret = original
+        app.stop_listening()
+        settle()
+
+
+def test_stop_listening_discards_the_backlog(ready, settle):
+    """Before this, being told to stop meant working through everything
+    already heard - the button could not end what it was for."""
+    app = ready
+    for i in range(6):
+        app._on_transcript_final(f"something overheard {i}")
+    assert app._utterance_queue.qsize() > 0
+
+    app.stop_listening()
+
+    assert app._utterance_queue.qsize() == 0
+    assert app._interpreting is None
+    assert "Microphone off" in app.status_text
+
+
+def test_the_queue_drops_rather_than_growing(ready):
+    """A microphone is an unbounded source of work; the queue is not."""
+    app = ready
+    for i in range(200):
+        app._on_transcript_final(f"talking {i}")
+    assert app._utterance_queue.qsize() <= 8
+    assert app._utterances_dropped >= 190
+    app._clear_utterances()
+
+
+def test_an_interpreted_phrase_is_still_acted_on(ready, settle):
+    """The fix must not break the feature it protects."""
+    app = ready
+    acted = []
+    app.execute = lambda cmd: acted.append(cmd.intent)
+
+    app._on_transcript_final("stop")
+    app.pump()
+    settle()
+    for _ in range(200):
+        app.pump()
+        if app._interpreting is None:
+            break
+    assert acted or "did not understand" in app.status_text.lower(), \
+        f"nothing happened and nothing was said: {app.status_text!r}"

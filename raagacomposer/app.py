@@ -189,7 +189,17 @@ class AppController:
         #: changing the project, and refreshing the window - which crashed
         #: the application the first time anyone spoke to it.  Jobs have
         #: always come back through ``pump``; speech now uses the same door.
-        self._utterance_queue: "queue.Queue[str]" = queue.Queue()
+        # Bounded, deliberately.  A live microphone is an unbounded source
+        # of work: on 2026-09-06 a conversation held near the machine filled
+        # this queue faster than it could be drained - 104 phrases captured
+        # against 89 interpreted in two minutes - and the application died
+        # with the backlog still growing.  A queue fed by the room has to be
+        # allowed to drop, and to say that it dropped.
+        self._utterance_queue: "queue.Queue[str]" = queue.Queue(maxsize=8)
+        #: How many phrases were discarded because the queue was full.
+        self._utterances_dropped = 0
+        #: The interpretation currently in flight, if any.
+        self._interpreting: Optional[str] = None
         self.last_suggestions: List = []
         #: The brief ``last_suggestions`` were made for, so selection
         #: feedback is attached to what was actually asked.
@@ -2496,10 +2506,34 @@ class AppController:
         return ok
 
     def stop_listening(self) -> None:
+        """Stop, and mean it.
+
+        The microphone stopping is not enough on its own: whatever was
+        already heard is still queued, and before this the application
+        would work through the whole backlog after being told to stop -
+        which is how a conversation kept the interpreter busy long after
+        the creator had pressed the button.
+        """
         self.voice_input.stop()
         self.context.listening = False
-        self.status("Microphone off")
+        dropped = self._clear_utterances()
+        self.jobs.cancel_target("voice")
+        self._interpreting = None
+        if dropped:
+            self.status(f"Microphone off - {dropped} unheard phrase(s) discarded")
+        else:
+            self.status("Microphone off")
         self._notify_conversation()
+
+    def _clear_utterances(self) -> int:
+        """Throw away anything heard but not yet acted on."""
+        discarded = 0
+        while True:
+            try:
+                self._utterance_queue.get_nowait()
+            except queue.Empty:
+                return discarded
+            discarded += 1
 
     def toggle_listening(self) -> bool:
         return self.stop_listening() if self.context.listening else self.start_listening()
@@ -2527,28 +2561,84 @@ class AppController:
         next ``pump`` the way a finished job does.
         """
         self.context.partial = ""
-        self._utterance_queue.put(text)
+        try:
+            self._utterance_queue.put_nowait(text)
+        except queue.Full:
+            # Never block here: this runs on the capture thread, and making
+            # the microphone wait for the interpreter is how the backlog
+            # became unbounded in the first place.
+            self._utterances_dropped += 1
+            log.warning("utterance queue full; dropped %r (%d dropped so far)",
+                        text[:60], self._utterances_dropped)
+            return
         self._notify_conversation()
 
     def _drain_utterances(self) -> None:
-        """Act on anything heard since the last pump, on this thread."""
-        while True:
+        """Start interpreting at most one phrase, and never on this thread.
+
+        Two faults met here on 2026-09-06 and took the application down.
+
+        This drained the *whole* queue on every pump, and each phrase was
+        interpreted synchronously - which, when the rule tables do not
+        recognise a phrase, means waiting for a language model.  ``pump``
+        runs on the interface thread, so the window froze for seconds at a
+        time while a queue of overheard conversation built up behind it.
+        Stop Listening could not be serviced, because the thread that would
+        service it was the thread that was busy.
+
+        So: one phrase per pump, interpreted in the background, applied
+        here when the answer arrives.  The interface stays alive whatever
+        the room is saying.
+        """
+        if self._interpreting is not None:
+            return                      # one in flight is enough
+        try:
+            text = self._utterance_queue.get_nowait()
+        except queue.Empty:
+            return
+
+        self._interpreting = text
+        self.status(f"Working on what you said: {text[:48]!r}")
+
+        def work(ctx: JobContext) -> Command:
+            self._sync_context()
+            return interpret(text, self.context.time_context(),
+                             llm=self.providers.llm,
+                             last_instrument=self.context.last_instrument)
+
+        def done(cmd: Command) -> None:
+            self._interpreting = None
             try:
-                text = self._utterance_queue.get_nowait()
-            except queue.Empty:
-                return
-            try:
-                self.handle_utterance(text)
+                self.apply_utterance(text, cmd)
             except Exception as exc:  # noqa: BLE001
-                # A misheard phrase must not take the application with it.
                 log.exception("could not act on what was heard: %s", text)
                 self.error("voice", f"I could not act on that: {exc}")
 
+        def failed(exc: Exception) -> None:
+            self._interpreting = None
+            log.warning("interpreting %r failed: %s", text[:60], exc)
+            self.status(f"I could not work out what {text[:40]!r} meant.")
+
+        self.jobs.submit("voice.interpret", "voice", work,
+                         on_done=done, on_error=failed,
+                         on_cancelled=lambda: setattr(self, "_interpreting", None),
+                         description="Interpret what was heard")
+
     def handle_utterance(self, text: str) -> Command:
-        """Interpret one instruction and act on it."""
+        """Interpret one instruction and act on it, inline.
+
+        Kept for the conversational path and for tests, where a synchronous
+        answer is simpler.  The microphone does *not* use this: it goes
+        through ``_drain_utterances``, which interprets in the background so
+        that a room full of talking cannot freeze the window.
+        """
         self._sync_context()
         cmd = interpret(text, self.context.time_context(), llm=self.providers.llm,
                         last_instrument=self.context.last_instrument)
+        return self.apply_utterance(text, cmd)
+
+    def apply_utterance(self, text: str, cmd: Command) -> Command:
+        """Act on an already-interpreted phrase.  Fast, and UI-thread safe."""
         cmd = self.context.resolve(cmd)
         turn = self.context.add_turn(text, intent=cmd.intent,
                                      interpretation=cmd.interpretation)
