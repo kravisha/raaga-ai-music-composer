@@ -1750,3 +1750,70 @@ def test_the_reason_names_what_decided_it(ready):
         assert choice.tala.name == expected, \
             f"{situation!r} chose {choice.tala.name}: {choice.reason}"
         assert choice.reason, "no reason given"
+
+
+def test_a_good_section_preview_still_mixes_and_plays(ready, settle):
+    """The other half of Arya's lifecycle finding.
+
+    Scoping the follow-on to its own render must not quietly disable it:
+    a preview that succeeds still asks for the mix and plays that span.
+    """
+    app = ready
+    melody, by_name = _sections(app)
+    pallavi = by_name.get("Pallavi")
+    assert pallavi is not None, list(by_name)
+    app.generate_lyrics(seed=3, section_ids=[pallavi.id])
+    settle()
+
+    asked = []
+    original = app.render
+
+    def watch(kind="full", autoplay=False, play_range=None):
+        asked.append((kind, autoplay, play_range))
+        return original(kind=kind, autoplay=False, play_range=play_range)
+
+    app.render = watch
+    try:
+        app.preview_section(pallavi.id, autoplay=True)
+        settle()
+    finally:
+        app.render = original
+
+    assert asked, "the preview never asked for a mix"
+    kind, autoplay, play_range = asked[-1]
+    assert kind == "full", kind
+    assert autoplay is True, "a preview the creator asked to hear did not play"
+    assert play_range is not None
+    start, end = play_range
+    assert abs(start - pallavi.start) < 0.01 and abs(end - pallavi.end) < 0.01,         f"played {play_range}, not the Pallavi at {pallavi.start}-{pallavi.end}"
+
+
+def test_feedback_on_a_new_song_is_not_judged_by_the_old_ones_evaluation(
+        ready, settle):
+    """The agent's verdict on one tune must not be filed against another.
+
+    last_evaluation is set when a tune is composed and read when the
+    creator says something about one.  It survived new_project, so praise
+    or criticism of the new song recorded lessons derived from the
+    previous song's evaluation under the new song's project id.
+    """
+    app = ready
+    assert app.last_evaluation is not None, "the fixture composed nothing"
+
+    app.new_project("A different song", write=False)
+    assert app.last_evaluation is None, \
+        "the previous song's evaluation followed us into the new one"
+    assert app.playhead == 0.0, "the playhead came from the previous song"
+
+
+def test_opening_a_song_does_not_inherit_the_last_ones_judgement(ready, settle,
+                                                                 tmp_path):
+    app = ready
+    where = app.save()
+    assert where is not None, "the fixture project was not saved"
+    assert app.last_evaluation is not None
+
+    app.new_project("Something else", write=False)
+    app.open_project(where)
+    assert app.last_evaluation is None, \
+        "opening a song brought the other song's evaluation with it"
