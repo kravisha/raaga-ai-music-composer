@@ -1526,6 +1526,32 @@ class AppController:
             avoided=brief.instruments_avoided, feel_words=words,
             default="mridangam").instrument
 
+    def _compose_in_named_raaga(self, cmd: Command) -> bool:
+        """Honour a raaga named in a compose request.  False means do not.
+
+        Selecting it rather than passing it through means the choice is
+        recorded, undoable and visible in the panel - the same path the
+        "set the raaga" command already takes - so the tune and what the
+        window says about it cannot disagree.
+        """
+        if not cmd.raaga:
+            return True
+        if self.raagas.get(cmd.raaga) is None:
+            self.status(f"I do not know a raaga called {cmd.raaga}.")
+            return False
+        if cmd.raaga.casefold() == (self.project.raaga.selected or "").casefold():
+            return True
+        try:
+            self.select_raaga(cmd.raaga)
+        except LockedContentError:
+            # Silently composing in the locked raaga would answer a question
+            # they did not ask; silently overriding the lock would undo a
+            # decision they did.
+            self.status(f"The raaga is locked to {self.project.raaga.selected}, "
+                        f"so I did not switch to {cmd.raaga}. Unlock it first.")
+            return False
+        return True
+
     def make_variation(self, strength: float = 0.5) -> None:
         self.take_the_floor("tune variation")
         melody = self.project.melody()
@@ -3164,7 +3190,12 @@ class AppController:
             self.auto_arrange()
 
         elif intent == "tune.generate":
-            self.generate_tune()
+            # "Compose a tune in Hamsadhwani" parsed the raaga correctly and
+            # then composed in whatever was already selected, because this
+            # branch never read cmd.raaga.  The raaga a creator names in the
+            # request is the raaga they are asking to hear.
+            if self._compose_in_named_raaga(cmd):
+                self.generate_tune()
         elif intent == "tune.variation":
             self.make_variation()
         elif intent == "tune.accept":
