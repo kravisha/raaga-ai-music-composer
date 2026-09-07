@@ -1778,14 +1778,11 @@ class AppController:
             if not listed:
                 return (f"Nothing has been ingested for {raaga}, so there are "
                         f"no recordings or references behind what I have.")
-            if ev["kept_ids"]:
-                heading = f"What {raaga} was learned from:"
-            elif ev["analysed_without_result"]:
-                heading = (f"On file for {raaga} - analysed, but nothing was "
-                           f"kept from it:")
-            else:
-                heading = f"On file for {raaga}, none of it analysed yet:"
-            rows = [heading]
+            # One heading cannot summarise a mixed list, and every version
+            # of it inferred a universal outcome from part of the list.  Each
+            # row carries its own status and whether anything was kept, so
+            # the heading has nothing left to guess at.
+            rows = [f"Sources and references on file for {raaga}:"]
             for s_ in listed:
                 # What the source *is*, not what has been learned from it:
                 # calling a queued recording "learned from a person's
@@ -1852,9 +1849,12 @@ class AppController:
             # learning is what was retained from something studied.
             if ev["learned_total"] or ev["learned_facts"]:
                 rows = [f"What I have learned about {raaga}:"]
-            else:
+            elif ev["facts_by_kind"]["reference"]:
                 rows = [f"Nothing has been learned from a recording for "
                         f"{raaga} yet. What the library ships with:"]
+            else:
+                rows = [f"Nothing has been learned from a recording for "
+                        f"{raaga} yet. What is on file:"]
             for f in facts[:6]:
                 rows.append(f"  {f.key}: {f.value} (confidence "
                             f"{f.confidence:.2f})")
@@ -1885,14 +1885,14 @@ class AppController:
         # claim training from a recording it had kept nothing from, and deny
         # training it had genuinely done.
         learned_facts = ev["learned_facts"]
-        reference_facts = len(facts) - learned_facts
+        unlearned = self._unlearned_facts(ev)
         if not ev["learned_total"] and not learned_facts:
-            reference = (f" I have the library's built-in reference for it "
-                         f"({reference_facts} fact(s)), which is not the same "
-                         f"as having heard it.") if reference_facts else ""
+            other = f" I have {unlearned}, which is not the same as having "\
+                    f"heard it." if unlearned else ""
             note = self._availability_note(ev)
-            return (f"No - {raaga} has had no training.{reference}"
-                    + (f" {note}" if note else ""))
+            return (f"No - {raaga} has had no training.{other}"
+                    + (f" {note} Having a recording is not the same as having "
+                       f"heard it." if note else ""))
         parts = [f"Yes - {raaga} has been trained."]
         held = []
         if ev["from_recordings"]:
@@ -1907,10 +1907,9 @@ class AppController:
         parts.append("  " + ", ".join(held) + ".")
         if not ev["from_recordings"] and not learned_facts:
             parts.append("  Nothing heard from a recording yet.")
-        if reference_facts:
-            parts.append(f"  Alongside the library's built-in reference "
-                         f"({reference_facts} fact(s)), which is not the same "
-                         f"as having heard it.")
+        if unlearned:
+            parts.append(f"  Alongside {unlearned}, which is not the same as "
+                         f"having heard it.")
         if ev["by_origin"]:
             described = ", ".join(f"{n} {provenance.describe(o)}"
                                   for o, n in sorted(ev["by_origin"].items()))
@@ -1954,15 +1953,30 @@ class AppController:
                                                origins=self._HEARD_ORIGINS))
         kept_ids = set(repo.phrase_source_ids(
             raaga, origins=tuple(provenance.LEARNED_FROM)))
-        learned_facts = 0
+        # Every fact is classified by the source it names.  Counting one
+        # bucket and calling the remainder the shipped library invented a
+        # provenance for anything that had none - which is the mistake this
+        # whole sequence has been about, arrived at by subtraction.
+        by_kind = {"learned": 0, "reference": 0, "generated": 0,
+                   "unattributed": 0}
         for f in facts:
-            origin = origin_of.get(getattr(f, "source_id", ""), "")
-            if not provenance.may_be_learned_from(origin):
-                continue
-            kept_ids.add(f.source_id)
+            source_id = getattr(f, "source_id", "")
+            origin = origin_of.get(source_id, "") if source_id else ""
             if origin in self._HEARD_ORIGINS:
-                learned_facts += 1
-                heard_ids.add(f.source_id)
+                by_kind["learned"] += 1
+                kept_ids.add(source_id)
+                heard_ids.add(source_id)
+            elif origin == provenance.REFERENCE:
+                by_kind["reference"] += 1
+                kept_ids.add(source_id)
+            elif origin == provenance.GENERATED:
+                by_kind["generated"] += 1
+            else:
+                # No source id, a source that is not on file, or one whose
+                # own origin was never recorded.  Saying anything more than
+                # that would be making it up.
+                by_kind["unattributed"] += 1
+        learned_facts = by_kind["learned"]
 
         def by_status(statuses: Sequence[str], reference: bool) -> List[str]:
             return [sid for sid, status, origin in index
@@ -1978,6 +1992,7 @@ class AppController:
             "from_recordings": sum(by_origin.values()) - from_reference,
             "from_reference": from_reference,
             "learned_facts": learned_facts,
+            "facts_by_kind": by_kind,
             "heard_ids": heard_ids,
             "kept_ids": kept_ids,
             "heard_sources": len(heard_ids),
@@ -1989,6 +2004,27 @@ class AppController:
             "reference_packs": len(by_status(self._SOURCE_ANALYSED, True)),
             "sources_total": len(index),
         }
+
+    @staticmethod
+    def _unlearned_facts(ev: Dict) -> str:
+        """Facts on file that are not learning, each named by what it is.
+
+        The library's reference book, this system's own output and a fact
+        whose source was never recorded are three different things, and only
+        the first of them is knowledge the application was given.
+        """
+        kinds = ev["facts_by_kind"]
+        bits = []
+        if kinds["reference"]:
+            bits.append(f"the library's built-in reference "
+                        f"({kinds['reference']} fact(s))")
+        if kinds["generated"]:
+            bits.append(f"{kinds['generated']} fact(s) this system wrote "
+                        f"itself")
+        if kinds["unattributed"]:
+            bits.append(f"{kinds['unattributed']} fact(s) on file with no "
+                        f"identified source")
+        return ", ".join(bits)
 
     @staticmethod
     def _availability_note(ev: Dict) -> str:
@@ -2013,8 +2049,7 @@ class AppController:
                         f"nothing kept from it")
         if not bits:
             return ""
-        return ("Also on file, and not learning: " + ", ".join(bits)
-                + ". Having a recording is not the same as having heard it.")
+        return "Latest analysis status: " + ", ".join(bits) + "."
 
     def agent_knowledge(self, name: str = "") -> str:
         return self.agent.knowledge_report(

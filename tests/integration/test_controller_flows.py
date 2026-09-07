@@ -1148,9 +1148,8 @@ def test_a_failure_on_the_same_source_does_not_erase_its_findings(ready):
     assert "most recent analysis failed" in trained
 
     listing = app.ask_agent("which recordings support that?")
-    assert "was learned from" in listing, listing
-    assert "none of it analysed yet" not in listing
-    assert "kept" in listing
+    assert "on file" in listing, listing
+    assert "failed, kept" in listing, "the row denied its own retained finding"
 
     gaps = app.ask_agent("what is missing for Keeravani?")
     assert "Nothing has been heard from a recording" not in gaps, gaps
@@ -1206,3 +1205,83 @@ def test_a_source_listing_states_what_a_source_is_not_what_it_taught(ready):
     assert "a person's recording" in listing, listing
     assert "learned from a person's recording" not in listing
     assert "nothing kept" in listing
+
+
+def _fact_from(app, origin, raaga="Keeravani", with_source=True):
+    """A fact whose source has a given origin - or no source at all."""
+    from raagacomposer.agent.knowledge import Fact, Source
+    source_id = ""
+    if with_source:
+        source, _ = app.agent.repo.add_source(Source(
+            locator=f"fixture://{origin}", title=f"fixture {origin}",
+            raaga=raaga, origin=origin, status="analysed"))
+        source_id = source.id
+    app.agent.repo.add_fact(Fact(raaga=raaga, key="fixture_fact",
+                                 value="review only", confidence=0.8,
+                                 source_id=source_id))
+
+
+def test_a_fact_with_no_identified_source_is_not_called_the_library(ready):
+    """Arya's finding: the remainder was labelled the shipped library.
+
+    reference_facts was len(facts) minus the learned ones, so a fact with no
+    source, an unknown source or a generated one was reported as knowledge
+    the application had been given - a provenance arrived at by subtraction.
+    """
+    from raagacomposer.core import provenance
+    app = ready
+    _fact_from(app, provenance.UNKNOWN)
+
+    trained = app.ask_agent("has Keeravani been trained?")
+    assert trained.lower().startswith("no"), trained
+    assert "1 fact(s) on file with no identified source" in trained, trained
+    # The seeded library facts stay fifteen: the unattributed one was named
+    # separately rather than absorbed into them.
+    assert "library's built-in reference (15 fact(s))" in trained
+
+
+def test_a_fact_this_system_wrote_is_named_as_its_own(ready):
+    from raagacomposer.core import provenance
+    app = ready
+    _fact_from(app, provenance.GENERATED)
+
+    trained = app.ask_agent("has Keeravani been trained?")
+    assert trained.lower().startswith("no"), trained
+    assert "1 fact(s) this system wrote itself" in trained, trained
+    assert "library's built-in reference (15 fact(s))" in trained
+
+
+def test_a_fact_with_no_source_at_all_is_reported_as_such(ready):
+    from raagacomposer.core import provenance
+    app = ready
+    _fact_from(app, provenance.HUMAN, with_source=False)
+
+    trained = app.ask_agent("has Keeravani been trained?")
+    assert trained.lower().startswith("no"), trained
+    assert "1 fact(s) on file with no identified source" in trained, trained
+    assert "library's built-in reference (15 fact(s))" in trained
+
+
+def test_the_library_keeps_its_reference_attribution(ready):
+    """The control: a fact that really does come from the shipped library."""
+    from raagacomposer.core import provenance
+    app = ready
+    _fact_from(app, provenance.REFERENCE)
+
+    trained = app.ask_agent("has Keeravani been trained?")
+    assert "library's built-in reference" in trained, trained
+
+    learned = app.ask_agent("what did it learn about Keeravani?")
+    assert "the library ships with" in learned, learned
+
+
+def test_a_later_failure_is_reported_as_history_not_as_denial(ready):
+    """Arya's point: "and not learning" read as a denial of what was kept."""
+    app = ready
+    source = _teach(app, "Keeravani")
+    _fail_the_source(app, source)
+
+    trained = app.ask_agent("has Keeravani been trained?")
+    assert "Latest analysis status" in trained, trained
+    assert "not learning" not in trained
+    assert "3 phrase(s) heard in 1 recording(s)" in trained
