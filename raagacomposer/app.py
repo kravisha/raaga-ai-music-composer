@@ -197,6 +197,11 @@ class AppController:
         # with the backlog still growing.  A queue fed by the room has to be
         # allowed to drop, and to say that it dropped.
         self._utterance_queue: "queue.Queue[str]" = queue.Queue(maxsize=8)
+        #: Typed instructions, which are deliberate and must not be dropped.
+        #: Overheard speech may be discarded when the room outruns the
+        #: interpreter; something the creator sat and typed may not, and it
+        #: should not wait behind eight phrases nobody addressed to us.
+        self._typed_queue: "queue.Queue[str]" = queue.Queue(maxsize=64)
         #: How many phrases were discarded because the queue was full.
         self._utterances_dropped = 0
         #: The interpretation currently in flight, if any.
@@ -2963,7 +2968,12 @@ class AppController:
         self._notify_conversation()
 
     def _clear_utterances(self) -> int:
-        """Throw away anything heard but not yet acted on."""
+        """Throw away anything heard but not yet acted on.
+
+        Typed instructions are left alone: Stop Listening is about the
+        microphone, and silently discarding what the creator typed would be
+        a different act wearing the same button.
+        """
         discarded = 0
         while True:
             try:
@@ -3029,10 +3039,15 @@ class AppController:
         """
         if self._interpreting is not None:
             return                      # one in flight is enough
+        # Typed first.  A deliberate instruction should not queue behind
+        # whatever the room happened to say while it was being typed.
         try:
-            text = self._utterance_queue.get_nowait()
+            text = self._typed_queue.get_nowait()
         except queue.Empty:
-            return
+            try:
+                text = self._utterance_queue.get_nowait()
+            except queue.Empty:
+                return
 
         self._interpreting = text
         self.status(f"Working on what you said: {text[:48]!r}")
@@ -3060,6 +3075,31 @@ class AppController:
                          on_done=done, on_error=failed,
                          on_cancelled=lambda: setattr(self, "_interpreting", None),
                          description="Interpret what was heard")
+
+    def say(self, text: str) -> bool:
+        """Take one typed instruction, and interpret it off this thread.
+
+        The conversation box used to call ``handle_utterance`` directly,
+        which interprets inline and may wait on a language model.  That is
+        the same fault the microphone had on 2026-09-06 - the window froze
+        because the thread that would redraw it was the thread doing the
+        interpreting - and I left it in place for typed text when I fixed
+        the microphone this morning.  One door now, for both.
+
+        Returns False only when the typed backlog is genuinely full, and
+        says so rather than dropping the instruction silently.
+        """
+        text = (text or "").strip()
+        if not text:
+            return False
+        try:
+            self._typed_queue.put_nowait(text)
+        except queue.Full:
+            self.status("I am still working through what you have already "
+                        "said. Give me a moment.")
+            return False
+        self._notify_conversation()
+        return True
 
     def handle_utterance(self, text: str) -> Command:
         """Interpret one instruction and act on it, inline.
