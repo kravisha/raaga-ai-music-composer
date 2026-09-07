@@ -774,3 +774,83 @@ def test_a_brief_that_moved_on_is_not_called_the_current_one(window):
 
     window.app.project.brief.mood = "grieving, heavy"
     assert "from an earlier brief's ranking" in panel._recommendation_note(name)
+
+
+def test_the_visible_comparison_is_relabelled_when_the_brief_moves_on(window):
+    """Arya's finding: the helper answered, the screen did not.
+
+    _recommendation_note started saying "an earlier brief" the moment the
+    brief was edited, but the words already in the pane had been written
+    before that and nothing rewrote them.  The label was only right if the
+    creator happened to click something.
+    """
+    panel = window.raaga_panel
+    window.app.apply_brief_sync(mood="hopeful, romantic", feel="")
+    panel.suggest()
+    assert panel.suggestions.count() >= 2, "need two suggestions to compare"
+    first = str(panel.suggestions.item(0).data(Qt.UserRole))
+    second = str(panel.suggestions.item(1).data(Qt.UserRole))
+    window.app.select_raaga(first, "for the test")
+    panel.all_raagas.setCurrentText(second)
+    panel.all_raagas.activated.emit(panel.all_raagas.currentIndex())
+    panel.compare_with_current()
+
+    before = panel.details.toPlainText()
+    assert "from the current brief's ranking" in before
+
+    # The brief changes without being applied: no new ranking exists.
+    window.app.update_brief(mood="grieving, heavy")
+    window.refresh()
+
+    shown = panel.details.toPlainText()
+    assert "from an earlier brief's ranking" in shown, "the pane was not relabelled"
+    assert "from the current brief's ranking" not in shown
+    # The creator keeps the comparison they were reading.
+    assert first in shown and second in shown
+    assert f"Why this brief suggested {first}" in shown
+    assert f"Why this brief suggested {second}" in shown
+
+
+def test_relabelling_keeps_the_creator_s_place_in_the_text(window):
+    """Rewriting the label must not scroll them back to the top."""
+    panel = window.raaga_panel
+    window.app.apply_brief_sync(mood="hopeful, romantic", feel="")
+    panel.suggest()
+    first = str(panel.suggestions.item(0).data(Qt.UserRole))
+    second = str(panel.suggestions.item(1).data(Qt.UserRole))
+    window.app.select_raaga(first, "for the test")
+    panel.all_raagas.setCurrentText(second)
+    panel.all_raagas.activated.emit(panel.all_raagas.currentIndex())
+    panel.compare_with_current()
+
+    bar = panel.details.verticalScrollBar()
+    panel.details.document().setTextWidth(panel.details.viewport().width())
+    if bar.maximum() <= 0:
+        pytest.skip("the comparison fits without scrolling at this size")
+    bar.setValue(bar.maximum())
+    was = bar.value()
+
+    window.app.update_brief(mood="grieving, heavy")
+    window.refresh()
+
+    assert "from an earlier brief's ranking" in panel.details.toPlainText()
+    assert bar.value() == min(was, bar.maximum()), "scrolled away from their place"
+
+
+def test_relabelling_does_not_re_rank(window):
+    """A label correction is not a reason to recompute the recommendation."""
+    panel = window.raaga_panel
+    window.app.apply_brief_sync(mood="hopeful, romantic", feel="")
+    panel.suggest()
+    panel._show_named(str(panel.suggestions.item(0).data(Qt.UserRole)))
+
+    calls = []
+    original = window.app.raaga_suggestions
+    window.app.raaga_suggestions = lambda *a, **k: calls.append(1) or original(*a, **k)
+    try:
+        window.app.update_brief(mood="grieving, heavy")
+        window.refresh()
+        assert "from an earlier brief's ranking" in panel.details.toPlainText()
+        assert not calls, "relabelling re-ran the ranking"
+    finally:
+        window.app.raaga_suggestions = original
