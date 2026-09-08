@@ -1923,7 +1923,11 @@ class AppController:
             fresh.validation = validate(fresh, raaga).issues
             return fresh
 
-        variation_ticket = self.song_work_ticket()
+        # As generate_tune: every section unlocked now rides on the ticket,
+        # so a lock placed while the variation is written refuses the
+        # result rather than replace a section the creator just locked.
+        variation_ticket = self.song_work_ticket(
+            [s.id for s in melody.sections if not s.locked])
         self.jobs.submit("tune.variation", "melody:all", work,
                          on_done=lambda m: self._tune_ready(m, "Variation",
                                                             variation_ticket),

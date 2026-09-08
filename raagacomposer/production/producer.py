@@ -228,13 +228,9 @@ class Producer:
             self._note(f"raaga: {suggestions[0].name}, chosen from the brief")
         locked = self._locked_sections()
         if locked:
-            # A whole-song production replaces the tune.  A section the
-            # creator locked is a decision they made; replacing it, or
-            # quietly unlocking its successor, would overrule them.
-            self._fail(f"the tune has locked section(s) - {', '.join(locked)} - "
-                       f"and a whole-song production would replace them; unlock "
-                       f"them first, or produce from a new project")
-            return False
+            # A locked section is the creator's decision.  The tune stage
+            # composes around it - see _submit - and says so from the start.
+            self._note(f"locked section(s) to keep: {', '.join(locked)}")
         if app.project_dir is None:
             app.save()
         self.journal_path = Path(app.project_dir) / self.journal_name
@@ -328,18 +324,39 @@ class Producer:
             self.phase = "landed"
             return
         if stage == "tune":
+            melody = project.melody()
             locked = self._locked_sections()
-            if locked:
-                # Rechecked at the moment of replacement, not only at the
-                # start: a lock can arrive while an earlier stage is reviewed.
-                self._fail(f"{', '.join(locked)} locked while I was producing; "
-                           f"the tune is kept as it is")
-                return
             self._marker = len(project.melodies)
-            app.generate_tune(seed=seed)
+            if locked and melody is not None and all(s.locked for s in melody.sections):
+                self._fail("every section is locked; nothing to compose - unlock "
+                           "the sections you want written")
+                return
+            if locked:
+                # Compose around the locks, decided at the moment of
+                # composing so a lock placed during an earlier review counts:
+                # the variation engine keeps every locked section's notes and
+                # provenance exactly and writes the rest afresh.
+                self._note(f"tune: composing around locked {', '.join(locked)}; "
+                           f"those sections are kept locked, the rest is written")
+                app.make_variation(strength=1.0)
+            else:
+                app.generate_tune(seed=seed)
         elif stage == "lyrics":
             self._marker = len(project.lyrics)
-            app.generate_lyrics(seed=seed)
+            melody = project.melody()
+            locked_sung = [s for s in (melody.sections if melody else [])
+                           if s.locked and not s.kind.instrumental]
+            if locked_sung:
+                # Words only for the sections that are open; a locked
+                # section keeps the words it has, or none, as the creator
+                # left it.
+                open_ids = [s.id for s in melody.sections
+                            if not s.locked and not s.kind.instrumental]
+                self._note(f"lyrics: writing for the open sections only; keeping "
+                           f"{', '.join(s.name for s in locked_sung)} as they are")
+                app.generate_lyrics(seed=seed, section_ids=open_ids)
+            else:
+                app.generate_lyrics(seed=seed)
         elif stage == "voice":
             self._marker = len(project.vocal_renders)
             app.render_vocal("master", autoplay=False)
@@ -400,14 +417,14 @@ class Producer:
     def _ticket(self) -> Dict[str, Any]:
         """What must still be true when the verdict lands.
 
-        Every section of the tune on the desk rides on the ticket, so a
-        lock the creator places while the Critic thinks comes back as
-        "<section> was locked while I was working" and stops the
-        production before the tune is replaced.
+        A lock placed while the Critic thinks is not a reason to stop: the
+        tune stage composes around whatever is locked when it comes to
+        compose.  A lock placed while the *composer* works is caught by
+        the composer's own ticket (generate_tune, make_variation), which
+        carries every section that was unlocked at submission.
         """
         app = self.app
-        melody = app.project.melody()
-        ticket = app.song_work_ticket([s.id for s in melody.sections] if melody else ())
+        ticket = app.song_work_ticket()
         ticket["lyric_fingerprint"] = app.lyric_fingerprint(app.project.lyrics_version())
         ticket["voice_profile_id"] = app.current_voice().id
         ticket["brief_digest"] = _digest(self._brief_dict())
@@ -744,6 +761,8 @@ class Producer:
             "validation": list(melody.validation)[:12],
             "plan_notes": list(melody.plan_notes),
             "guidance": melody.guidance_note,
+            "kept_locked": [s.name for s in melody.sections if s.locked],
+            "derived_from": melody.derived_from,
         }
         return self._packet("tune", body), f"tune:v{melody.version}"
 

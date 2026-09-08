@@ -456,23 +456,11 @@ def _pallavi_unchanged(app, original, protected, notes):
     assert [asdict(n) for n in current.notes if n.section_id == pallavi.id] == notes
 
 
-def test_a_locked_section_stops_a_whole_song_production_before_it_starts(app):
-    """A whole-song production replaces the tune.  A section the creator
-    locked is their decision; the Producer refuses rather than replace it
-    with an unlocked one (Arya's producer_lock_review_cases)."""
-    original, pallavi, protected, notes = _first_tune_with_a_locked_pallavi(app, "Locked Pallavi")
-    app.critic = CodexCritic(FakeCodex())
-    producer = app.produce_song(seed=104)
-    drive(app, producer, timeout=60)
-    assert producer.phase == "failed" and "locked" in producer.error, producer.error
-    assert "Pallavi" in producer.error
-    assert len(app.project.melodies) == 1
-    _pallavi_unchanged(app, original, protected, notes)
-
-
-def test_a_lock_placed_during_a_review_stops_the_production(app):
-    """A start-only check is not enough: the creator can lock a section while
-    the Critic thinks about the brief (Arya's producer_late_lock_review_cases)."""
+def test_a_lock_placed_during_a_review_is_composed_around(app):
+    """The creator locks a section while the Critic thinks about the brief.
+    The tune stage sees the lock when it comes to compose and keeps that
+    section, rather than stopping (it used to stop: Arya's
+    producer_late_lock_review_cases, before composing around locks existed)."""
     a_whole_song_brief(app, "Late lock")
     app.generate_tune(seed=37)
     deadline = time.time() + 60
@@ -492,11 +480,13 @@ def test_a_lock_placed_during_a_review_stops_the_production(app):
         protected = asdict(pallavi)
         notes = [asdict(n) for n in original.notes if n.section_id == pallavi.id]
         gate.release.set()
-        drive(app, producer, timeout=60)
-        assert producer.phase == "failed" and "locked" in producer.error, producer.error
-        assert len(app.project.melodies) == 1
-        _pallavi_unchanged(app, original, protected, notes)
-        assert producer.accepted == 0, "a verdict about the song before the lock is not kept"
+        drive(app, producer)
+        assert producer.phase == "done", producer.report()
+        assert len(app.project.melodies) == 2
+        current = app.project.melody()
+        kept = next(s for s in current.sections if s.kind == SectionKind.PALLAVI)
+        assert kept.locked and _notes_of(current, kept.id) == notes, "the late lock was not kept"
+        assert "Pallavi" in "\n".join(producer.events)
     finally:
         gate.release.set()
         if not producer.finished:
@@ -541,6 +531,91 @@ def test_a_lock_placed_while_the_composer_works_is_kept_when_its_result_lands(ap
         assert producer.phase == "failed" and "locked" in producer.error, producer.error
         assert len(app.project.melodies) == 1, "the composer's result was kept over a lock"
         _pallavi_unchanged(app, original, protected, notes)
+    finally:
+        release.set()
+        if not producer.finished:
+            producer.cancel("test over")
+
+
+# ----------------------------------------------------------------------
+# Composing around locked sections (queue item 3, 2026-09-08)
+# ----------------------------------------------------------------------
+def _notes_of(melody, section_id):
+    from dataclasses import asdict
+    return [asdict(n) for n in melody.notes if n.section_id == section_id]
+
+
+def test_a_production_composes_around_a_locked_pallavi(app):
+    """A locked section is kept - notes, timing, words - and the rest of the
+    song is made around it; the report says which sections were kept."""
+    original, pallavi, protected, notes = _first_tune_with_a_locked_pallavi(app, "Around the lock")
+    # Words first, so the Pallavi has a line to keep.
+    app.set_section_lock(pallavi.id, False)
+    app.providers.llm = None
+    app.generate_lyrics(seed=4)
+    deadline = time.time() + 60
+    while app.jobs.active_jobs() and time.time() < deadline:
+        app.pump()
+        time.sleep(0.02)
+    words = app.project.lyrics_version()
+    kept_line = next(l for l in words.lines if l.section_id == pallavi.id)
+    app.set_lyric_line_lock(kept_line.id, True)
+    app.set_section_lock(pallavi.id, True)
+    kept_text = kept_line.text
+    others = [s for s in original.sections if s.id != pallavi.id and not s.kind.instrumental]
+
+    app.critic = CodexCritic(FakeCodex())
+    producer = app.produce_song(seed=104)
+    drive(app, producer)
+    assert producer.phase == "done", producer.report()
+
+    current = app.project.melody()
+    assert current is not original and current.version == original.version + 1
+    kept = next(s for s in current.sections if s.kind == SectionKind.PALLAVI)
+    assert kept.locked and _notes_of(current, kept.id) == notes, "the locked Pallavi changed"
+    assert any(_notes_of(current, s.id) != _notes_of(original, s.id) for s in others), \
+        "nothing outside the lock was composed"
+    latest = app.project.lyrics_version()
+    line = next(l for l in latest.lines if l.section_id == kept.id)
+    assert line.text == kept_text and line.locked, "the locked words changed"
+    report = producer.report()
+    assert "Pallavi" in report and "locked" in report.lower()
+    assert "kept locked" in "\n".join(producer.events).lower()
+
+
+def test_a_fully_locked_tune_is_explained_not_composed(app):
+    original, *_ = _first_tune_with_a_locked_pallavi(app, "All locked")
+    for section in original.sections:
+        app.set_section_lock(section.id, True)
+    app.critic = CodexCritic(FakeCodex())
+    producer = app.produce_song(seed=104)
+    drive(app, producer, timeout=60)
+    assert producer.phase == "failed" and "every section is locked" in producer.error, producer.error
+    assert len(app.project.melodies) == 1 and app.project.melody() is original
+
+
+def test_a_lock_placed_while_the_variation_runs_refuses_its_result(app, monkeypatch):
+    import raagacomposer.app as controller_module
+    original, pallavi, protected, notes = _first_tune_with_a_locked_pallavi(app, "Lock during variation")
+    other = next(s for s in original.sections if s.id != pallavi.id and not s.kind.instrumental)
+    entered, release = threading.Event(), threading.Event()
+    real_variation = controller_module.melody_engine.variation
+
+    def held(*args, **kwargs):
+        entered.set()
+        assert release.wait(30), "the test must release the composer"
+        return real_variation(*args, **kwargs)
+
+    monkeypatch.setattr(controller_module.melody_engine, "variation", held)
+    app.critic = CodexCritic(FakeCodex())
+    producer = app.produce_song(seed=104)
+    try:
+        pump_until(app, entered.is_set)
+        app.set_section_lock(other.id, True)
+        release.set()
+        drive(app, producer, timeout=60)
+        assert producer.phase == "failed" and "locked" in producer.error, producer.error
+        assert len(app.project.melodies) == 1
     finally:
         release.set()
         if not producer.finished:
