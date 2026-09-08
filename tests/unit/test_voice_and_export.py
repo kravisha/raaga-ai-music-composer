@@ -555,3 +555,46 @@ def test_a_vowel_with_no_consonant_beside_it_does_not_move():
     from raagacomposer.voice.renderer import SungSegment, _f2_track
     seg = SungSegment(start=0.0, end=0.7, midi=60, vowel="aa")
     assert _f2_track(seg, 30000, 44100) is None
+
+
+@pytest.mark.parametrize("brightness,shift", [
+    (0.7, 1.16), (1.25, 1.22), (1.0, 1.0),
+])
+def test_a_transition_arrives_at_the_same_vowel_it_would_have_held(
+        brightness, shift):
+    """Arya's finding: the moving path forgot the profile's brightness.
+
+    A vowel's resonance is scaled by the profile's shift and its
+    brightness together.  The sweep applied the shift alone, so once the
+    transition finished, a note with a consonant in front of it sustained
+    a different F2 than the same note without one - on a neutral profile
+    the two factors coincide and nothing showed, which is why the tests
+    that existed did not catch it.
+
+    The middle of the note is compared, long after a 45 ms transition has
+    settled, with one overall gain removed because the render normalises
+    each segment by its peak.
+    """
+    import numpy as np
+    from dataclasses import replace as _replace
+    from raagacomposer.core.models import VocalDirection
+    from raagacomposer.voice.profiles import BUILTIN
+    from raagacomposer.voice.renderer import SungSegment, render
+
+    sr = 44100
+    profile = _replace(BUILTIN[2], brightness=brightness, formant_shift=shift)
+
+    def sung(onset):
+        seg = SungSegment(start=0.0, end=1.0, midi=60, vowel="aa",
+                          consonant=onset)
+        return render([seg], profile, VocalDirection(), sr,
+                      total_seconds=1.2, seed=3)
+
+    plain = sung("")[int(0.5 * sr):int(0.7 * sr)]
+    after = sung("m")[int(0.5 * sr):int(0.7 * sr)]
+    scale = float(np.dot(plain, after) / max(np.dot(after, after), 1e-12))
+    residual = float(np.sqrt(np.mean((plain - after * scale) ** 2))
+                     / max(np.sqrt(np.mean(plain ** 2)), 1e-12))
+    assert residual < 0.005, (
+        f"brightness {brightness}, shift {shift}: the sustained vowel "
+        f"differs by {residual * 100:.2f}% once the transition has settled")

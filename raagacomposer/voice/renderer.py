@@ -200,7 +200,7 @@ def _f2_track(seg: "SungSegment", length: int, sr: int) -> Optional[np.ndarray]:
     return track
 
 
-def _sweep(x: np.ndarray, base: float, track: np.ndarray, bw: float,
+def _sweep(x: np.ndarray, track: np.ndarray, bw: float,
            sr: int, state) -> Tuple[np.ndarray, object]:
     """Filter through a moving resonance, in short blocks.
 
@@ -364,13 +364,20 @@ def render(segments: Sequence[SungSegment], profile: VoiceProfile,
         mixed = np.zeros(len(seg_src), dtype=np.float32)
         track = _f2_track(seg, len(seg_src), sr)
         for k, (f, gain, bw) in enumerate(zip(formants, gains, FORMANT_BW)):
-            freq = f * shift * (1.0 + 0.06 * (profile.brightness - 1.0) * k)
+            # One scale for this formant, used by whichever path renders it.
+            # The moving path applied the profile's shift and not its
+            # brightness, so a transition settled on a different sustained
+            # vowel than a note without a consonant in front of it - 6.6%
+            # of the waveform on a profile at brightness 0.7, and nothing
+            # at all on a neutral one, which is why it hid.
+            scale = shift * (1.0 + 0.06 * (profile.brightness - 1.0) * k)
+            freq = f * scale
             width = bw * (1.0 + 0.3 * k)
             if k == 1 and track is not None:
                 # The second formant moves; the others hold.  F2 is the one
                 # a listener reads a consonant's place from, and moving all
                 # four turns the vowel into something else on the way.
-                y, states[k] = _sweep(seg_src, freq, track * shift, width,
+                y, states[k] = _sweep(seg_src, track * scale, width,
                                       sr, states[k])
             else:
                 bnum, aden = _resonator(freq, width, sr)

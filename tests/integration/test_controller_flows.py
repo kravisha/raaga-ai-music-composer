@@ -527,22 +527,54 @@ def test_replaying_the_same_audition_does_not_reload_it(app):
 
 
 def test_a_re_rendered_tune_is_the_one_you_hear(ready, settle):
-    """The same fault, on the path that matters more than the audition."""
+    """The same fault, on the path that matters more than the audition.
+
+    This used to ask for the instrumental mix, which is built from the
+    arrangement - and this fixture has none, so both renders were silence.
+    It passed only because every render used to come out half a second
+    longer than the last, so two silences compared unequal by their
+    length.  Fixing that growth made it fail, which is how the accident
+    came to light.
+
+    It renders the tune now, which is the thing that actually follows the
+    melody, and compares the sound rather than the shape.
+    """
     app = ready
-    before = _loaded(app) if app.playback.source_name else None
-    app.render("instrumental", autoplay=True)
+    app.render("tune", autoplay=True)
     settle()
     first = _loaded(app)
-    assert len(first)
+    assert len(first) and np.abs(first).max() > 0, "the tune rendered silent"
 
     app.generate_tune(seed=99)
     settle()
-    app.render("instrumental", autoplay=True)
+    app.render("tune", autoplay=True)
     settle()
     second = _loaded(app)
 
-    assert second.shape != first.shape or not np.array_equal(second, first), \
-        "the re-rendered mix played the previous version"
+    assert not np.array_equal(second, first), \
+        "the re-rendered tune played the previous version"
+
+
+def test_the_arrangement_is_not_silently_rebuilt_by_a_new_tune(ready, settle):
+    """The other half of what that test was accidentally covering.
+
+    An arrangement is the creator's work.  Composing a new tune does not
+    regenerate it, so the instrumental mix still plays what was arranged -
+    which is right, and is why the instrumental render could never have
+    been the thing that test was checking.
+    """
+    app = ready
+    app.auto_arrange()
+    settle()
+    before = [(t.instrument, len(t.regions)) for t in
+              app.project.arrangement().tracks]
+
+    app.generate_tune(seed=101)
+    settle()
+
+    after = [(t.instrument, len(t.regions)) for t in
+             app.project.arrangement().tracks]
+    assert after == before, "composing a tune quietly rebuilt the arrangement"
 
 
 # --------------------------------------------------------------------------
@@ -2180,3 +2212,167 @@ def test_a_playback_failure_keeps_its_own_message(ready):
     finally:
         app.play_render = original
     assert "device" in app.status_text.lower(), app.status_text
+
+
+# --------------------------------------------------------------------------
+# Adjustable mix: balance, room, and a comparison that changes nothing else
+# (Arya's pre-Jam gap, 2026-09-07 20:27)
+# --------------------------------------------------------------------------
+def _mix_audio(app, settle):
+    """Render the full mix and hand back what the mixer produced."""
+    seen = {}
+    from raagacomposer.music import mixer
+    original = mixer.mix
+
+    def watch(arrangement, vocal, sr, total, **kw):
+        result = original(arrangement, vocal, sr, total, **kw)
+        seen["audio"] = result.audio
+        seen["kw"] = kw
+        return result
+
+    mixer.mix = watch
+    try:
+        app.render(kind="full", autoplay=False)
+        settle()
+    finally:
+        mixer.mix = original
+    return seen
+
+
+def test_the_voice_can_be_set_against_the_instruments(ready, settle):
+    """mix() took a vocal_gain and nothing ever passed one."""
+    app = ready
+    app.auto_arrange()
+    settle()
+    app.render_vocal(kind="preview", autoplay=False)
+    settle()
+
+    app.set_mix(vocal_gain=0.4)
+    quiet = _mix_audio(app, settle)
+    assert quiet["kw"].get("vocal_gain") == pytest.approx(0.4), quiet["kw"]
+
+    app.set_mix(vocal_gain=1.6)
+    loud = _mix_audio(app, settle)
+    assert loud["kw"].get("vocal_gain") == pytest.approx(1.6)
+
+
+def test_the_room_can_be_opened_and_closed(ready, settle):
+    """A real difference in the rendered audio, not only in a setting."""
+    import numpy as np
+    app = ready
+    app.auto_arrange()
+    settle()
+
+    app.set_mix(reverb=0.0)
+    dry = _mix_audio(app, settle)["audio"].copy()
+    app.set_mix(reverb=1.8)
+    wet = _mix_audio(app, settle)["audio"].copy()
+
+    assert dry.shape == wet.shape, "the room changed the length of the song"
+    assert not np.allclose(dry, wet), "opening the room changed nothing"
+
+
+def test_a_dry_comparison_changes_only_the_room(ready, settle):
+    """The comparison means nothing unless everything else is held."""
+    import numpy as np
+    app = ready
+    app.auto_arrange()
+    settle()
+    melody_before = [(n.midi, round(n.start, 5)) for n in
+                     app.project.melody().notes]
+    takes_before = len(app.project.vocal_renders)
+    melodies_before = len(app.project.melodies)
+
+    effected = _mix_audio(app, settle)["audio"].copy()
+    app.compare_dry()
+    settle()
+    dry = app._renders["full"].audio
+
+    assert app.project.mix_settings.effects is False
+    assert dry.shape == effected.shape, "the dry version is a different length"
+    assert not np.allclose(dry, effected), "nothing was taken away"
+    assert [(n.midi, round(n.start, 5)) for n in
+            app.project.melody().notes] == melody_before, \
+        "comparing dry rewrote the tune"
+    assert len(app.project.vocal_renders) == takes_before, \
+        "comparing dry sang the song again"
+    assert len(app.project.melodies) == melodies_before
+
+
+def test_the_mix_stays_within_its_limits(ready, settle):
+    """Turning everything up must not send the mix past full scale."""
+    import numpy as np
+    app = ready
+    app.auto_arrange()
+    settle()
+    app.render_vocal(kind="preview", autoplay=False)
+    settle()
+    app.set_mix(vocal_gain=2.0, reverb=2.0, room=0.95)
+    audio = _mix_audio(app, settle)["audio"]
+    assert float(np.abs(audio).max()) <= 1.0, "the mix clipped"
+
+
+def test_mix_settings_are_the_songs_and_come_back_with_it(ready, settle,
+                                                          tmp_path):
+    app = ready
+    app.set_mix(vocal_gain=0.7, reverb=1.5, room=0.6)
+    where = app.save()
+    assert where is not None
+
+    app.new_project("Something else", write=False)
+    assert app.project.mix_settings.vocal_gain == pytest.approx(1.0), \
+        "a new song inherited the last one's balance"
+
+    app.open_project(where)
+    settings = app.project.mix_settings
+    assert settings.vocal_gain == pytest.approx(0.7)
+    assert settings.reverb == pytest.approx(1.5)
+    assert settings.room == pytest.approx(0.6)
+
+
+def test_changing_the_mix_can_be_undone(ready, settle):
+    app = ready
+    app.set_mix(vocal_gain=0.5)
+    assert app.project.mix_settings.vocal_gain == pytest.approx(0.5)
+    app.undo_action()
+    settle()
+    assert app.project.mix_settings.vocal_gain == pytest.approx(1.0), \
+        "the balance change could not be undone"
+
+
+def test_a_track_can_be_placed_across_the_stereo_field(ready, settle):
+    """Pan was supported by the controller and had no way in."""
+    import numpy as np
+    app = ready
+    app.auto_arrange()
+    settle()
+    track = next(t for t in app.project.arrangement().tracks
+                 if t.role != "drone")
+
+    app.set_track_flag(track.id, pan=-0.9)
+    left = _mix_audio(app, settle)["audio"].copy()
+    app.set_track_flag(track.id, pan=0.9)
+    right = _mix_audio(app, settle)["audio"].copy()
+
+    assert not np.allclose(left, right), "moving a track across did nothing"
+
+
+def test_rendering_the_same_song_twice_gives_the_same_length(ready, settle):
+    """Found by a mix test that could not tell reverb from arithmetic.
+
+    Project.duration counted the mixes, and render() asks for that plus
+    half a second of tail - so every render stored a mix half a second
+    longer than the last, and the next render started from that.  Measured
+    at 149.86s growing to 151.86s over four renders of an unchanged song,
+    the difference being silence.  A mix's length is a consequence of the
+    song's length and cannot be part of its definition.
+    """
+    app = ready
+    app.auto_arrange()
+    settle()
+    lengths = []
+    for _ in range(3):
+        app.render(kind="full", autoplay=False)
+        settle()
+        lengths.append(len(app._renders["full"].audio))
+    assert len(set(lengths)) == 1, f"the song grew: {lengths}"

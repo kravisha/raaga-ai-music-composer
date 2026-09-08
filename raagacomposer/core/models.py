@@ -361,6 +361,35 @@ class Track:
 
 
 @dataclass
+class MixSettings:
+    """How the song is balanced, as against how it was composed.
+
+    These belong to the song and are saved with it: a creator who sets the
+    voice against the instruments and comes back tomorrow has made a
+    decision, not adjusted a knob for one playback.
+    """
+
+    #: The voice against the instruments.  1.0 is as rendered.
+    vocal_gain: float = 1.0
+    #: A multiplier on each instrument family's reverb send, so the room
+    #: can be opened or closed without losing the differences between a
+    #: mridangam and a veena that the families encode.
+    reverb: float = 1.0
+    #: How large that room is.
+    room: float = 0.45
+    #: False renders the same material with the room removed, which is
+    #: what makes a dry and an effected version comparable rather than
+    #: two different takes.
+    effects: bool = True
+
+    def describe(self) -> str:
+        if not self.effects:
+            return f"voice {self.vocal_gain:.2f}, dry (effects off)"
+        return (f"voice {self.vocal_gain:.2f}, reverb {self.reverb:.2f} "
+                f"in a {self.room:.2f} room")
+
+
+@dataclass
 class ArrangementVersion:
     version: int = 1
     created_at: float = field(default_factory=now)
@@ -462,6 +491,7 @@ class Project:
 
     brief: CreativeBrief = field(default_factory=CreativeBrief)
     raaga: RaagaChoice = field(default_factory=RaagaChoice)
+    mix_settings: MixSettings = field(default_factory=MixSettings)
 
     melodies: List[MelodyVersion] = field(default_factory=list)
     approved_melody: Optional[int] = None
@@ -558,6 +588,30 @@ class Project:
             candidates.extend(t.end for t in arr.tracks)
         for mix in self.mixes:
             candidates.append(mix.duration)
+        for take in self.vocal_renders:
+            candidates.append(take.duration)
+        usable = [c for c in candidates if c and c > 0]
+        return max(usable) if usable else float(self.brief.duration_target)
+
+    @property
+    def material_duration(self) -> float:
+        """How long the song's own material is, without its renderings.
+
+        ``duration`` is everything we hold, mixes included, which is what
+        it is for.  It is the wrong basis for deciding how long to render:
+        render asks for that plus half a second of tail and stores a mix
+        that long, so the next render asks for half a second more again.
+        Measured at 149.86s growing to 151.86s over four renders of an
+        unchanged song, the difference being silence.  A rendering's
+        length is a consequence of the song's and cannot help define it.
+        """
+        candidates: List[float] = []
+        m = self.melody()
+        if m:
+            candidates.append(m.duration)
+        arr = self.arrangement()
+        if arr:
+            candidates.extend(t.end for t in arr.tracks)
         for take in self.vocal_renders:
             candidates.append(take.duration)
         usable = [c for c in candidates if c and c > 0]
