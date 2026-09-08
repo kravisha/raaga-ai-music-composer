@@ -209,20 +209,22 @@ def _reads_as_a_direction(clause: str,
     return all(w in _SCOPE_WORDS for w in words[i:])
 
 
-def _named(clause: str) -> List[Tuple[SectionKind, int]]:
-    """Every section named in one clause, with where it was named.
+def _named(clause: str) -> List[Tuple[SectionKind, int, int]]:
+    """Every section named in one clause, and where the name begins and ends.
 
     Matches are consumed as they are found so a longer name cannot be
-    read a second time as the shorter one inside it.
+    read a second time as the shorter one inside it.  The end is carried
+    because what follows the name is how a direction is told from a
+    sentence, and "anu pallavi" ends two words after it starts.
     """
     room = clause
     found = []
     for kind, word in _ALIASES:
         for match in re.finditer(rf"\b{re.escape(word)}\b", room):
-            found.append((kind, match.start()))
+            found.append((kind, match.start(), match.end()))
         room = re.sub(rf"\b{re.escape(word)}\b",
                       lambda m: " " * len(m.group(0)), room)
-    return found
+    return sorted(found, key=lambda item: item[1])
 
 
 def _refused_at(clause: str, at: int) -> bool:
@@ -232,14 +234,78 @@ def _refused_at(clause: str, at: int) -> bool:
                for cue in _REFUSING)
 
 
+#: Words that may sit between an asking cue and the section it asks for.
+_LEAD_IN = _DETERMINERS | {"in", "with", "to", "of", "on", "for", "at",
+                           "into", "and", "also", "then"}
+
+#: What may separate one name from the next in a list of sections.
+_LIST_JOINERS = _DETERMINERS | {"and", "then", "plus", "&"}
+
+
+def _tail_is_scope(clause: str, names: List[Tuple[SectionKind, int, int]]
+                   ) -> bool:
+    """After the last section named, is there anything but scope left?
+
+    This is the same test the refusing side uses, and for the same
+    reason: "in this song" says which song, and "of his story" carries on
+    being a story.
+    """
+    if not names:
+        return False
+    end = max(finish for _, _, finish in names)
+    rest = [w.strip(".,!?;:") for w in clause[end:].split()]
+    return all(w in _SCOPE_WORDS for w in rest if w)
+
+
+def _asked_for_at(clause: str, at: int) -> bool:
+    """Does an asking cue actually govern the section named at *at*?
+
+    A cue was matched anywhere in the clause, so any narrative carrying
+    one of these ordinary words turned into an instruction: "his life
+    contains a bridge he cannot cross" asked for a Bridge, and
+    "he begins with a prelude of doubt" asked for a Prelude.  The cue has
+    to be the thing introducing this name - determiners and a preposition
+    may sit between them, a sentence about someone's life may not.
+    """
+    before = [w.strip(".,!?;:") for w in clause[:at].split()]
+    before = [w for w in before if w]
+    while before and before[-1] in _LEAD_IN:
+        before.pop()
+    if not before:
+        return False
+    return any(before[-len(cue.split()):] == cue.split()
+               for cue in _ASKING if len(cue.split()) <= len(before))
+
+
+def _reads_as_a_list(clause: str, names: List[Tuple[SectionKind, int, int]]
+                     ) -> bool:
+    """Are these names written out as a list, one after another?
+
+    Naming two sections was enough by itself, so "a bridge between two
+    worlds and a happy ending" counted as a list of two.  A list has
+    nothing between its items but the words that join a list.
+    """
+    if len({kind for kind, _, _ in names}) < 2:
+        return False
+    ordered = sorted(names, key=lambda item: item[1])
+    for (_, _, finish), (_, start, _) in zip(ordered, ordered[1:]):
+        between = [w.strip(".,!?;:") for w in clause[finish:start].split()]
+        if any(w and w not in _LIST_JOINERS for w in between):
+            return False
+    return True
+
+
 def read_section_requests(*texts: str) -> SectionRequest:
     """The sections the creator actually asked for, or asked against.
 
     A name on its own is not a request: "a bridge between two worlds" is a
     description and "a happy ending to their long separation" is a story.
-    A clause counts when it either carries a word that asks for something,
-    or names two or more sections, which is how a creator writes a list of
-    the structure they want.
+    A name counts three ways, and each of them has to be earned by the
+    shape of the clause rather than by a word appearing somewhere in it:
+    a cue that asks for *this* name, a list of sections written out one
+    after another, or a refusal that stops where an instruction stops.
+    In every case what follows the last name must say which song or which
+    take, not carry on being a sentence.
     """
     blob = " ".join(t for t in texts if t).lower()
     if not blob:
@@ -250,19 +316,26 @@ def read_section_requests(*texts: str) -> SectionRequest:
         names = _named(clause)
         if not names:
             continue
-        asking = any(cue in clause for cue in _ASKING)
-        listed = len({kind for kind, _ in names}) > 1
+        scoped = _tail_is_scope(clause, names)
+        listed = scoped and _reads_as_a_list(clause, names)
         refusing = (_starts_with_refusal(clause)
                     and _reads_as_a_direction(clause, names))
-        if not (asking or listed or refusing):
-            continue
-        for kind, at in names:
+        for kind, at, _ in names:
             denied = _refused_at(clause, at)
-            if refusing and not (asking or listed) and not denied:
-                # This clause is here on the strength of a refusal.  A
-                # name it does not refuse is not thereby asked for.
-                continue
-            target = refused if denied else wanted
+            asked = scoped and _asked_for_at(clause, at)
+            if denied:
+                # A refusal still has to be part of an instruction: it is
+                # either a direction in its own right, or it sits inside
+                # one - "do not include an Anupallavi".
+                if not (refusing or listed or asked):
+                    continue
+                target = refused
+            else:
+                # And a name nothing asks for is not requested by being
+                # in the same sentence as one that is.
+                if not (listed or asked):
+                    continue
+                target = wanted
             if kind not in target:
                 target.append(kind)
     # A refusal wins: saying both is a contradiction, and the safer
