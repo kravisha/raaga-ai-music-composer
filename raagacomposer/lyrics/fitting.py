@@ -275,15 +275,25 @@ def fit_line(text: str, slot: PhraseSlot) -> Tuple[List[str], List[int], List[st
     return packed, notes, warnings
 
 
+def recount_unfitted(lyrics: LyricsVersion) -> int:
+    """The version's count is always what its lines say now."""
+    lyrics.unfitted = sum(1 for line in lyrics.lines if line.unfitted)
+    return lyrics.unfitted
+
+
 def fit_lines(lines: Sequence[str], melody: MelodyVersion, language: str,
               version: int = 1,
               previous: Optional[LyricsVersion] = None,
-              sources: Optional[Sequence[str]] = None) -> LyricsVersion:
+              sources: Optional[Sequence[str]] = None,
+              required: Optional[Sequence[int]] = None) -> LyricsVersion:
     """Fit a list of written lines onto the melody's phrase slots.
 
     ``sources`` names who wrote each line ("creator", "lexicon",
     "llm:<name>"), by position; a line carried over from ``previous``
-    keeps the source it had.
+    keeps the source it had.  ``required`` lists the slot indices words
+    were asked for: a blank or unsingable line there is unfitted, while
+    a slot that was never asked for may stay empty without complaint.
+    Without ``required``, every slot with text is expected to fit.
     """
     slots = build_slots(melody)
     lv = LyricsVersion(version=version, language=language,
@@ -293,9 +303,9 @@ def fit_lines(lines: Sequence[str], melody: MelodyVersion, language: str,
         for i, line in enumerate(previous.lines):
             if line.locked and i < len(slots):
                 locked_by_slot[i] = line
+    asked = set(required) if required is not None else set()
 
     warnings: List[str] = []
-    unfitted = 0
     for i, slot in enumerate(slots):
         if i in locked_by_slot:
             lv.lines.append(locked_by_slot[i])
@@ -303,8 +313,10 @@ def fit_lines(lines: Sequence[str], melody: MelodyVersion, language: str,
         text = lines[i] if i < len(lines) else ""
         syllables, indices, warn = fit_line(text, slot)
         warnings.extend(f"{slot.section_name}: {w}" for w in warn)
-        if text.strip() and not syllables:
-            unfitted += 1
+        unfitted = not syllables and (bool(text.strip()) or i in asked)
+        if unfitted and not text.strip():
+            warnings.append(f"{slot.section_name}: words were asked for and none "
+                            f"came; the line is empty and unfitted.")
         source = ""
         if sources is not None and i < len(sources) and sources[i]:
             source = sources[i]
@@ -314,9 +326,9 @@ def fit_lines(lines: Sequence[str], melody: MelodyVersion, language: str,
         lv.lines.append(LyricLine(
             section_id=slot.section_id, text=text, syllables=syllables,
             note_indices=indices, start=slot.start, end=slot.end,
-            source=source))
+            source=source, unfitted=unfitted))
     lv.notes = "\n".join(warnings)
-    lv.unfitted = unfitted
+    recount_unfitted(lv)
     return lv
 
 
@@ -339,6 +351,10 @@ def refit_line(lyrics: LyricsVersion, melody: MelodyVersion, line_id: str,
     line.note_indices = indices
     line.start = slots[index].start
     line.end = slots[index].end
+    # Words were asked for this line by the act of writing them; a blank
+    # typed on purpose is the creator emptying the line, not a failure.
+    line.unfitted = not syllables and bool(new_text.strip())
+    recount_unfitted(lyrics)
     return warnings
 
 

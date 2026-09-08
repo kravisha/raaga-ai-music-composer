@@ -79,3 +79,19 @@ def test_a_line_the_creator_types_is_the_creator_s(app, settle):
     app.edit_lyric_line(line.id, "மலர்ந்தேன் நானே")
     assert line.text == "மலர்ந்தேன் நானே" and line.source == "creator"
     assert line.syllables and all(not s.isascii() for s in line.syllables if not s.startswith("~"))
+
+
+def test_a_writer_s_blank_answer_does_not_replace_the_approved_words(app, settle):
+    """The gate looked only at lines with text; an empty answer for a
+    requested slot walked past it and replaced approved words."""
+    _a_tune(app, "Blank answer")
+    from raagacomposer.lyrics.fitting import build_slots
+    count = len(build_slots(app.project.melody()))
+    first = _write(app, settle, _Writer([TAMIL_FIRST_LINE] * count))
+    assert app.project.approved_lyrics == first.version
+    for blank in ("", "   "):
+        draft = _write(app, settle, _Writer([blank] + [TAMIL_FIRST_LINE] * (count - 1)))
+        assert draft.unfitted == 1, draft.notes
+        assert app.project.approved_lyrics == first.version, \
+            "a blank answer replaced the approved words"
+        assert "draft" in app.status_text, app.status_text

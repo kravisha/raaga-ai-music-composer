@@ -329,3 +329,34 @@ def test_a_lyric_line_s_source_survives_a_saved_project(tmp_path):
     again = store.open(directory)
     assert again.lyrics[0].lines[0].text == TAMIL_FIRST_LINE
     assert again.lyrics[0].lines[0].source == "creator"
+
+
+def test_a_writer_s_empty_answer_for_a_requested_line_is_unfitted(melody):
+    """An empty string is not words.  A blank answer for a slot that asked
+    for words counts as unfitted, so the draft gate sees it (Arya's
+    empty-lyric review)."""
+    slots = build_slots(melody)
+    lines = [""] + [TAMIL_FIRST_LINE] * (len(slots) - 1)
+    lyrics = generate(melody, CreativeBrief(language="Tamil"), seed=4,
+                      llm=_Writer(lines))
+    assert lyrics.lines[0].text == "" and lyrics.lines[0].syllables == []
+    assert lyrics.lines[0].unfitted
+    assert lyrics.unfitted == 1
+    assert "nothing" in lyrics.notes.lower() or "empty" in lyrics.notes.lower()
+    whitespace = generate(melody, CreativeBrief(language="Tamil"), seed=4,
+                          llm=_Writer(["   "] + [TAMIL_FIRST_LINE] * (len(slots) - 1)))
+    assert whitespace.unfitted == 1
+
+
+def test_the_unfitted_count_follows_every_refit(melody):
+    """Invalid to valid, and valid back to invalid: the count is what the
+    lines are now, not what they were when generated."""
+    slots = build_slots(melody)
+    lyrics = generate(melody, CreativeBrief(language="Tamil"), seed=4,
+                      llm=_Writer(["..."] + [TAMIL_FIRST_LINE] * (len(slots) - 1)))
+    assert lyrics.unfitted == 1 and lyrics.lines[0].unfitted
+    refit_line(lyrics, melody, lyrics.lines[0].id, TAMIL_FIRST_LINE)
+    assert lyrics.lines[0].syllables and not lyrics.lines[0].unfitted
+    assert lyrics.unfitted == 0
+    refit_line(lyrics, melody, lyrics.lines[1].id, "...")
+    assert lyrics.lines[1].unfitted and lyrics.unfitted == 1

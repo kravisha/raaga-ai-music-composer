@@ -241,6 +241,9 @@ class LyricLine:
     #: the line predates this record.  Authored words are never labelled
     #: as a model's, and a model's are never labelled as the creator's.
     source: str = ""
+    #: Words were asked for here and the singer was given none: blank or
+    #: unsingable text on a requested line.  Set wherever a line is fitted.
+    unfitted: bool = False
 
 
 @dataclass

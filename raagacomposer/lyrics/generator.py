@@ -283,8 +283,10 @@ def generate(melody: MelodyVersion, brief: CreativeBrief, version: int = 1,
     for position, index in enumerate(targets):
         whole[index] = lines[position] if position < len(lines) else ""
         whole_sources[index] = sources[position] if position < len(sources) else ""
+    # Every targeted slot asked for words; a blank answer there is a line
+    # the singer was given nothing of, not a slot left alone on purpose.
     return fit_lines(whole, melody, brief.language, version=version,
-                     previous=previous, sources=whole_sources)
+                     previous=previous, sources=whole_sources, required=targets)
 
 
 def regenerate_line(lyrics: LyricsVersion, melody: MelodyVersion, line_id: str,
