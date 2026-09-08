@@ -48,6 +48,7 @@ packages = [
     "raagacomposer.audio",
     "raagacomposer.speech",
     "raagacomposer.providers",
+    "raagacomposer.production",
     "raagacomposer.ui",
     "raagacomposer.ui.panels",
 ]
