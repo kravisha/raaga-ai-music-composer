@@ -684,7 +684,81 @@ def test_a_revision_naming_nothing_rewrites_the_whole_tune_and_says_so(app):
     assert producer.phase == "done", producer.report()
     v1, v2 = app.project.melodies[0], app.project.melody()
     assert len(_changed_sections(v1, v2)) >= 1
-    assert "no passage" in "\n".join(producer.events).lower()
+    assert "whole tune" in "\n".join(producer.events).lower()
+
+
+# ----------------------------------------------------------------------
+# Arya's review of de0141e: an unresolved, locked-only or preserve-only
+# instruction makes no unrelated edit, and is never quietly regenerated
+# ----------------------------------------------------------------------
+def _revise_tune_always(app, revision_text, seed=104, max_rounds=2):
+    """Produce with a Critic that asks the same revision of every tune round."""
+    packets = []
+
+    def policy(stage, packet, calls):
+        if stage == "tune":
+            packets.append(packet)
+            return {"accept": False, "revisions": [revision_text]}
+        return None
+    codex = FakeCodex(policy)
+    app.critic = CodexCritic(codex)
+    producer = app.produce_song(seed=seed, max_rounds=max_rounds)
+    drive(app, producer)
+    return producer, codex, packets
+
+
+def test_an_unresolved_target_makes_no_edit_and_is_never_regenerated_later(app):
+    a_whole_song_brief(app, "Unresolved target")
+    producer, codex, packets = _revise_tune_always(
+        app, "reshape the phrase after the big leap so it lands on the sa")
+    assert producer.phase == "done", producer.report()
+    assert len(app.project.melodies) == 1, \
+        "an instruction the reader cannot place must not rewrite anything, in any round"
+    assert codex.calls.count("tune") == 2, codex.calls   # round 1, round 2; the budget check asks nobody
+    events = "\n".join(producer.events)
+    assert "could not be placed" in events and "nothing named could be rewritten" in events
+    second = packets[1]["artifact"]["rewritten_this_round"]
+    assert second["unresolved"] == ["reshape the phrase after the big leap so it lands on the sa"]
+    assert second["targets"] == [] and not second["whole_tune"]
+    assert "revision budget" in events
+
+
+def test_a_revision_naming_only_a_locked_section_makes_no_edit(app):
+    original, pallavi, protected, notes = _first_tune_with_a_locked_pallavi(app, "Locked only")
+    before = len(app.project.melodies)
+    producer, codex = _revise_tune_once(app, "Give the Pallavi a recognizable motif")
+    assert producer.phase == "done", producer.report()
+    # The Producer composes once around the lock (its own first round), then
+    # the Critic names only the locked section: that round rewrites nothing.
+    assert len(app.project.melodies) == before + 1, \
+        [m.derived_from for m in app.project.melodies]
+    assert codex.calls.count("tune") == 2
+    events = "\n".join(producer.events)
+    assert "Pallavi is locked" in events and "nothing named could be rewritten" in events
+    kept = next(s for s in app.project.melody().sections if s.kind == SectionKind.PALLAVI)
+    assert _notes_of(app.project.melody(), kept.id) == notes
+
+
+def test_a_section_asked_to_be_kept_survives_the_rewrite_of_another(app):
+    a_whole_song_brief(app, "Keep the Pallavi")
+    producer, codex = _revise_tune_once(
+        app, "Keep the Pallavi unchanged; rewrite the Charanam with a clearer cadence")
+    assert producer.phase == "done", producer.report()
+    v1, v2 = app.project.melodies[0], app.project.melody()
+    assert _changed_sections(v1, v2) == ["Charanam 1"], _changed_sections(v1, v2)
+    pallavi = next(s for s in v2.sections if s.kind == SectionKind.PALLAVI)
+    assert not pallavi.locked, "kept by the Critic's word, not by a lock"
+    assert "Pallavi kept, as the Critic asked" in "\n".join(producer.events)
+
+
+def test_the_whole_tune_asked_for_outright_is_rewritten(app):
+    a_whole_song_brief(app, "Whole tune")
+    producer, codex = _revise_tune_once(
+        app, "Recompose the entire melody around a clearer motif")
+    assert producer.phase == "done", producer.report()
+    assert len(app.project.melodies) == 2
+    assert len(_changed_sections(app.project.melodies[0], app.project.melody())) >= 1
+    assert "whole tune" in "\n".join(producer.events)
 
 
 def test_a_revision_naming_a_locked_section_leaves_it_and_says_so(app):

@@ -553,7 +553,7 @@ class Producer:
         mode = self._apply_advice(verdict)
         self.round += 1
         if mode == "none":
-            # The only places named lie outside the song: nothing is
+            # What the Critic named cannot be acted on: nothing is
             # rewritten, and the same tune goes back to the Critic with
             # that said, rather than a rewrite nobody asked for.
             self._review_current_again()
@@ -565,6 +565,16 @@ class Producer:
         round, unchanged."""
         self._note(f"{self.stage}: nothing was rewritten; the same "
                    f"{self._ref} goes to the Critic for round {self.round}")
+        # The packet is rebuilt so that it carries this round's record of
+        # what could not be placed; the Critic is told why its instruction
+        # was not acted on, and can say it differently.
+        try:
+            self._artifact, self._ref = self._evidence()
+        except Exception as exc:  # noqa: BLE001 - evidence must not crash the app
+            log.exception("could not describe the %s again", self.stage)
+            self._fail(f"I could not describe the {self.stage} for review "
+                       f"({type(exc).__name__})")
+            return
         self._review()
 
     def _review_cancelled(self) -> None:
@@ -604,10 +614,12 @@ class Producer:
         rewriting the passage; the journal says so.
 
         Returns how the next round is made: "targets" (named passages will
-        be rewritten one by one), "whole" (nothing could be placed, so the
-        whole tune is rewritten as before), or "none" (the only places
-        named lie outside the song; nothing is rewritten).  Other stages
-        are reseeded and return "whole".
+        be rewritten one by one), "whole" (the Critic meant the whole tune,
+        outright or by naming no place at all), or "none" (what was named
+        cannot be acted on - unresolved, locked, asked to be kept, or
+        outside the song - so nothing is rewritten and the same tune is
+        reviewed again with that on record).  Other stages are reseeded
+        and return "whole".
         """
         advice = "; ".join(verdict.revisions)
         if not advice:
@@ -619,9 +631,11 @@ class Producer:
         placement = place_revisions(verdict.revisions, app.project.melody())
         self._targets = [s.id for s in placement.targets]
         self._rewrite = {"targets": [s.name for s in placement.targets],
+                         "preserved": list(placement.preserved),
                          "skipped_locked": list(placement.skipped_locked),
                          "out_of_range": list(placement.out_of_range),
-                         "unplaced": len(placement.unplaced),
+                         "unresolved": [text[:160] for text in placement.unplaced],
+                         "whole_tune": placement.whole,
                          "notes": list(placement.notes),
                          "applies": "the named passages are rewritten afresh; the "
                                     "musical property asked for is not itself a "
@@ -630,12 +644,22 @@ class Producer:
             self._note(f"{self.stage}: {'; '.join(placement.notes)}")
         if placement.targets:
             mode = "targets"
-        elif placement.out_of_range and not placement.unplaced:
-            mode = "none"
-        else:
+        elif placement.whole:
+            # The Critic meant the whole tune, or made a remark about it
+            # that names no place: the whole tune is rewritten, with the
+            # advice as lessons.
             mode = "whole"
-            self._note(f"{self.stage}: no passage could be placed; the whole tune "
-                       f"is rewritten with the advice as lessons")
+            self._note(f"{self.stage}: the whole tune is rewritten with the "
+                       f"advice as lessons")
+        else:
+            # A place was named that cannot be acted on - unresolved,
+            # locked, asked to be kept, or outside the song.  Nothing is
+            # rewritten; the packet says what could not be placed, and the
+            # same tune goes back to the Critic.  A guess at some other
+            # passage would be an edit nobody asked for.
+            mode = "none"
+            self._note(f"{self.stage}: nothing named could be rewritten; the tune "
+                       f"is kept and the unresolved advice goes on record")
         self._file_lessons(advice)
         return mode
 
