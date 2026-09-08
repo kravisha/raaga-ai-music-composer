@@ -354,11 +354,93 @@ def test_a_song_too_short_for_what_was_asked_for_says_so():
 
 
 def test_asking_for_a_pallavi_is_not_asking_for_an_anupallavi():
-    """One name contains the other, so this is matched on word boundaries
-    rather than as a substring."""
-    assert sections_asked_for("just a pallavi") == (SectionKind.PALLAVI,)
+    """One name contains the other, and the spoken spelling puts a space
+    in the middle of the longer one."""
+    assert sections_asked_for("add a pallavi") == (SectionKind.PALLAVI,)
     assert sections_asked_for("add an anupallavi") == (SectionKind.ANUPALLAVI,)
     assert sections_asked_for("a hopeful, romantic song") == ()
+
+    # "Anu Pallavi" is one section, not an Anupallavi and a Pallavi.
+    spoken = sections_asked_for("include an Anu Pallavi")
+    assert spoken == (SectionKind.ANUPALLAVI,), spoken
+
+    listed = sections_asked_for(
+        "Include Prelude, Pallavi, Anu Pallavi, Interlude, Charanam "
+        "and Ending.")
+    assert SectionKind.ANUPALLAVI in listed and SectionKind.PALLAVI in listed
+
+
+def test_a_story_is_not_a_list_of_sections():
+    """The docstring used to promise this and the code did the opposite:
+    any occurrence of any section name anywhere became an instruction."""
+    from raagacomposer.music.structure import read_section_requests
+
+    for narrative in ("A bridge between two worlds",
+                      "A happy ending to their long separation",
+                      "the interlude of his life between two cities",
+                      "a young novice musician eager to impress"):
+        got = read_section_requests("", "", narrative)
+        assert not got.wanted, f"{narrative!r} was read as a request: {got}"
+        assert not got.refused, f"{narrative!r} was read as a refusal: {got}"
+
+    # A name still counts when it is actually asked for, or listed.
+    assert read_section_requests("include a bridge").wanted == \
+        (SectionKind.BRIDGE,)
+    listed = read_section_requests("pallavi, charanam, outro").wanted
+    assert SectionKind.PALLAVI in listed and SectionKind.OUTRO in listed
+
+
+def test_a_section_the_creator_ruled_out_stays_out():
+    """A list of what was wanted cannot say what was not: "do not include
+    an Anupallavi" is not silence about the Anupallavi."""
+    from raagacomposer.music.structure import read_section_requests
+
+    asked = read_section_requests(
+        "Do not include Anupallavi; include Pallavi and Charanam.")
+    assert SectionKind.ANUPALLAVI in asked.refused
+    assert SectionKind.ANUPALLAVI not in asked.wanted
+    assert SectionKind.PALLAVI in asked.wanted
+
+    sections = plan_sections(150.0, 72, 8, "film song",
+                             requested=asked.wanted, refused=asked.refused)
+    assert not any(s.kind is SectionKind.ANUPALLAVI for s in sections), \
+        [s.name for s in sections]
+    assert any(s.kind is SectionKind.PALLAVI for s in sections)
+    for a, b in zip(sections, sections[1:]):
+        assert b.start == pytest.approx(a.end)
+
+
+def test_reprises_nobody_asked_for_go_before_the_apology():
+    """Arya's 45-second case.  Six requested kinds need 40s at one cycle
+    each, and the template's unrequested Pallavi 2 and Pallavi 3 forced
+    53s - so the planner apologised for a conflict it had created."""
+    from raagacomposer.music.structure import read_section_requests
+
+    asked = read_section_requests(
+        "Include Prelude, Pallavi, Anupallavi, Interlude, Charanam "
+        "and Ending.")
+    notes = []
+    sections = plan_sections(45.0, 72, 8, "film song",
+                             requested=asked.wanted, refused=asked.refused,
+                             notes=notes)
+    assert notes == [], notes
+    assert sections[-1].end <= 45.0 * 1.15, sections[-1].end
+    for kind in asked.wanted:
+        assert kind in [s.kind for s in sections], kind
+
+
+def test_a_kept_reprise_is_not_numbered_around_a_missing_one():
+    """Dropping Pallavi 2 and keeping Pallavi 3 reads as a missing
+    section rather than a shorter song."""
+    from raagacomposer.music.structure import read_section_requests
+
+    asked = read_section_requests(
+        "Include Prelude, Pallavi, Anupallavi, Interlude, Charanam "
+        "and Ending.")
+    sections = plan_sections(150.0, 72, 8, "film song",
+                             requested=asked.wanted, refused=asked.refused)
+    names = [s.name for s in sections]
+    assert "Pallavi 3" not in names or "Pallavi 2" in names, names
 
 
 def test_a_section_the_template_does_not_have_is_added_when_asked_for():

@@ -2517,3 +2517,45 @@ def test_a_brief_that_names_nothing_still_plans_normally(ready, settle):
     assert melody.sections, "no sections at all"
     for a, b in zip(melody.sections, melody.sections[1:]):
         assert b.start == pytest.approx(a.end)
+
+
+def test_a_length_that_could_not_be_met_is_explained_where_it_is_read(
+        ready, settle):
+    """The note was stored on the melody and shown nowhere.  The report
+    the Tune panel displays recomputed the raaga check and returned only
+    that, so a song that could not be as short as asked said "no issues
+    found" and explained nothing."""
+    app = ready
+    app.project.brief.notes = (
+        "Include Prelude, Pallavi, Anupallavi, Interlude, Charanam "
+        "and Ending.")
+    app.project.brief.duration_target = 30.0
+    app.generate_tune(seed=6)
+    settle()
+
+    melody = app.project.melody()
+    assert melody is not None, app.status_text
+    assert melody.plan_notes, "the planner explained nothing"
+
+    report = app.validation_report()
+    assert melody.plan_notes[0] in report, report
+    assert "30s" in report, report
+    # And the raaga check is still in there - the explanation is added to
+    # what was shown, not put in place of it.
+    assert "aaga" in report or "issue" in report.lower(), report
+
+
+def test_a_song_that_fits_says_nothing_extra(ready, settle):
+    """An explanation nobody needs is noise, and would train the creator
+    to stop reading the one that matters."""
+    app = ready
+    app.project.brief.notes = (
+        "Include Prelude, Pallavi, Anupallavi, Interlude, Charanam "
+        "and Ending.")
+    app.project.brief.duration_target = 150.0
+    app.generate_tune(seed=6)
+    settle()
+
+    melody = app.project.melody()
+    assert melody is not None, app.status_text
+    assert melody.plan_notes == [], melody.plan_notes

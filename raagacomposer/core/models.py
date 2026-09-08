@@ -196,6 +196,11 @@ class MelodyVersion:
     state: ApprovalState = ApprovalState.DRAFT
     audio_path: str = ""
     validation: List[str] = field(default_factory=list)
+    #: What the planner decided about the *shape* of the song and why -
+    #: a section kept because it was asked for, one added that the
+    #: template does not carry, a length that could not be met.  Separate
+    #: from ``validation``, which is about the notes.
+    plan_notes: List[str] = field(default_factory=list)
     parent_version: Optional[int] = None
     derived_from: str = ""
     # Where each quoted fragment came from (music/melody.py), one entry per
