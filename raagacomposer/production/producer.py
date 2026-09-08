@@ -70,7 +70,7 @@ log = logging.getLogger("raaga.production")
 
 #: The job targets a stage submits, so a cancel can reach them.
 STAGE_TARGETS = {
-    "tune": ("melody:all",),
+    "tune": ("melody:all", "render:tune"),
     "lyrics": ("lyrics",),
     "voice": ("vocal",),
     "beat": ("beat:all", "render:beat"),
