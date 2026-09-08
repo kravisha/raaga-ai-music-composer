@@ -588,3 +588,76 @@ def test_scope_after_the_name_is_not_the_same_as_a_sentence():
         got = read_section_requests("", "", narrative)
         assert not got.wanted, f"{narrative!r} asked for {got.wanted}"
         assert not got.refused, f"{narrative!r} refused {got.refused}"
+
+
+def test_a_cue_must_ask_for_the_section_it_is_beside():
+    """The asking side had the fault the refusing side was fixed for
+    twice: a cue matched anywhere in a clause, so ordinary narrative
+    became a structural instruction.  The controller feeds this the
+    brief's situation, which is narrative by nature, so a story about a
+    bridge could add a Bridge section to a song that had none."""
+    from raagacomposer.music.structure import read_section_requests
+
+    for narrative in ("his life contains a bridge he cannot cross",
+                      "he begins with a prelude of doubt",
+                      "she features in the ending of his story",
+                      "the structure of his life fell apart on the bridge",
+                      "the sections of the town were divided by a bridge",
+                      "add to that the ending of everything he knew"):
+        got = read_section_requests("", "", narrative)
+        assert not got.wanted, f"{narrative!r} asked for {got.wanted}"
+        assert not got.refused, f"{narrative!r} refused {got.refused}"
+
+    # And the cue still works when it is actually asking for the section
+    # standing next to it.
+    for phrasing, kind in (("include a bridge", SectionKind.BRIDGE),
+                           ("add an anupallavi", SectionKind.ANUPALLAVI),
+                           ("please include an anupallavi in this version",
+                            SectionKind.ANUPALLAVI),
+                           ("the song should include a charanam",
+                            SectionKind.CHARANAM)):
+        got = read_section_requests(phrasing)
+        assert got.wanted == (kind,), (phrasing, got)
+
+
+def test_two_names_in_a_sentence_are_not_a_list_of_sections():
+    """Naming two sections was enough on its own, so "a bridge between two
+    worlds and a happy ending" read as a list of two requests.  A list has
+    nothing between its items but the words that join a list."""
+    from raagacomposer.music.structure import read_section_requests
+
+    for narrative in ("a bridge between two worlds and a happy ending",
+                      "the interlude of his life before the ending of it",
+                      "a prelude to the bridge he burned behind him"):
+        got = read_section_requests("", "", narrative)
+        assert not got.wanted, f"{narrative!r} asked for {got.wanted}"
+        assert not got.refused, f"{narrative!r} refused {got.refused}"
+
+    # A real list, with nothing between the names but list words.
+    listed = read_section_requests("pallavi, charanam, outro")
+    assert set(listed.wanted) == {SectionKind.PALLAVI, SectionKind.CHARANAM,
+                                 SectionKind.OUTRO}, listed
+    full = read_section_requests(
+        "Include Prelude, Pallavi, Anu Pallavi, Interlude, Charanam "
+        "and Ending.")
+    assert len(full.wanted) == 6, full
+
+
+def test_a_narrative_situation_does_not_restructure_the_song():
+    """The whole point: this is wired to the brief, and a brief's
+    situation is a story about people."""
+    from raagacomposer.core.models import SectionKind as Kind
+    from raagacomposer.music.structure import read_section_requests
+
+    situation = ("a young novice musician is eager to impress his audience "
+                 "by belting out a new tune, and the bridge between his "
+                 "old life and his new one is the happy ending he wants")
+    got = read_section_requests("", "", situation)
+    assert got == read_section_requests(""), got
+
+    plain = plan_sections(150.0, 72, 8, "devotional")
+    told = plan_sections(150.0, 72, 8, "devotional",
+                         requested=got.wanted, refused=got.refused)
+    assert [s.name for s in plain] == [s.name for s in told], \
+        "a story changed the shape of the song"
+    assert not any(s.kind is Kind.BRIDGE for s in told)
