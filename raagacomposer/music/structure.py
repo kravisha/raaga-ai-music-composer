@@ -127,7 +127,44 @@ class SectionRequest:
 
 
 def _clauses(blob: str) -> List[str]:
-    return [c for c in re.split(r"[.;:\n!?]|,? but ", blob) if c.strip()]
+    # A new explicit request after a comma or "and" starts a new scope.
+    # Keep ordinary section-list commas together: "include Pallavi,
+    # Anupallavi and Charanam" still applies one request to the list.
+    asking = "|".join(re.escape(cue) for cue in _ASKING)
+    boundary = rf"(?:,\s*|\s+and\s+)(?=(?:{asking})\b)"
+    return [c for c in re.split(r"[.;:\n!?]|,? but |" + boundary, blob)
+            if c.strip()]
+
+
+#: How much a refusal-opening clause may carry after the section it names
+#: and still read as an instruction.  "No Anupallavi" and "no anupallavi
+#: please" are directions; "not the ending they hoped for" is a sentence
+#: about people that happens to open with one of these words.
+_DIRECTIVE_TAIL = 2
+
+
+def _starts_with_refusal(clause: str) -> bool:
+    # A standalone exclusion is a request in its own right. Require a
+    # directive at the start; "there is no bridge over the river" remains
+    # a narrative rather than an instruction to remove a song section.
+    cues = "|".join(re.escape(cue) for cue in _REFUSING)
+    return bool(re.match(rf"\s*(?:please\s+)?(?:do\s+)?(?:{cues})\b",
+                         clause))
+
+
+def _reads_as_a_direction(clause: str,
+                          names: List[Tuple[SectionKind, int]]) -> bool:
+    """Does a refusal-opening clause stop where an instruction would?
+
+    Opening with a refusal is not enough by itself.  "No one told him
+    about the interlude of his life" opens with one and is a story, and
+    letting the whole clause count made it ask *for* an Interlude - the
+    very fault this branch was added to fix, reappearing inside the fix.
+    """
+    if not names:
+        return False
+    last = max(at for _, at in names)
+    return len(clause[last:].split()[1:]) <= _DIRECTIVE_TAIL
 
 
 def _named(clause: str) -> List[Tuple[SectionKind, int]]:
@@ -148,7 +185,9 @@ def _named(clause: str) -> List[Tuple[SectionKind, int]]:
 
 def _refused_at(clause: str, at: int) -> bool:
     before = clause[:at].split()
-    return any(w.strip(",") in _REFUSING for w in before[-_REFUSAL_REACH:])
+    nearby = " ".join(w.strip(",") for w in before[-_REFUSAL_REACH:])
+    return any(re.search(rf"\b{re.escape(cue)}\b", nearby)
+               for cue in _REFUSING)
 
 
 def read_section_requests(*texts: str) -> SectionRequest:
@@ -171,10 +210,17 @@ def read_section_requests(*texts: str) -> SectionRequest:
             continue
         asking = any(cue in clause for cue in _ASKING)
         listed = len({kind for kind, _ in names}) > 1
-        if not (asking or listed):
+        refusing = (_starts_with_refusal(clause)
+                    and _reads_as_a_direction(clause, names))
+        if not (asking or listed or refusing):
             continue
         for kind, at in names:
-            target = refused if _refused_at(clause, at) else wanted
+            denied = _refused_at(clause, at)
+            if refusing and not (asking or listed) and not denied:
+                # This clause is here on the strength of a refusal.  A
+                # name it does not refuse is not thereby asked for.
+                continue
+            target = refused if denied else wanted
             if kind not in target:
                 target.append(kind)
     # A refusal wins: saying both is a contradiction, and the safer
