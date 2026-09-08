@@ -761,6 +761,49 @@ def test_the_whole_tune_asked_for_outright_is_rewritten(app):
     assert "whole tune" in "\n".join(producer.events)
 
 
+# ----------------------------------------------------------------------
+# A locked arrangement region is the creator's through the whole production
+# ----------------------------------------------------------------------
+def test_a_locked_arrangement_region_survives_the_production_and_is_named(app):
+    """One locked region used to make the arrangement stage fail outright
+    (auto_arrange raised on the carried region).  It is kept, the rest is
+    rebuilt on the produced tune, and the packet names it."""
+    from raagacomposer.music import arrangement as arranger
+    a_whole_song_brief(app, "Locked region in production")
+    app.generate_tune(seed=104)
+    pump_until(app, lambda: app.project.melody() is not None and not app.jobs.active_jobs())
+    app.auto_arrange()
+    pump_until(app, lambda: app.project.arrangement() is not None and not app.jobs.active_jobs())
+    first = app.project.arrangement()
+    lead = next(t for t in first.tracks if t.role == "lead")
+    interlude = next(s for s in app.project.melody().sections
+                     if s.kind is SectionKind.INTERLUDE)
+    region = next(r for r in lead.regions if r.overlaps(interlude.start, interlude.end))
+    arranger.set_region_lock(first, lead.id, region.id, True)
+    kept = (round(region.start, 3), round(region.end, 3), [(n.start, n.midi) for n in region.notes])
+
+    packets = {}
+
+    def policy(stage, packet, calls):
+        packets[stage] = packet
+        return None
+    codex = FakeCodex(policy)
+    app.critic = CodexCritic(codex)
+    producer = app.produce_song(seed=105, max_rounds=1)
+    drive(app, producer)
+    assert producer.phase == "done", producer.report()
+    assert "arrangement" in codex.calls, codex.calls
+    arrangement = app.project.arrangement()
+    assert arrangement.version > first.version
+    still = [(round(r.start, 3), round(r.end, 3), [(n.start, n.midi) for n in r.notes])
+             for t in arrangement.tracks for r in t.regions if r.locked]
+    assert still == [kept], "the locked region did not survive the production's arrangement"
+    named = packets["arrangement"]["artifact"]["kept_locked_regions"]
+    assert len(named) == 1 and "Interlude" in named[0] and lead.label in named[0], named
+    assert not any(r["locked"] for t in packets["arrangement"]["artifact"]["tracks"]
+                   for r in t["regions"] if "Interlude" not in " ".join(r["covers"]))
+
+
 def test_a_revision_naming_a_locked_section_leaves_it_and_says_so(app):
     original, pallavi, protected, notes = _first_tune_with_a_locked_pallavi(app, "Locked target")
     producer, codex = _revise_tune_once(

@@ -578,6 +578,42 @@ def lock_range(arrangement: ArrangementVersion, start: float, end: float,
 # --------------------------------------------------------------------------
 # automatic first pass
 # --------------------------------------------------------------------------
+def _add_around_locks(arrangement: ArrangementVersion, melody: MelodyVersion,
+                      raaga: Raaga, instrument: str, start: float, end: float,
+                      **kw) -> int:
+    """add_instrument over whatever of ``start``-``end`` the creator has not
+    locked on that track.  A locked track is left as it is; a locked region
+    carried over from the previous arrangement is left as it is and the
+    part is written on either side of it.  One locked region used to make
+    every later auto-arrangement raise, because the whole-song span the
+    part was added over contained it.  Returns the regions added."""
+    role = kw.get("role", "")
+    track = find_track(arrangement, instrument, role) if role else None
+    if track is not None and track.locked:
+        return 0
+    spans = [(start, end)]
+    for region in (track.regions if track is not None else []):
+        if not region.locked:
+            continue
+        cut = []
+        for lo, hi in spans:
+            if region.end <= lo or region.start >= hi:
+                cut.append((lo, hi))
+                continue
+            if region.start > lo:
+                cut.append((lo, region.start))
+            if region.end < hi:
+                cut.append((region.end, hi))
+        spans = cut
+    added = 0
+    for lo, hi in spans:
+        if hi - lo < 0.5:
+            continue
+        add_instrument(arrangement, melody, raaga, instrument, lo, hi, **kw)
+        added += 1
+    return added
+
+
 def auto_arrange(melody: MelodyVersion, raaga: Raaga, brief, seed: int = 5,
                  previous: Optional[ArrangementVersion] = None,
                  lead=None, beat=None) -> ArrangementVersion:
@@ -625,18 +661,20 @@ def auto_arrange(melody: MelodyVersion, raaga: Raaga, brief, seed: int = 5,
     drone = find_instrument("tanpura")
     bass = find_instrument("double_bass" if "night" in words else "bass")
 
+    # Each auto part is written around whatever the creator locked on its
+    # track; the locked regions carried over by new_version stay as they are.
     if drone:
-        add_instrument(arrangement, melody, raaga, drone.key, 0.0, total,
-                       role="drone", intensity=0.4, seed=seed,
-                       generated_by="auto")
+        _add_around_locks(arrangement, melody, raaga, drone.key, 0.0, total,
+                          role="drone", intensity=0.4, seed=seed,
+                          generated_by="auto")
     if pad:
-        add_instrument(arrangement, melody, raaga, pad.key, 0.0, total,
-                       role="pad", intensity=0.5, seed=seed + 1,
-                       generated_by="auto")
+        _add_around_locks(arrangement, melody, raaga, pad.key, 0.0, total,
+                          role="pad", intensity=0.5, seed=seed + 1,
+                          generated_by="auto")
     if bass:
-        add_instrument(arrangement, melody, raaga, bass.key, 0.0, total,
-                       role="bass", intensity=0.55, seed=seed + 2,
-                       generated_by="auto")
+        _add_around_locks(arrangement, melody, raaga, bass.key, 0.0, total,
+                          role="bass", intensity=0.55, seed=seed + 2,
+                          generated_by="auto")
     if percussion:
         # Percussion enters after the prelude.
         first_sung = next((s.start for s in melody.sections
@@ -653,21 +691,21 @@ def auto_arrange(melody: MelodyVersion, raaga: Raaga, brief, seed: int = 5,
             log.info("arranged the creator's beat v%d (%s)",
                      beat.version, beat.tala)
         else:
-            add_instrument(arrangement, melody, raaga, percussion.key,
-                           first_sung, total, role="rhythm", intensity=0.6,
-                           seed=seed + 3, generated_by="auto")
+            _add_around_locks(arrangement, melody, raaga, percussion.key,
+                              first_sung, total, role="rhythm", intensity=0.6,
+                              seed=seed + 3, generated_by="auto")
     if lead:
         for section in melody.sections:
             if section.kind.instrumental:
-                add_instrument(arrangement, melody, raaga, lead.key,
-                               section.start, section.end, role="lead",
-                               intensity=section.intensity, seed=seed + 4,
-                               generated_by="auto")
+                _add_around_locks(arrangement, melody, raaga, lead.key,
+                                  section.start, section.end, role="lead",
+                                  intensity=section.intensity, seed=seed + 4,
+                                  generated_by="auto")
             elif section.kind in (SectionKind.PALLAVI, SectionKind.CHORUS):
-                add_instrument(arrangement, melody, raaga, lead.key,
-                               section.start, section.end, role="counter",
-                               intensity=0.45, seed=seed + 5,
-                               generated_by="auto")
+                _add_around_locks(arrangement, melody, raaga, lead.key,
+                                  section.start, section.end, role="counter",
+                                  intensity=0.45, seed=seed + 5,
+                                  generated_by="auto")
     return arrangement
 
 

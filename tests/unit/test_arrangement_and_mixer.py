@@ -430,3 +430,61 @@ def test_the_bass_stays_below_a_voice_that_reaches_the_bass_register(kambhoji):
     bass = generate_part(melody, kambhoji,
                          PartRequest(instrument="bass", role="bass", start=0.0, end=12.0))
     assert bass and max(n.midi for n in bass) < v_low
+
+
+# --------------------------------------------------------------------------
+# a locked region survives the next auto arrangement
+# --------------------------------------------------------------------------
+def _regenerated(melody, kambhoji, name="Charanam 1", seed=12):
+    from raagacomposer.music.melody import regenerate_section
+    section = next(s for s in melody.sections if s.name == name)
+    return regenerate_section(melody, kambhoji, section.id,
+                              MelodyOptions(tempo_bpm=76, seed=seed,
+                                            duration_target=120), 2)
+
+
+def test_auto_arrange_keeps_a_locked_region_and_rebuilds_around_it(melody, kambhoji):
+    """One locked region used to make every later auto-arrangement raise
+    ("has locked regions at 0-120s. Unlock them first."): the carried
+    region sat inside the whole-song span the pad was added over."""
+    brief = CreativeBrief(language="Tamil")
+    first = arranger.auto_arrange(melody, kambhoji, brief, seed=5)
+    lead = next(t for t in first.tracks if t.role == "lead")
+    assert len(lead.regions) >= 2, "the lead plays more than one instrumental section"
+    interlude = next(s for s in melody.sections if s.name == "Interlude 1")
+    region = next(r for r in lead.regions if r.overlaps(interlude.start, interlude.end))
+    arranger.set_region_lock(first, lead.id, region.id, True)
+    kept = (region.start, region.end, region.seed, [(n.start, n.midi) for n in region.notes])
+    pad_before = [(r.start, r.end) for r in next(t for t in first.tracks if t.role == "pad").regions]
+
+    rewritten = _regenerated(melody, kambhoji)
+    second = arranger.auto_arrange(rewritten, kambhoji, brief, seed=5, previous=first)
+    lead2 = next(t for t in second.tracks if t.role == "lead")
+    still = [(r.start, r.end, r.seed, [(n.start, n.midi) for n in r.notes])
+             for r in lead2.regions if r.locked]
+    assert still == [kept], "the locked region did not come through untouched"
+    # The lead's other sections are rebuilt around it, and nowhere over it.
+    unlocked = [r for r in lead2.regions if not r.locked]
+    assert unlocked and all(not r.overlaps(kept[0], kept[1]) for r in unlocked)
+    assert len(lead2.regions) == len(lead.regions)
+    # And the other tracks are rebuilt as before: nothing raised, every
+    # role present once, the pad over the whole new tune.
+    roles = [t.role for t in second.tracks]
+    assert roles.count("pad") == 1 and roles.count("bass") == 1 and roles.count("lead") == 1
+    pad2 = next(t for t in second.tracks if t.role == "pad")
+    assert [(r.start, r.end) for r in pad2.regions] == pad_before
+    assert not any(r.locked for r in pad2.regions)
+
+
+def test_auto_arrange_leaves_a_locked_track_alone(melody, kambhoji):
+    brief = CreativeBrief(language="Tamil")
+    first = arranger.auto_arrange(melody, kambhoji, brief, seed=5)
+    bass = next(t for t in first.tracks if t.role == "bass")
+    bass.locked = True
+    signature = [(r.start, r.end, [(n.start, n.midi) for n in r.notes]) for r in bass.regions]
+    second = arranger.auto_arrange(_regenerated(melody, kambhoji), kambhoji, brief,
+                                   seed=5, previous=first)
+    bass2 = next(t for t in second.tracks if t.role == "bass")
+    assert bass2.locked
+    assert [(r.start, r.end, [(n.start, n.midi) for n in r.notes]) for r in bass2.regions] \
+        == signature

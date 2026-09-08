@@ -1005,14 +1005,22 @@ class Producer:
                 regions.append({"start": round(region.start, 2),
                                 "end": round(region.end, 2), "role": region.role,
                                 "notes": len(region.notes), "covers": covers,
-                                "generated_by": region.generated_by})
+                                "generated_by": region.generated_by,
+                                "locked": region.locked})
             tracks.append({"label": track.label, "instrument": track.instrument,
                            "role": track.role, "gain": round(track.gain, 2),
                            "pan": round(track.pan, 2), "mute": track.mute,
+                           "locked": track.locked,
                            "played_by": assigned.get(track.id, ""),
                            "regions": regions})
+        # The creator's own: locked regions and tracks are carried into
+        # every new arrangement untouched, and the Critic should know which
+        # spans were not the Producer's to change.
+        kept = [f"{t['label']} {r['start']}-{r['end']}s ({', '.join(r['covers'])})"
+                for t in tracks for r in t["regions"] if r["locked"] or t["locked"]]
         body = {"by": "producer (casting)", "lead": lead.describe(),
                 "vocal": "mixed from the vocal master take; not a track here",
+                "kept_locked_regions": kept,
                 "tracks": tracks,
                 "team": [{"id": a.id, "role": a.role.value,
                           "instrument": a.profile.instrument if a.profile else "",
