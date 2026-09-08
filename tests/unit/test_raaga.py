@@ -312,7 +312,11 @@ def test_a_section_the_creator_named_survives_a_short_song():
         "and Ending.")
     assert SectionKind.ANUPALLAVI in asked
 
-    unasked = plan_sections(60.0, 72, 8, "film song")
+    # Sixty seconds in this cycle now holds an Anupallavi unasked (the
+    # first statements outrank the repeats), so the guard that the asked
+    # path matters is a length that genuinely cannot: thirty seconds in a
+    # slow eight-second cycle.
+    unasked = plan_sections(30.0, 60, 8, "film song")
     assert not any(s.kind is SectionKind.ANUPALLAVI for s in unasked), \
         "this test proves nothing if the planner keeps it anyway"
 
@@ -722,3 +726,111 @@ def test_a_creator_may_want_or_keep_a_section():
                       "cross"):
         got = read_section_requests("", "", narrative)
         assert not got, f"{narrative!r} read as {got}"
+
+
+# --------------------------------------------------------------------------
+# The first statements come before the repeats (queue item 5, Arya's rule)
+# --------------------------------------------------------------------------
+def _kinds(sections):
+    return [s.kind for s in sections]
+
+
+def _names(sections):
+    return [s.name for s in sections]
+
+
+def test_the_default_film_plan_has_its_three_sung_statements():
+    """The brief's default is 150 seconds, and the film plan for it had a
+    Pallavi 2, a Pallavi 3 and a Charanam 2 but no Anupallavi: the optional
+    first statement was dropped before the mandatory repeats."""
+    sections = plan_sections(150.0, 72, 8, "film song")
+    kinds = _kinds(sections)
+    assert SectionKind.ANUPALLAVI in kinds, _names(sections)
+    assert kinds.index(SectionKind.PALLAVI) < kinds.index(SectionKind.ANUPALLAVI) \
+        < kinds.index(SectionKind.CHARANAM)
+    # The repeats that fit are still there, and the song still closes on
+    # the Pallavi.
+    assert _names(sections) == ["Prelude", "Pallavi", "Anupallavi", "Interlude 1",
+                                "Charanam 1", "Pallavi 2", "Pallavi 3", "Outro"]
+    assert 130 <= sections[-1].end <= 172.5
+
+
+def test_the_default_devotional_plan_has_an_anupallavi_too():
+    sections = plan_sections(150.0, 72, 8, "devotional")
+    kinds = _kinds(sections)
+    assert SectionKind.ANUPALLAVI in kinds, _names(sections)
+    assert kinds.index(SectionKind.PALLAVI) < kinds.index(SectionKind.ANUPALLAVI) \
+        < kinds.index(SectionKind.CHARANAM)
+    assert kinds[-1] is SectionKind.OUTRO
+
+
+@pytest.mark.parametrize("song_type", ["film song", "devotional"])
+def test_sixty_seconds_holds_all_six_first_statements(song_type):
+    """Sixty seconds at 72 bpm in eight is nine cycles: room for the six
+    first statements once the repeats nobody asked for are gone.  Nothing
+    was asked for, so nothing is explained."""
+    notes = []
+    sections = plan_sections(60.0, 72, 8, song_type, notes=notes)
+    kinds = _kinds(sections)
+    for kind in (SectionKind.PRELUDE, SectionKind.PALLAVI, SectionKind.ANUPALLAVI,
+                 SectionKind.INTERLUDE, SectionKind.CHARANAM, SectionKind.OUTRO):
+        assert kind in kinds, (song_type, _names(sections))
+    assert len(sections) == 6, _names(sections)
+    assert sections[-1].end <= 60.0 * 1.15, sections[-1].end
+    assert notes == [], notes
+
+
+def test_a_repeated_pallavi_never_outlives_the_only_anupallavi():
+    for target in (60.0, 75.0, 90.0, 105.0, 120.0, 150.0, 180.0):
+        sections = plan_sections(target, 72, 8, "film song")
+        kinds = _kinds(sections)
+        if kinds.count(SectionKind.PALLAVI) > 1:
+            assert SectionKind.ANUPALLAVI in kinds, (target, _names(sections))
+
+
+def test_a_song_too_short_for_an_anupallavi_says_so():
+    """Thirty seconds in a slow eight-beat cycle of eight seconds: six
+    sections need 48 seconds even at a cycle each.  The Anupallavi goes,
+    and the creator is told, rather than a Pallavi repeat being kept in
+    its place."""
+    notes = []
+    sections = plan_sections(30.0, 60, 8, "film song", notes=notes)
+    kinds = _kinds(sections)
+    assert SectionKind.ANUPALLAVI not in kinds, _names(sections)
+    assert kinds.count(SectionKind.PALLAVI) == 1, _names(sections)
+    assert any("Anupallavi" in n and "30s" in n for n in notes), notes
+    for a, b in zip(sections, sections[1:]):
+        assert b.start == pytest.approx(a.end)
+
+
+def test_an_anupallavi_asked_against_stays_out_without_comment():
+    notes = []
+    sections = plan_sections(150.0, 72, 8, "film song",
+                             refused=(SectionKind.ANUPALLAVI,), notes=notes)
+    assert SectionKind.ANUPALLAVI not in _kinds(sections), _names(sections)
+    assert notes == [], notes
+
+
+def test_a_locked_repeat_survives_a_shorter_replan():
+    """A locked Pallavi 2 is addressed by name and kept whole, however
+    short the new length; the first statements still fit around it."""
+    original = plan_sections(150.0, 72, 8, "film song")
+    reprise = next(s for s in original if s.name == "Pallavi 2")
+    reprise.locked = True
+    notes = []
+    replanned = plan_sections(60.0, 72, 8, "film song", existing=original, notes=notes)
+    kept = next((s for s in replanned if s.name == "Pallavi 2"), None)
+    assert kept is not None and kept.locked and kept.id == reprise.id, _names(replanned)
+    assert kept.duration == pytest.approx(reprise.duration)
+    assert SectionKind.ANUPALLAVI in _kinds(replanned), _names(replanned)
+    assert "Pallavi 3" not in _names(replanned)
+
+
+def test_the_tamil_rule_leaves_a_pop_song_alone():
+    """A simple song keeps its closing chorus at sixty seconds; the rule
+    about first statements is about the Pallavi-Anupallavi-Charanam form."""
+    sections = plan_sections(60.0, 72, 8, "simple")
+    kinds = _kinds(sections)
+    assert SectionKind.ANUPALLAVI not in kinds
+    assert kinds.count(SectionKind.CHORUS) == 2, _names(sections)
+    assert _names(sections)[-2] == "Chorus 2"

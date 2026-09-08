@@ -57,12 +57,21 @@ def _devotional_template() -> List[Slot]:
     return [
         Slot(SectionKind.PRELUDE, "Prelude", 2, 0.35),
         Slot(SectionKind.PALLAVI, "Pallavi", 4, 0.60),
+        Slot(SectionKind.ANUPALLAVI, "Anupallavi", 3, 0.55, optional=True, priority=3),
         Slot(SectionKind.INTERLUDE, "Interlude 1", 2, 0.45),
         Slot(SectionKind.CHARANAM, "Charanam 1", 4, 0.60),
         Slot(SectionKind.PALLAVI, "Pallavi 2", 3, 0.65),
         Slot(SectionKind.CHARANAM, "Charanam 2", 4, 0.60, optional=True, priority=1),
         Slot(SectionKind.OUTRO, "Outro", 2, 0.35),
     ]
+
+
+#: The first statements of a Pallavi-form song.  When the song is short,
+#: the template's repeats and extras go before any of these; an
+#: Anupallavi is left out only when these six cannot fit at a cycle each,
+#: and then the creator is told.
+_FIRST_STATEMENTS = (SectionKind.PRELUDE, SectionKind.PALLAVI, SectionKind.ANUPALLAVI,
+                     SectionKind.INTERLUDE, SectionKind.CHARANAM, SectionKind.OUTRO)
 
 
 TEMPLATES = {
@@ -436,29 +445,75 @@ def plan_sections(duration_target: float, tempo_bpm: int, beats_per_cycle: int,
     def total(items: List[Slot]) -> float:
         return sum(s.cycles for s in items) * cyc
 
-    # Drop optional sections while clearly over target.
+    locked = {s.name: s for s in (existing or []) if s.locked}
+    # Their number, not the clamped one.  ``target`` has already been
+    # raised to four cycles, so quoting it told a creator who asked for
+    # 30 seconds that they had asked for 31.
+    wanted_seconds = float(duration_target or 150.0)
+
+    # A Pallavi-form song: its first statements outrank the template's
+    # repeats.  The default 150-second film plan used to keep Pallavi 2,
+    # Pallavi 3 and Charanam 2 and drop the one Anupallavi, because the
+    # Anupallavi was the optional slot and the repeats were not.
+    pallavi_form = any(s.kind is SectionKind.PALLAVI for s in slots)
+    first_of: Dict[SectionKind, Slot] = {}
+    for slot in slots:
+        first_of.setdefault(slot.kind, slot)
+
+    def protected(slot: Slot) -> bool:
+        if slot.name in locked:
+            return True
+        if slot is not first_of.get(slot.kind):
+            return False
+        return slot.kind in asked or (pallavi_form and slot.kind in _FIRST_STATEMENTS)
+
+    # Drop while clearly over target: the optional extras first, by their
+    # priority; then, in a Pallavi-form song, the repeats nobody asked for,
+    # last in the song first.  A first statement, a locked section and a
+    # section asked for by name are never dropped here.
     while total(slots) > target * 1.15:
-        droppable = [s for s in slots if s.optional]
-        if not droppable:
+        droppable = [s for s in slots if s.optional and not protected(s)]
+        if droppable:
+            slots.remove(max(droppable, key=lambda s: s.priority))
+            continue
+        repeats = [s for s in slots if not protected(s)] if pallavi_form else []
+        if not repeats:
             break
-        victim = max(droppable, key=lambda s: s.priority)
-        slots.remove(victim)
+        slots.remove(repeats[-1])
+
+    # What is left is the structure, asked for or first statements, and
+    # the sections are about to be squeezed toward a cycle each.  The one
+    # first statement the template calls optional, the Anupallavi, goes
+    # only when even that cannot fit - and then the creator is told, rather
+    # than a repeat being kept in its place.
+    floor = len(slots) * cyc
+    anupallavi = first_of.get(SectionKind.ANUPALLAVI)
+    if (pallavi_form and anupallavi in slots and anupallavi.optional
+            and SectionKind.ANUPALLAVI not in asked
+            and anupallavi.name not in locked and floor > target * 1.15):
+        slots.remove(anupallavi)
+        said.append(
+            f"An Anupallavi does not fit: {len(slots) + 1} sections at one "
+            f"cycle of {cyc:.0f}s each need {floor:.0f}s, and you asked for "
+            f"about {wanted_seconds:.0f}s. I have left it out; ask for a "
+            f"longer song or a quicker cycle to have one.")
+        floor = len(slots) * cyc
 
     # Everything left is either structural or asked for, and it still does
-    # not fit.  The sections are about to be squeezed to a cycle each, so
-    # say that plainly instead of returning a song that quietly disagrees
-    # with the brief.
-    floor = len(slots) * cyc
-    if asked and floor > target * 1.15:
-        # Their number, not the clamped one.  ``target`` has already been
-        # raised to four cycles, so quoting it told a creator who asked
-        # for 30 seconds that they had asked for 31.
-        wanted_seconds = float(duration_target or 150.0)
-        said.append(
-            f"{len(slots)} sections at one cycle each need "
-            f"{floor:.0f}s, and you asked for about {wanted_seconds:.0f}s. "
-            f"I have kept every section you named and they are each as "
-            f"short as a cycle allows.")
+    # not fit.  Say that plainly instead of returning a song that quietly
+    # disagrees with the brief.
+    if floor > target * 1.15:
+        if asked:
+            said.append(
+                f"{len(slots)} sections at one cycle each need "
+                f"{floor:.0f}s, and you asked for about {wanted_seconds:.0f}s. "
+                f"I have kept every section you named and they are each as "
+                f"short as a cycle allows.")
+        else:
+            said.append(
+                f"{len(slots)} sections at one cycle each need "
+                f"{floor:.0f}s, and you asked for about {wanted_seconds:.0f}s. "
+                f"They are each as short as a cycle allows.")
 
     # Scale remaining cycle counts toward the target.
     if total(slots) > 0:
@@ -479,8 +534,6 @@ def plan_sections(duration_target: float, tempo_bpm: int, beats_per_cycle: int,
                 break
             s = min(candidates, key=lambda s: (s.intensity, -s.cycles))
             s.cycles -= 1
-
-    locked = {s.name: s for s in (existing or []) if s.locked}
 
     # Pruning a reprise leaves a hole in the numbering, and "Pallavi" then
     # "Pallavi 3" with no Pallavi 2 reads as a missing section rather than
