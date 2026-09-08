@@ -55,10 +55,17 @@ def build_window(tmp_dir):
     settings = Settings.load()
     settings.projects_dir = str(tmp_dir / "projects")
     settings.stt_provider = "none"
+    # The workspace is persisted into the shared test home by any window
+    # that switches it, and LEARN disables every Compose action - so a
+    # window built after such a test would have nothing to trigger.  Start
+    # in MAIN on purpose, and say so if it is not.
+    settings.extra["workspace"] = "MAIN"
     controller = AppController(settings)
     win = MainWindow(controller)
     win.resize(1500, 950)
     win.show()
+    assert action_named(win, "Produce a whole song").isEnabled(), \
+        "the Compose actions are disabled: the window is not in the MAIN workspace"
     return win
 
 
