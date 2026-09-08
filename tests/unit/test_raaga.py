@@ -464,3 +464,73 @@ def test_a_long_song_still_drops_what_nobody_asked_for():
     assert len(short) < len(everything), \
         "the short song kept as much as the long one"
     assert any(s.kind is SectionKind.ANUPALLAVI for s in short)
+
+
+def test_a_refusal_on_its_own_is_still_an_instruction():
+    """Arya's three standalone cases.  A clause was thrown away unless it
+    also asked for something, so "No Anupallavi." said nothing at all.
+
+    At 240s, where the template keeps its optional sections, so an
+    ignored refusal would show.  Their first version of this used 150s,
+    where pruning drops the Anupallavi anyway and the check could have
+    passed on a bug.
+    """
+    from raagacomposer.music.structure import read_section_requests
+
+    baseline = plan_sections(240.0, 72, 8, "film song")
+    assert any(s.kind is SectionKind.ANUPALLAVI for s in baseline), \
+        "this proves nothing unless the plan has one to begin with"
+
+    for phrasing in ("No Anupallavi.", "Skip Anupallavi.",
+                     "Without Anupallavi.", "Leave out the Anupallavi.",
+                     "no anupallavi please"):
+        asked = read_section_requests(phrasing)
+        assert asked.refused == (SectionKind.ANUPALLAVI,), \
+            f"{phrasing!r} was not read as a refusal: {asked}"
+        assert asked.wanted == (), f"{phrasing!r} asked for something"
+        sections = plan_sections(240.0, 72, 8, "film song",
+                                 requested=asked.wanted,
+                                 refused=asked.refused)
+        assert not any(s.kind is SectionKind.ANUPALLAVI for s in sections), \
+            f"{phrasing!r} left the Anupallavi in: {[s.name for s in sections]}"
+
+
+def test_a_refusal_stops_at_the_next_request():
+    """My own example was wrong in my own code: the backwards scan for a
+    refusal carried "no" across the "include" that followed it, so "No
+    bridge, include a Charanam" refused both of them and asked for
+    nothing."""
+    from raagacomposer.music.structure import read_section_requests
+
+    for phrasing in ("No bridge, include a Charanam.",
+                     "No bridge and include a Charanam."):
+        asked = read_section_requests(phrasing)
+        assert asked.refused == (SectionKind.BRIDGE,), (phrasing, asked)
+        assert asked.wanted == (SectionKind.CHARANAM,), (phrasing, asked)
+
+    # A plain list of sections is not two clauses; the comma there is
+    # separating names, not scopes.
+    listed = read_section_requests("include Pallavi, Anupallavi and Charanam")
+    assert set(listed.wanted) == {SectionKind.PALLAVI,
+                                  SectionKind.ANUPALLAVI,
+                                  SectionKind.CHARANAM}, listed
+    assert listed.refused == ()
+
+
+def test_a_story_that_opens_with_a_refusal_is_still_a_story():
+    """Letting a clause count because it starts with "no" made "no one
+    told him about the interlude of his life" ask *for* an Interlude - the
+    fault the refusal branch was written to fix, reappearing inside it.
+
+    An instruction stops where the section it names does.  A sentence
+    about people carries on.
+    """
+    from raagacomposer.music.structure import read_section_requests
+
+    for narrative in ("no one told him about the interlude of his life",
+                      "Not the ending they hoped for",
+                      "There is no bridge over the river",
+                      "nothing without a bridge to carry them across it"):
+        got = read_section_requests("", "", narrative)
+        assert not got.wanted, f"{narrative!r} asked for {got.wanted}"
+        assert not got.refused, f"{narrative!r} refused {got.refused}"
