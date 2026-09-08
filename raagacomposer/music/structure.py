@@ -136,11 +136,24 @@ def _clauses(blob: str) -> List[str]:
             if c.strip()]
 
 
-#: How much a refusal-opening clause may carry after the section it names
-#: and still read as an instruction.  "No Anupallavi" and "no anupallavi
-#: please" are directions; "not the ending they hoped for" is a sentence
-#: about people that happens to open with one of these words.
-_DIRECTIVE_TAIL = 2
+#: Words that may sit between a refusal and the section it refuses.
+_DETERMINERS = frozenset({"the", "a", "an", "any", "that", "this", "its",
+                          "my", "our", "another", "second", "extra"})
+
+#: Words a direction may carry *after* the section it names.  These say
+#: which song or which take the instruction applies to - they qualify the
+#: instruction rather than continuing a sentence about people.
+_SCOPE_WORDS = frozenset({
+    "in", "for", "on", "of", "at", "to",
+    "this", "that", "the", "a", "an", "it", "one",
+    "song", "songs", "version", "tune", "take", "draft", "section",
+    "time", "now", "moment", "round", "pass", "attempt", "here",
+    "again", "today", "tonight", "yet", "ever", "all",
+    "please", "thanks", "thank", "you", "ok", "okay",
+})
+
+#: Filler that may open a direction before the refusal itself.
+_POLITE = frozenset({"please", "do", "just", "and", "so", "also"})
 
 
 def _starts_with_refusal(clause: str) -> bool:
@@ -154,17 +167,46 @@ def _starts_with_refusal(clause: str) -> bool:
 
 def _reads_as_a_direction(clause: str,
                           names: List[Tuple[SectionKind, int]]) -> bool:
-    """Does a refusal-opening clause stop where an instruction would?
+    """Does a refusal-opening clause have the shape of an instruction?
 
     Opening with a refusal is not enough by itself.  "No one told him
     about the interlude of his life" opens with one and is a story, and
     letting the whole clause count made it ask *for* an Interlude - the
     very fault this branch was added to fix, reappearing inside the fix.
+
+    Counting the words after the name was not enough either.  "No
+    Anupallavi in this song" and "Skip the Anupallavi for this version"
+    are ordinary instructions that carry their scope with them, and a
+    fixed budget threw them away - while "Anu Pallavi" spent part of that
+    budget on its own second word, so the same direction behaved
+    differently depending on how the creator spelled the section.
+
+    The shape is the test instead: a refusal, then the section it refuses,
+    then nothing but words that say which song or which take.  What
+    follows "not the ending" is "they hoped for", and no arrangement of
+    those words says which take anything applies to.
     """
     if not names:
         return False
-    last = max(at for _, at in names)
-    return len(clause[last:].split()[1:]) <= _DIRECTIVE_TAIL
+    words = [w.strip(".,!?;:") for w in clause.split()]
+    words = [w for w in words if w]
+    i = 0
+    while i < len(words) and words[i] in _POLITE:
+        i += 1
+    cue = next((c for c in sorted(_REFUSING, key=lambda c: -len(c.split()))
+                if words[i:i + len(c.split())] == c.split()), None)
+    if cue is None:
+        return False
+    i += len(cue.split())
+    while i < len(words) and words[i] in _DETERMINERS:
+        i += 1
+    rest = " ".join(words[i:])
+    alias = next((a for _, a in _ALIASES
+                  if re.match(rf"{re.escape(a)}\b", rest)), None)
+    if alias is None:
+        return False
+    i += len(alias.split())
+    return all(w in _SCOPE_WORDS for w in words[i:])
 
 
 def _named(clause: str) -> List[Tuple[SectionKind, int]]:
