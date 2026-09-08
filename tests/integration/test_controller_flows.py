@@ -2479,3 +2479,41 @@ def test_a_playback_that_failed_leaves_the_scope_alone(ready, settle):
 
     assert app.audition_scope() == section.name, \
         "a playback nobody heard moved the comparison"
+
+
+def test_a_section_named_in_the_brief_reaches_the_tune(ready, settle):
+    """Arya's 60-second case, end to end.  The planner is right in
+    isolation; this checks the brief's own words actually get to it."""
+    app = ready
+    app.project.brief.notes = (
+        "Include Prelude, Pallavi, Anupallavi, Interlude, Charanam "
+        "and Ending.")
+    app.project.brief.duration_target = 60.0
+    app.generate_tune(seed=6)
+    settle()
+
+    melody = app.project.melody()
+    assert melody is not None, app.status_text
+    kinds = {s.kind for s in melody.sections}
+    from raagacomposer.core.models import SectionKind
+    for kind in (SectionKind.PRELUDE, SectionKind.PALLAVI,
+                 SectionKind.ANUPALLAVI, SectionKind.INTERLUDE,
+                 SectionKind.CHARANAM, SectionKind.OUTRO):
+        assert kind in kinds, \
+            (f"{kind.value} was named in the brief and is not in the tune: "
+             f"{[s.name for s in melody.sections]}")
+
+
+def test_a_brief_that_names_nothing_still_plans_normally(ready, settle):
+    """The request path must not change songs nobody made a request for."""
+    app = ready
+    app.project.brief.notes = "warm, unhurried, for a temple morning"
+    app.project.brief.duration_target = 60.0
+    app.generate_tune(seed=6)
+    settle()
+
+    melody = app.project.melody()
+    assert melody is not None, app.status_text
+    assert melody.sections, "no sections at all"
+    for a, b in zip(melody.sections, melody.sections[1:]):
+        assert b.start == pytest.approx(a.end)

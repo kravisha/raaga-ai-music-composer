@@ -49,7 +49,7 @@ from .music import instruments as catalog
 from .music import melody as melody_engine
 from .music import mixer
 from .music.melody import MelodyOptions
-from .music.structure import plan_sections
+from .music.structure import plan_sections, sections_asked_for
 from .music.synth import render_notes
 from .music.validator import validate
 from .providers import registry as provider_registry
@@ -1495,8 +1495,16 @@ class AppController:
 
         def work(ctx: JobContext) -> MelodyVersion:
             ctx.progress(0.15, "Planning sections")
+            # A section the creator named is not an optional repeat.  The
+            # planner used to see only a template and a duration, so a
+            # 60-second brief asking for an Anupallavi got a tune with no
+            # Anupallavi and no explanation.
+            asked = sections_asked_for(brief.notes, brief.feel,
+                                       brief.situation)
+            plan_notes: List[str] = []
             sections = plan_sections(opts.duration_target, opts.tempo_bpm,
-                                     opts.beats_per_cycle, opts.song_type)
+                                     opts.beats_per_cycle, opts.song_type,
+                                     requested=asked, notes=plan_notes)
 
             # What the raaga's lessons already say - critiques, failed
             # rewrites of an earlier tune, creator feedback - applies from
@@ -1558,7 +1566,7 @@ class AppController:
 
             ctx.progress(0.9, "Checking raaga fidelity")
             check = validate(best, raaga, opts.voice_low, opts.voice_high)
-            best.validation = rewrite_lines + check.issues
+            best.validation = rewrite_lines + plan_notes + check.issues
             best.guidance_note = guidance_note
             return best
 
