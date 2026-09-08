@@ -777,9 +777,9 @@ class Producer:
                       "log records 'lyrics drafted by <writer>' and "
                       "routing_attempts.jsonl records the model")
         body = {"by": "lyrics", "language": lyrics.language, "written_by": written_by,
-                "text_note": "transliterated Tamil; the fitter keeps ASCII letters "
-                             "only, so accented letters in a line may be lost in "
-                             "its tokens",
+                "text_note": f"transliterated {lyrics.language or 'text'}; the "
+                             "fitter keeps ASCII letters only, so accented letters "
+                             "in a line may be lost in its tokens",
                 "for_tune": f"tune:v{lyrics.melody_version}",
                 "line_count": len(lyrics.lines), "lines": lines,
                 "lines_shown": len(lines),

@@ -1640,8 +1640,17 @@ class AppController:
             return best
 
         # Composing replaces the tune, so the tune's own version is not a
-        # precondition; which song is.
-        ticket = {"generation": self._project_generation, "sections": ()}
+        # precondition; which song is.  Every section that is *not* locked
+        # now rides on the ticket, so a lock the creator places while the
+        # composer is working comes back as "<section> was locked while I
+        # was working" and the result is not kept.  A section already
+        # locked at this moment is the creator's standing choice about the
+        # old tune, and Generate Tune replacing it is what it has always
+        # done; the production team refuses that case before it gets here.
+        existing = self.project.melody()
+        ticket = {"generation": self._project_generation,
+                  "sections": tuple(s.id for s in existing.sections if not s.locked)
+                  if existing else ()}
         self.jobs.submit("tune.generate", "melody:all", work,
                          on_done=lambda m: self._tune_ready(m, "Generated",
                                                             ticket),

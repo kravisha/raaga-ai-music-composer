@@ -501,3 +501,47 @@ def test_a_lock_placed_during_a_review_stops_the_production(app):
         gate.release.set()
         if not producer.finished:
             producer.cancel("test over")
+
+
+def test_a_lock_placed_while_the_composer_works_is_kept_when_its_result_lands(app, monkeypatch):
+    """The last door: the lock arrives after the tune stage was submitted
+    and before the composer's result lands (Arya's
+    producer_generation_lock_review_cases).  The ticket generate_tune
+    writes now carries every section that was unlocked at submission, so
+    _tune_ready refuses the result rather than replace a locked section."""
+    import raagacomposer.app as controller_module
+    a_whole_song_brief(app, "Lock during composition")
+    app.generate_tune(seed=37)
+    deadline = time.time() + 60
+    while (app.project.melody() is None or app.jobs.active_jobs()) and time.time() < deadline:
+        app.pump()
+        time.sleep(0.02)
+    original = app.project.melody()
+    pallavi = next(s for s in original.sections if s.kind == SectionKind.PALLAVI)
+    entered, release = threading.Event(), threading.Event()
+    real_generate = controller_module.melody_engine.generate
+
+    def held_generation(*args, **kwargs):
+        entered.set()
+        assert release.wait(30), "the test must release the composer"
+        return real_generate(*args, **kwargs)
+
+    monkeypatch.setattr(controller_module.melody_engine, "generate", held_generation)
+    app.critic = CodexCritic(FakeCodex())
+    producer = app.produce_song(seed=104)
+    try:
+        pump_until(app, entered.is_set)
+        assert producer.stage == "tune" and producer.phase == "working"
+        app.set_section_lock(pallavi.id, True)
+        from dataclasses import asdict
+        protected = asdict(pallavi)
+        notes = [asdict(n) for n in original.notes if n.section_id == pallavi.id]
+        release.set()
+        drive(app, producer, timeout=60)
+        assert producer.phase == "failed" and "locked" in producer.error, producer.error
+        assert len(app.project.melodies) == 1, "the composer's result was kept over a lock"
+        _pallavi_unchanged(app, original, protected, notes)
+    finally:
+        release.set()
+        if not producer.finished:
+            producer.cancel("test over")
