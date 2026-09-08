@@ -7,7 +7,8 @@ import threading
 import pytest
 
 from raagacomposer.production.critic import (CancelledReview, CodexCliTransport,
-                                           CodexCritic, Verdict, review_stage)
+                                           CodexCritic, ReviewValidationError,
+                                           Verdict, review_stage)
 from raagacomposer.production.state import ProjectState
 
 
@@ -419,3 +420,86 @@ def test_real_harmless_child_is_cancelled_and_reaped_with_large_stdin(tmp_path):
             if child.poll() is None:
                 child.kill()
                 child.wait(timeout=2)
+
+
+@pytest.mark.parametrize("change,diagnostic", [
+    (lambda x: x.update(revisions=["private-model-wording"]),
+     "A blocked or revision-required artifact cannot be accepted"),
+    (lambda x: x.pop("uncertainty"), "Incomplete or unexpected review fields"),
+    (lambda x: x.update(request_id="private-wrong-request"),
+     "Review belongs to a different stage or artifact snapshot"),
+    (lambda x: x.update(accept="private-not-a-boolean"), "Verdict flags must be booleans"),
+    (lambda x: x.update(evidence="private-not-an-array"), "evidence must contain nonempty text values"),
+])
+def test_owned_validation_explains_failure_without_echoing_response(change, diagnostic):
+    state = ProjectState(project_id="song")
+    verdict = review_stage(CodexCritic(FakeCodex(change)), "brief", state, {}, artifact_ref="v1")
+    assert verdict.blocked and diagnostic in verdict.reason
+    assert "private-" not in verdict.reason
+    assert state.records[-1].rationale == verdict.reason
+    assert not state.is_accepted("brief", "v1")
+
+
+@pytest.mark.parametrize("typed", [False, True])
+def test_external_errors_cannot_smuggle_payload_in_validation_messages(typed):
+    class Broken:
+        def review(self, *args):
+            if typed:
+                exc = ReviewValidationError("contradictory_acceptance")
+                exc.args = ("private-token",)
+                exc.code = "private-token"
+                raise exc
+            raise ValueError("A blocked or revision-required artifact cannot be accepted: private-token")
+    state = ProjectState(project_id="song")
+    verdict = review_stage(Broken(), "brief", state, {}, artifact_ref="v1")
+    assert verdict.blocked and "private-token" not in verdict.reason
+    if typed:
+        assert "Invalid critic response" in verdict.reason
+    else:
+        assert "ValueError" in verdict.reason
+
+
+def test_prior_stage_context_is_slim_but_current_rounds_and_saved_journal_stay_complete(tmp_path):
+    from raagacomposer.production.state import StageRecord, canonical_json
+    state = ProjectState(project_id="song", revision=1, feedback=["Keep the gentle opening"])
+    for stage, revision, provider in (("tune", 0, "codex"), ("brief", 1, "codex"),
+                                     ("tune", 1, "local rules"), ("lyrics", 1, "codex"),
+                                     ("voice", 1, "codex")):
+        state.records.append(StageRecord(stage=stage, role="critic", provider=provider,
+            artifact_ref=f"{stage}-v{revision}", revision=revision, round=1,
+            rationale="Keep the phrase; change the ending", verdict="revise" if stage == "voice" else "accept",
+            revisions=["Leave space at the cadence"], evidence=["Evidence " * 1000],
+            strengths=["Strength " * 1000], lessons=["Lesson " * 1000], uncertainty=["Unknown " * 1000]))
+    path = state.save(tmp_path / "production.json")
+    saved_bytes = path.read_bytes()
+    original = state.to_dict()
+    backend = FakeCodex()
+    assert CodexCritic(backend).review("voice", state, {}).accept
+    packet = backend.calls[0]
+    records = packet["state"]["records"]
+    assert packet["context_selection"]["summarized_records"] == 4
+    assert packet["context_selection"]["omitted_records"] == 0
+    assert packet["context_selection"]["complete_current_stage_rounds"] is True
+    assert records[-1] == original["records"][-1]
+    for compressed, full in zip(records[:-1], original["records"][:-1]):
+        assert all(compressed[key] == full[key] for key in
+                   ("stage", "artifact_ref", "revision", "round", "provider", "role", "rationale", "verdict", "revisions"))
+        assert all(key not in compressed for key in ("evidence", "strengths", "lessons", "uncertainty"))
+    assert records[2]["provider"] == "local rules"  # Never erase source when summarizing acceptance.
+    assert len(canonical_json(packet)) < len(canonical_json(original)) / 2
+    assert state.to_dict() == original and path.read_bytes() == saved_bytes
+    assert ProjectState.load(path).to_dict() == original
+
+
+def test_windows_exit_race_preserves_cancellation_and_reaps_child(tmp_path, monkeypatch):
+    from raagacomposer.production import critic as module
+    monkeypatch.setattr(module.shutil, "which", lambda executable: executable)
+    event = threading.Event()
+    class ExitingChild(WaitingProcess):
+        def terminate(self):
+            self.returncode = 0
+            raise PermissionError("child exited in Windows race")
+    child = ExitingChild(on_wait=event.set)
+    with pytest.raises(CancelledReview):
+        CodexCliTransport(tmp_path, popen=lambda *a, **k: child)("test", {}, cancelled=event.is_set)
+    assert child.reaped and not list(tmp_path.iterdir())
