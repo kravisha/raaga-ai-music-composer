@@ -1,10 +1,13 @@
 """A production journal must survive revisions without losing earlier evidence."""
 from dataclasses import asdict
 import json
+import os
+import subprocess
+import sys
 
 import pytest
 
-from raagacomposer.production.state import ProjectState, StageRecord
+from raagacomposer.production.state import JournalLockError, ProjectState, StageRecord
 
 
 def accepted(**changes):
@@ -52,9 +55,71 @@ def test_another_writer_lock_is_preserved(tmp_path):
     target = tmp_path / "production.json"
     lock = tmp_path / "production.json.lock"
     lock.write_text("other writer", encoding="utf-8")
-    with pytest.raises(FileExistsError):
+    with pytest.raises(JournalLockError) as caught:
         ProjectState(project_id="song").save(target)
+    assert str(lock.resolve()) in str(caught.value)
+    assert caught.value.owner_status == "unknown" and "age" in str(caught.value)
     assert lock.read_text() == "other writer" and not target.exists()
+
+
+def test_live_writer_lock_names_owner_and_age_without_reclaiming(tmp_path):
+    from raagacomposer.production.state import utc_now
+    target = tmp_path / "production.json"
+    lock = target.with_name(target.name + ".lock")
+    content = json.dumps({"pid": os.getpid(), "created_at": utc_now()})
+    lock.write_text(content)
+    with pytest.raises(JournalLockError) as caught:
+        ProjectState(project_id="song").save(target)
+    assert caught.value.pid == os.getpid()
+    assert caught.value.owner_status == "running" and caught.value.age_seconds >= 0
+    assert lock.read_text() == content and not target.exists()
+
+
+def test_crashed_writer_leaves_diagnosable_lock_and_original_journal(tmp_path):
+    target = ProjectState(project_id="song").save(tmp_path / "production.json")
+    original = target.read_bytes()
+    # Simulate a real abrupt process exit, which skips Python finally blocks.
+    script = """
+import os, sys
+from raagacomposer.production.state import ProjectState
+from raagacomposer.production import state as module
+song = ProjectState.load(sys.argv[1])
+song.brief['mood'] = 'unsaved change'
+module.os.replace = lambda *args: os._exit(23)
+song.save(sys.argv[1])
+"""
+    process = subprocess.run([sys.executable, "-c", script, str(target)],
+                             capture_output=True, timeout=15)
+    assert process.returncode == 23, process.stderr
+    lock = target.with_name(target.name + ".lock")
+    metadata = json.loads(lock.read_text())
+    assert metadata["pid"] > 0 and metadata["created_at"]
+    with pytest.raises(JournalLockError) as caught:
+        ProjectState.load(target).save(target)
+    assert caught.value.pid == metadata["pid"]
+    assert caught.value.owner_status == "not running"
+    assert "preserve" in str(caught.value) and str(lock.resolve()) in str(caught.value)
+    assert target.read_bytes() == original and lock.exists()
+
+
+def test_failed_lock_metadata_write_releases_only_owned_lock(tmp_path, monkeypatch):
+    from raagacomposer.production import state as module
+    monkeypatch.setattr(module.os, "fsync", lambda *args: (_ for _ in ()).throw(OSError("disk full")))
+    with pytest.raises(OSError, match="disk full"):
+        ProjectState(project_id="song").save(tmp_path / "production.json")
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("content", ['{"pid": -1}', '{"pid": true}', '{"pid": 999999999999999}',
+                                    '{"pid":', '["not an object"]'])
+def test_malformed_lock_still_reports_safe_recovery_context(tmp_path, content):
+    lock = tmp_path / "production.json.lock"
+    lock.write_text(content)
+    with pytest.raises(JournalLockError) as caught:
+        ProjectState(project_id="song").save(tmp_path / "production.json")
+    assert caught.value.owner_status == "unknown"
+    assert str(lock.resolve()) in str(caught.value)
+    assert lock.read_text() == content
 
 
 def test_failed_atomic_replace_keeps_original_and_cleans_owned_temporary(tmp_path, monkeypatch):

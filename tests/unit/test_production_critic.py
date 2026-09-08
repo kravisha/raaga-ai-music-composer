@@ -170,6 +170,98 @@ def test_cli_adapter_uses_stdin_read_only_and_ephemeral_workspace(tmp_path, monk
     assert not list(tmp_path.iterdir())
 
 
+def test_explicit_executable_outside_path_is_used_without_installing(tmp_path, monkeypatch):
+    from raagacomposer.production import critic as module
+    binary = tmp_path / "desktop install" / "codex.exe"
+    binary.parent.mkdir()
+    binary.write_bytes(b"test double, never executed")
+    binary.chmod(0o700)
+    monkeypatch.setattr(module.shutil, "which", lambda executable: None)
+    observed = []
+    def fake_run(command, **kwargs):
+        observed.append(command)
+        Path(command[command.index("--output-last-message") + 1]).write_text(
+            json.dumps(FakeCodex()(kwargs["input"], {})))
+        return SimpleNamespace(returncode=0)
+    transport = CodexCliTransport(tmp_path / "work", executable=binary, run=fake_run)
+    assert transport.available and not observed
+    assert CodexCritic(transport).review("brief", ProjectState(project_id="song"), {}).accept
+    assert observed[0][0] == str(binary.resolve())
+    assert binary.read_bytes() == b"test double, never executed"
+
+
+def test_missing_explicit_executable_never_falls_back_to_path(tmp_path, monkeypatch):
+    from raagacomposer.production import critic as module
+    monkeypatch.setattr(module.shutil, "which", lambda executable: "a-different-codex.exe")
+    calls = []
+    transport = CodexCliTransport(tmp_path, executable=tmp_path / "missing.exe",
+                                 run=lambda *a, **k: calls.append(1))
+    assert not transport.available
+    song = ProjectState(project_id="song")
+    verdict = review_stage(CodexCritic(transport), "brief", song, {}, artifact_ref="brief-v1")
+    assert verdict.blocked and not calls and not song.is_accepted("brief", "brief-v1")
+
+
+def test_path_resolution_is_fixed_before_changing_working_directory(tmp_path, monkeypatch):
+    from raagacomposer.production import critic as module
+    monkeypatch.setattr(module.shutil, "which", lambda executable: "relative-bin/codex.exe")
+    transport = CodexCliTransport(tmp_path)
+    assert transport.resolved_executable == str(Path("relative-bin/codex.exe").resolve())
+
+
+def test_long_song_review_sends_selected_context_and_preserves_complete_history(tmp_path):
+    from raagacomposer.production.state import PRODUCTION_STAGES, StageRecord, canonical_json
+    song = ProjectState(project_id="long-lived-song", revision=60,
+                        feedback=[f"Creator revision {i}: change the ending" for i in range(60)])
+    for revision in range(60):
+        for stage in PRODUCTION_STAGES:
+            for attempt in (1, 2, 3):
+                song.records.append(StageRecord(stage=stage, role="critic", artifact_ref=f"{stage}:{revision}",
+                    rationale="Keep the opening motif while making the transition more spacious. " * 4,
+                    verdict="accept" if attempt == 3 else "revise", round=attempt,
+                    revision=revision, provider="codex", strengths=["Clear recurring motif"],
+                    lessons=["Preserve identity while varying the answer phrase"]))
+    song.add_record(StageRecord(stage="tune", role="critic", artifact_ref="tune:60",
+                    rationale="Give the singer more space", verdict="revise", round=1,
+                    revision=60, provider="codex", revisions=["Shorten the repeated phrase"]))
+    original = song.to_dict()
+    assert len(canonical_json(original).encode("utf-8")) > 256_000
+    backend = FakeCodex()
+    assert CodexCritic(backend).review("tune", song, {"score": "new version"}).accept
+    packet = backend.calls[0]
+    assert len(canonical_json(packet).encode("utf-8")) < 20_000
+    assert len(packet["state"]["records"]) == 8
+    assert {r["revision"] for r in packet["state"]["records"]} == {59, 60}
+    assert packet["state"]["records"][-1]["revisions"] == ["Shorten the repeated phrase"]
+    assert packet["context_selection"]["omitted_records"] == len(song.records) - 8
+    assert packet["context_selection"]["omitted_feedback"] == 28
+    assert packet["state"]["feedback"] == song.feedback[-32:]
+    assert song.to_dict() == original and not song.is_accepted("tune", "tune:59")
+    assert ProjectState.load(song.save(tmp_path / "production.json")).to_dict() == original
+
+
+def test_selected_history_never_promotes_local_acceptance_or_drops_current_feedback():
+    from raagacomposer.production.state import StageRecord
+    song = ProjectState(project_id="song", revision=2, feedback=["Use the latest words"])
+    for revision, provider, verdict in ((0, "codex", "accept"), (1, "local rules", "accept"),
+                                       (1, "codex", "revise"), (2, "codex", "blocked")):
+        song.records.append(StageRecord(stage="lyrics", role="critic", artifact_ref=f"v{revision}",
+            rationale="Reference evidence", verdict=verdict, round=1, revision=revision, provider=provider))
+    backend = FakeCodex()
+    CodexCritic(backend).review("lyrics", song, {})
+    selected = backend.calls[0]["state"]
+    assert [r["revision"] for r in selected["records"]] == [0, 2]
+    assert selected["feedback"] == ["Use the latest words"]
+
+
+def test_oversized_current_evidence_still_blocks_before_model_request():
+    backend = FakeCodex()
+    state = ProjectState(project_id="song")
+    result = review_stage(CodexCritic(backend), "tune", state,
+                          {"lyrics": "அ" * 100_000}, artifact_ref="v1")
+    assert result.blocked and not backend.calls and not state.is_accepted("tune", "v1")
+
+
 @pytest.mark.parametrize("mode", ["timeout", "nonzero", "missing", "malformed"])
 def test_cli_failures_block_without_fallback(tmp_path, monkeypatch, mode):
     from raagacomposer.production import critic as module

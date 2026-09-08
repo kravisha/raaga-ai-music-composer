@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import time
 from typing import Any
 
 PRODUCTION_STAGES = ("brief", "tune", "lyrics", "voice", "beat", "arrangement", "mix")
@@ -33,6 +34,66 @@ def canonical_json(value: Any) -> str:
 def _stage(stage: str) -> None:
     if stage not in PRODUCTION_STAGES:
         raise ValueError(f"Unknown production stage: {stage}")
+
+
+def _pid_status(pid: int) -> str:
+    """Read-only liveness check. Never use os.kill on Windows."""
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel.OpenProcess.restype = wintypes.HANDLE
+        kernel.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+        kernel.GetExitCodeProcess.restype = wintypes.BOOL
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel.CloseHandle.restype = wintypes.BOOL
+        handle = kernel.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
+        if not handle:
+            return "not running" if ctypes.get_last_error() in (87, 1168) else "unknown"
+        try:
+            code = wintypes.DWORD()
+            if not kernel.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return "unknown"
+            return "running" if code.value == 259 else "not running"
+        finally:
+            kernel.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)  # POSIX existence probe, no signal sent.
+    except ProcessLookupError:
+        return "not running"
+    except (PermissionError, OSError):
+        return "unknown"
+    return "running"
+
+
+class JournalLockError(ValueError):
+    """A preserved lock needs an explicit recovery decision, never silent removal.
+
+    PID liveness is advisory (a PID can be reused); it does not authorise deleting
+    a lock. The Producer can use these fields to explain recovery to the creator.
+    """
+    def __init__(self, path: Path) -> None:
+        self.path = path.resolve()
+        self.pid = None
+        self.age_seconds = None
+        self.owner_status = "unknown"
+        try:
+            self.age_seconds = max(0, int(time.time() - path.stat().st_mtime))
+            with path.open("r", encoding="utf-8") as source:
+                info = json.loads(source.read(4096))
+            if isinstance(info, dict) and type(info.get("pid")) is int and 0 < info["pid"] <= 0xffffffff:
+                self.pid = info["pid"]
+                self.owner_status = _pid_status(self.pid)
+        except (OSError, ValueError):
+            pass  # Legacy/partial locks still get an actionable diagnostic.
+        age = f"{self.age_seconds} seconds" if self.age_seconds is not None else "unknown"
+        super().__init__(f"Production journal is locked: {self.path}; age {age}; "
+                         f"owner PID {self.pid if self.pid is not None else 'unknown'} "
+                         f"({self.owner_status}). Lock and journal preserved. "
+                         "Close other writers first. If the writer has stopped, preserve the "
+                         "journal and remove this lock before retrying. PID status alone is not "
+                         "proof that removal is safe.")
 
 
 @dataclass(frozen=True)
@@ -162,10 +223,16 @@ class ProjectState:
         target.parent.mkdir(parents=True, exist_ok=True)
         lock = target.with_name(target.name + ".lock")
         # Never remove someone else's lock, even if its writer disappeared.
-        descriptor = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        os.close(descriptor)
+        try:
+            descriptor = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            raise JournalLockError(lock) from None
         temporary = None
         try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as owner:
+                json.dump({"pid": os.getpid(), "created_at": utc_now()}, owner)
+                owner.flush()
+                os.fsync(owner.fileno())
             if target.exists():
                 current_bytes = target.read_bytes()
                 if (getattr(self, "_saved_path", None) != target.resolve()
@@ -192,9 +259,11 @@ class ProjectState:
             self._saved_path = target.resolve()
             self._saved_digest = hashlib.sha256(target.read_bytes()).hexdigest()
         finally:
-            if temporary is not None:
-                temporary.unlink(missing_ok=True)
-            lock.unlink()
+            try:
+                if temporary is not None:
+                    temporary.unlink(missing_ok=True)
+            finally:
+                lock.unlink()
         return target
 
     @classmethod
