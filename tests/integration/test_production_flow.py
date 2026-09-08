@@ -426,3 +426,78 @@ def test_the_voice_packet_measures_the_instrumental_sections(monkeypatch):
     quiet = packet_for(audio)
     assert quiet["instrumental_sections"][0]["measured_silent"]
     assert quiet["sung_sections"][0]["rms_db"] > module.SILENCE_DB
+
+
+def _first_tune_with_a_locked_pallavi(app, title):
+    from dataclasses import asdict
+    a_whole_song_brief(app, title)
+    app.generate_tune(seed=37)
+    deadline = time.time() + 60
+    while app.project.melody() is None and time.time() < deadline:
+        app.pump()
+        time.sleep(0.02)
+    original = app.project.melody()
+    assert original is not None, app.status_text
+    while app.jobs.active_jobs() and time.time() < deadline:
+        app.pump()
+        time.sleep(0.02)
+    pallavi = next(s for s in original.sections if s.kind == SectionKind.PALLAVI)
+    app.set_section_lock(pallavi.id, True)
+    notes = [asdict(n) for n in original.notes if n.section_id == pallavi.id]
+    return original, pallavi, asdict(pallavi), notes
+
+
+def _pallavi_unchanged(app, original, protected, notes):
+    from dataclasses import asdict
+    current = app.project.melody()
+    assert current is original, "the active tune was replaced"
+    pallavi = next(s for s in current.sections if s.kind == SectionKind.PALLAVI)
+    assert pallavi.locked and asdict(pallavi) == protected
+    assert [asdict(n) for n in current.notes if n.section_id == pallavi.id] == notes
+
+
+def test_a_locked_section_stops_a_whole_song_production_before_it_starts(app):
+    """A whole-song production replaces the tune.  A section the creator
+    locked is their decision; the Producer refuses rather than replace it
+    with an unlocked one (Arya's producer_lock_review_cases)."""
+    original, pallavi, protected, notes = _first_tune_with_a_locked_pallavi(app, "Locked Pallavi")
+    app.critic = CodexCritic(FakeCodex())
+    producer = app.produce_song(seed=104)
+    drive(app, producer, timeout=60)
+    assert producer.phase == "failed" and "locked" in producer.error, producer.error
+    assert "Pallavi" in producer.error
+    assert len(app.project.melodies) == 1
+    _pallavi_unchanged(app, original, protected, notes)
+
+
+def test_a_lock_placed_during_a_review_stops_the_production(app):
+    """A start-only check is not enough: the creator can lock a section while
+    the Critic thinks about the brief (Arya's producer_late_lock_review_cases)."""
+    a_whole_song_brief(app, "Late lock")
+    app.generate_tune(seed=37)
+    deadline = time.time() + 60
+    while (app.project.melody() is None or app.jobs.active_jobs()) and time.time() < deadline:
+        app.pump()
+        time.sleep(0.02)
+    original = app.project.melody()
+    pallavi = next(s for s in original.sections if s.kind == SectionKind.PALLAVI)
+    gate = GateCodex()
+    app.critic = CodexCritic(gate)
+    producer = app.produce_song(seed=104)
+    try:
+        pump_until(app, gate.entered.is_set)
+        assert producer.stage == "brief" and producer.phase == "reviewing"
+        app.set_section_lock(pallavi.id, True)
+        from dataclasses import asdict
+        protected = asdict(pallavi)
+        notes = [asdict(n) for n in original.notes if n.section_id == pallavi.id]
+        gate.release.set()
+        drive(app, producer, timeout=60)
+        assert producer.phase == "failed" and "locked" in producer.error, producer.error
+        assert len(app.project.melodies) == 1
+        _pallavi_unchanged(app, original, protected, notes)
+        assert producer.accepted == 0, "a verdict about the song before the lock is not kept"
+    finally:
+        gate.release.set()
+        if not producer.finished:
+            producer.cancel("test over")

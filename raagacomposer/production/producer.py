@@ -226,6 +226,15 @@ class Producer:
                              rationale="chosen by the Producer from the brief",
                              by_creator=False)
             self._note(f"raaga: {suggestions[0].name}, chosen from the brief")
+        locked = self._locked_sections()
+        if locked:
+            # A whole-song production replaces the tune.  A section the
+            # creator locked is a decision they made; replacing it, or
+            # quietly unlocking its successor, would overrule them.
+            self._fail(f"the tune has locked section(s) - {', '.join(locked)} - "
+                       f"and a whole-song production would replace them; unlock "
+                       f"them first, or produce from a new project")
+            return False
         if app.project_dir is None:
             app.save()
         self.journal_path = Path(app.project_dir) / self.journal_name
@@ -319,6 +328,13 @@ class Producer:
             self.phase = "landed"
             return
         if stage == "tune":
+            locked = self._locked_sections()
+            if locked:
+                # Rechecked at the moment of replacement, not only at the
+                # start: a lock can arrive while an earlier stage is reviewed.
+                self._fail(f"{', '.join(locked)} locked while I was producing; "
+                           f"the tune is kept as it is")
+                return
             self._marker = len(project.melodies)
             app.generate_tune(seed=seed)
         elif stage == "lyrics":
@@ -377,10 +393,21 @@ class Producer:
     # ------------------------------------------------------------------
     # review
     # ------------------------------------------------------------------
+    def _locked_sections(self) -> List[str]:
+        melody = self.app.project.melody()
+        return [s.name for s in melody.sections if s.locked] if melody else []
+
     def _ticket(self) -> Dict[str, Any]:
-        """What must still be true when the verdict lands."""
+        """What must still be true when the verdict lands.
+
+        Every section of the tune on the desk rides on the ticket, so a
+        lock the creator places while the Critic thinks comes back as
+        "<section> was locked while I was working" and stops the
+        production before the tune is replaced.
+        """
         app = self.app
-        ticket = app.song_work_ticket()
+        melody = app.project.melody()
+        ticket = app.song_work_ticket([s.id for s in melody.sections] if melody else ())
         ticket["lyric_fingerprint"] = app.lyric_fingerprint(app.project.lyrics_version())
         ticket["voice_profile_id"] = app.current_voice().id
         ticket["brief_digest"] = _digest(self._brief_dict())
@@ -525,7 +552,9 @@ class Producer:
                     source_run=f"production:{app.project.project_id}:"
                                f"r{self.state.revision if self.state else 0}"))
             self._note(f"{self.stage}: advice filed as lesson(s) {', '.join(kinds)} "
-                       f"under the Critic's name")
+                       f"under the Critic's name; the melody engine applies lesson "
+                       f"kinds and a new seed, not the timed instructions, which "
+                       f"stay on record in the journal")
         except Exception as exc:  # noqa: BLE001
             log.warning("could not file the Critic's advice as a lesson: %s", exc)
 
@@ -724,17 +753,33 @@ class Producer:
         names = {s.id: s.name for s in melody.sections} if melody else {}
         lines = []
         for line in lyrics.lines[:48]:
+            # One token per note: a token starting with "~" holds the
+            # previous vowel across a note (melisma) and is not a sounded
+            # syllable.  Both counts are given, so neither is mistaken for
+            # the other.
+            tokens = list(line.syllables)
+            holds = [t for t in tokens if t.startswith("~")]
             lines.append({"section": names.get(line.section_id, line.section_id),
-                          "text": line.text, "syllables": list(line.syllables),
-                          "syllable_count": len(line.syllables),
+                          "text": line.text, "note_tokens": tokens,
+                          "note_token_count": len(tokens),
+                          "sounded_syllables": [t for t in tokens if not t.startswith("~")],
+                          "sounded_syllable_count": len(tokens) - len(holds),
+                          "hold_count": len(holds),
                           "note_indices": list(line.note_indices),
                           "note_count": len(line.note_indices),
                           "start": round(line.start, 2), "end": round(line.end, 2)})
-        written_by = ("a language model" if getattr(app.providers, "llm", None)
-                      and getattr(app.providers.llm, "available", False)
-                      else "the built-in lyric engine (transliterated syllables; "
-                           "no translation exists)")
+        # The lyric version does not record which writer produced each line
+        # - the language model through the router, or the built-in engine
+        # when it fell back - and a guess from what is available now is not
+        # a record.  Say so; the application log and routing_attempts.jsonl
+        # hold the route that was actually taken.
+        written_by = ("route not recorded on the lyric version; the application "
+                      "log records 'lyrics drafted by <writer>' and "
+                      "routing_attempts.jsonl records the model")
         body = {"by": "lyrics", "language": lyrics.language, "written_by": written_by,
+                "text_note": "transliterated Tamil; the fitter keeps ASCII letters "
+                             "only, so accented letters in a line may be lost in "
+                             "its tokens",
                 "for_tune": f"tune:v{lyrics.melody_version}",
                 "line_count": len(lyrics.lines), "lines": lines,
                 "lines_shown": len(lines),
