@@ -1029,3 +1029,199 @@ def test_a_refresh_does_not_move_a_slider_under_the_hand(window):
             "the slider jumped back while it was being dragged"
     finally:
         panel.vocal_balance.setSliderDown(False)
+
+
+# --------------------------------------------------------------------------
+# The selected-section path had no way in (found answering Arya's question
+# about gaps in the component path, 2026-09-07 20:27)
+# --------------------------------------------------------------------------
+def test_the_chosen_section_can_be_written_for_and_sung(window):
+    """preview_section and generate_lyrics(section_ids=...) were both
+    written and neither had a caller anywhere in the app.  The milestone
+    is select the Pallavi, fit words to the tune it already has, hear it
+    sung - so the buttons belong where the section is chosen."""
+    app = window.app
+    panel = window.tune
+
+    def wait_for(done, seconds=60.0):
+        end = time.time() + seconds
+        while time.time() < end:
+            app.pump()
+            if done():
+                return True
+            time.sleep(0.01)
+        return False
+
+    assert wait_for(lambda: not app.jobs.active_jobs())
+    melody = app.project.melody()
+    assert melody is not None, "no tune to select a section of"
+    row = next(i for i, sec in enumerate(melody.sections)
+               if not sec.kind.instrumental)
+    section = melody.sections[row]
+    panel.sections.selectRow(row)
+    assert panel._selected_section().id == section.id
+
+    asked = []
+    app.generate_lyrics = lambda **kw: asked.append(("lyrics", kw))
+    app.preview_section = lambda sid, autoplay=True: asked.append(("sing", sid))
+    try:
+        panel._write_section_words()
+        panel._sing_section()
+    finally:
+        del app.generate_lyrics, app.preview_section
+
+    assert ("lyrics", {"section_ids": [section.id]}) in asked, asked
+    assert ("sing", section.id) in asked, asked
+
+
+def test_a_section_can_be_named_instead_of_measured(window):
+    """Giving the Prelude its own instrument meant reading its start and
+    end off another panel and typing them in."""
+    app = window.app
+    panel = window.arrangement
+    window.refresh()
+    melody = app.project.melody()
+    assert melody is not None
+
+    names = [panel.section_box.itemText(i)
+             for i in range(panel.section_box.count())]
+    assert names[0] == "span...", names
+    assert [sec.name for sec in melody.sections] == names[1:], names
+
+    section = melody.sections[0]
+    panel.whole_box.setChecked(True)
+    panel.section_box.setCurrentIndex(1)
+    assert not panel.whole_box.isChecked(), \
+        "naming a section left the span set to the whole song"
+    assert panel.start_spin.value() == pytest.approx(section.start, abs=0.01)
+    assert panel.end_spin.value() == pytest.approx(section.end, abs=0.01)
+    assert panel._range() == pytest.approx((section.start, section.end),
+                                           abs=0.01)
+
+
+# --------------------------------------------------------------------------
+# Real input, and a scope that follows what was heard (Arya, 22:19)
+# --------------------------------------------------------------------------
+def test_the_sliders_answer_to_more_than_a_mouse(window):
+    """My own test called _mix_changed directly, so it could not have
+    caught this: the controls committed on sliderReleased alone, which a
+    keyboard and a wheel never emit.  The slider moved and the song kept
+    the old setting."""
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtGui import QWheelEvent
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QApplication
+
+    app = window.app
+    panel = window.arrangement
+    app.set_mix(vocal_gain=1.0, reverb=1.0, room=0.45)
+    window.refresh()
+
+    panel.vocal_balance.setFocus()
+    QTest.keyClick(panel.vocal_balance, Qt.Key_Right)
+    QApplication.processEvents()
+    assert panel.vocal_balance.value() == 101, "the key did not move it"
+    assert app.project.mix_settings.vocal_gain == pytest.approx(1.01), \
+        "the arrow key moved the slider and not the song"
+
+    panel.room_size.setFocus()
+    QTest.keyClick(panel.room_size, Qt.Key_Left)
+    QApplication.processEvents()
+    assert app.project.mix_settings.room == pytest.approx(0.44), \
+        "the arrow key moved the slider and not the song"
+
+    before = panel.room_amount.value()
+    where = panel.room_amount.rect().center()
+    wheel = QWheelEvent(where, panel.room_amount.mapToGlobal(where),
+                        QPoint(0, 0), QPoint(0, 120), Qt.NoButton,
+                        Qt.NoModifier, Qt.NoScrollPhase, False)
+    QApplication.sendEvent(panel.room_amount, wheel)
+    QApplication.processEvents()
+    assert panel.room_amount.value() != before, "the wheel did not move it"
+    assert app.project.mix_settings.reverb == pytest.approx(
+        panel.room_amount.value() / 100.0), \
+        "the wheel moved the slider and not the song"
+
+
+def test_a_refresh_cannot_commit_a_setting_on_its_own(window):
+    """Refresh writes the stored value into the slider on every project
+    change.  If that fed back through the new signal, the panel would be
+    committing settings nobody touched."""
+    app = window.app
+    panel = window.arrangement
+    app.set_mix(vocal_gain=0.60)
+    window.refresh()
+
+    # Refresh only feeds back when it actually moves the control, and Qt
+    # emits nothing when setValue writes the value already there - so a
+    # test that just refreshes repeatedly cannot fail.  The display has to
+    # differ from the song first, which is what an undo, or opening
+    # another song, does.  Blocked signals stand in for that here without
+    # inventing a second commit path.
+    panel.vocal_balance.blockSignals(True)
+    panel.vocal_balance.setValue(90)
+    panel.vocal_balance.blockSignals(False)
+    assert app.project.mix_settings.vocal_gain == pytest.approx(0.60)
+
+    # What feedback costs is not a wrong number - it writes back the value
+    # it just read - but an entry in the undo history for a decision the
+    # creator never made, which is what they would meet on the next undo.
+    entries = len(app.undo._stack)
+    window.refresh()
+    assert panel.vocal_balance.value() == 60, \
+        "refresh did not put the song's value back"
+    assert app.project.mix_settings.vocal_gain == pytest.approx(0.60), \
+        "refreshing the panel changed the song"
+    assert len(app.undo._stack) == entries, \
+        "refreshing the panel wrote to the undo history"
+
+
+def test_the_comparison_button_follows_a_section_played_from_the_table(window):
+    """The controller keeps the scope; this checks the button reaches it.
+    Playing a section from an already rendered song runs no render at all,
+    which is the case the old code missed entirely."""
+    app = window.app
+    panel = window.arrangement
+
+    def wait_for(done, seconds=60.0):
+        end = time.time() + seconds
+        while time.time() < end:
+            app.pump()
+            if done():
+                return True
+            time.sleep(0.01)
+        return False
+
+    assert wait_for(lambda: not app.jobs.active_jobs())
+    if app.project.melody() is None:
+        app.select_raaga("Keeravani", "for the test")
+        app.generate_tune(seed=4)
+        assert wait_for(lambda: app.project.melody() is not None),             f"no tune: {app.status_text}"
+    if app.project.arrangement() is None:
+        app.auto_arrange()
+        assert wait_for(lambda: app.project.arrangement() is not None),             f"nothing was arranged: {app.status_text}"
+    app.render(kind="full", autoplay=False)
+    assert wait_for(lambda: "full" in app._renders)
+
+    melody = app.project.melody()
+    section = next(sec for sec in melody.sections
+                   if not sec.kind.instrumental)
+
+    played = []
+    app.playback.play = lambda start=None, end=None, loop=False: (
+        played.append((start, end)) or True)
+    try:
+        assert app.play_render("full", (section.start, section.end))
+        assert app.audition_scope() == section.name
+        window.refresh()
+        assert section.name in panel.mix_note.text(), panel.mix_note.text()
+
+        panel.dry_btn.click()
+        assert wait_for(lambda: len(played) > 1)
+    finally:
+        del app.playback.play
+
+    start, end = played[-1]
+    assert start is not None, "the button jumped back to the whole song"
+    assert abs(start - section.start) < 0.01, played[-1]
+    assert abs(end - section.end) < 0.01, played[-1]

@@ -85,7 +85,19 @@ class TunePanel(QWidget):
         lock_btn = QPushButton("Lock / unlock section")
         lock_btn.clicked.connect(self._toggle_section_lock)
         play_section_btn = QPushButton("Play section")
+        play_section_btn.setToolTip(
+            "Play this stretch of what has already been rendered.")
         play_section_btn.clicked.connect(self._play_section)
+        self.words_btn = QPushButton("Write words for this section")
+        self.words_btn.setToolTip(
+            "Fit words to the tune this section already has. Every other "
+            "section, and every locked line, is left as it is.")
+        self.words_btn.clicked.connect(self._write_section_words)
+        self.sing_btn = QPushButton("Sing this section")
+        self.sing_btn.setToolTip(
+            "Sing this section's words over its own accompaniment, then "
+            "play that stretch.")
+        self.sing_btn.clicked.connect(self._sing_section)
 
         self.report = QTextEdit()
         self.report.setReadOnly(True)
@@ -116,6 +128,8 @@ class TunePanel(QWidget):
         third.addWidget(regen_btn)
         third.addWidget(lock_btn)
         third.addWidget(play_section_btn)
+        third.addWidget(self.words_btn)
+        third.addWidget(self.sing_btn)
         third.addStretch(1)
 
         layout = QVBoxLayout(self)
@@ -171,6 +185,22 @@ class TunePanel(QWidget):
         if section is None:
             return
         self.app.set_section_lock(section.id, not section.locked)
+        self.changed.emit()
+
+    def _write_section_words(self) -> None:
+        section = self._selected_section()
+        if section is None:
+            QMessageBox.information(self, "Lyrics", "Select a section first.")
+            return
+        self.app.generate_lyrics(section_ids=[section.id])
+        self.changed.emit()
+
+    def _sing_section(self) -> None:
+        section = self._selected_section()
+        if section is None:
+            QMessageBox.information(self, "Sing", "Select a section first.")
+            return
+        self.app.preview_section(section.id)
         self.changed.emit()
 
     def _play_section(self) -> None:
