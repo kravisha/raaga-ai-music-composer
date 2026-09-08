@@ -17,6 +17,25 @@ from ..timeline import TimelineWidget
 ROLES = ["auto", "lead", "counter", "pad", "bass", "rhythm", "fill", "drone"]
 
 
+#: The places a track can sit, left to right.  Discrete because this
+#: table is clicked rather than dragged, and five positions is enough to
+#: open a mix out without pretending to be a console.
+PAN_STEPS = (-0.8, -0.4, 0.0, 0.4, 0.8)
+
+
+def _pan_label(pan: float) -> str:
+    if abs(pan) < 0.05:
+        return "centre"
+    side = "L" if pan < 0 else "R"
+    return f"{side}{abs(pan) * 100:.0f}"
+
+
+def _next_pan(pan: float) -> float:
+    nearest = min(range(len(PAN_STEPS)),
+                  key=lambda i: abs(PAN_STEPS[i] - pan))
+    return PAN_STEPS[(nearest + 1) % len(PAN_STEPS)]
+
+
 class ArrangementPanel(QWidget):
     changed = Signal()
 
@@ -85,6 +104,32 @@ class ArrangementPanel(QWidget):
         for spin in (self.start_spin, self.end_spin):
             spin.setMaximumWidth(90)
 
+        # ---- the mix ------------------------------------------------
+        self.vocal_balance = QSlider(Qt.Horizontal)
+        self.vocal_balance.setRange(0, 200)
+        self.vocal_balance.setValue(100)
+        self.vocal_balance.setFixedWidth(110)
+        self.vocal_balance.sliderReleased.connect(self._mix_changed)
+        self.room_amount = QSlider(Qt.Horizontal)
+        self.room_amount.setRange(0, 200)
+        self.room_amount.setValue(100)
+        self.room_amount.setFixedWidth(110)
+        self.room_amount.sliderReleased.connect(self._mix_changed)
+        self.room_size = QSlider(Qt.Horizontal)
+        self.room_size.setRange(5, 95)
+        self.room_size.setValue(45)
+        self.room_size.setFixedWidth(90)
+        self.room_size.sliderReleased.connect(self._mix_changed)
+        self.dry_btn = QPushButton("Hear it without the room")
+        self.dry_btn.setToolTip(
+            "Play the same mix with the instrument room taken away, so the "
+            "two can be compared. Nothing is sung or played again. A studio "
+            "vocal take keeps the processing it was mastered with; this does "
+            "not reach inside it.")
+        self.dry_btn.clicked.connect(lambda: self.app.compare_dry())
+        self.mix_note = QLabel("")
+        self.mix_note.setObjectName("hint")
+
         controls = QGroupBox("Instruments")
         c1 = QHBoxLayout()
         c1.addWidget(QLabel("Instrument"))
@@ -106,15 +151,27 @@ class ArrangementPanel(QWidget):
         c3 = QHBoxLayout()
         c3.addWidget(self.feel_edit, 2)
         c3.addWidget(feel_btn)
+        c4 = QHBoxLayout()
+        c4.addWidget(QLabel("Voice against instruments"))
+        c4.addWidget(self.vocal_balance)
+        c4.addWidget(QLabel("Room"))
+        c4.addWidget(self.room_amount)
+        c4.addWidget(QLabel("Size"))
+        c4.addWidget(self.room_size)
+        c4.addWidget(self.dry_btn)
+        c4.addWidget(self.mix_note, 1)
+
         cv = QVBoxLayout(controls)
         cv.addLayout(c1)
         cv.addLayout(c2)
         cv.addLayout(c3)
+        cv.addLayout(c4)
 
         # ---- track table -------------------------------------------------
-        self.tracks = QTableWidget(0, 7)
+        self.tracks = QTableWidget(0, 8)
         self.tracks.setHorizontalHeaderLabels(
-            ["Track", "Role", "Regions", "Mute", "Solo", "Lock", "Gain"])
+            ["Track", "Role", "Regions", "Mute", "Solo", "Lock", "Gain",
+             "Pan"])
         self.tracks.verticalHeader().setVisible(False)
         self.tracks.setFixedHeight(112)
         self.tracks.cellClicked.connect(self._cell_clicked)
@@ -312,6 +369,12 @@ class ArrangementPanel(QWidget):
                 self.instrument_box.setCurrentIndex(idx)
         self.changed.emit()
 
+    def _mix_changed(self) -> None:
+        self.app.set_mix(vocal_gain=self.vocal_balance.value() / 100.0,
+                         reverb=self.room_amount.value() / 100.0,
+                         room=self.room_size.value() / 100.0,
+                         effects=True)
+
     def _cell_clicked(self, row: int, column: int) -> None:
         arrangement = self.app.project.arrangement()
         if arrangement is None or row >= len(arrangement.tracks):
@@ -323,6 +386,12 @@ class ArrangementPanel(QWidget):
             self.app.set_track_flag(track.id, solo=not track.solo)
         elif column == 5:
             self.app.set_track_flag(track.id, locked=not track.locked)
+        elif column == 7:
+            # The controller has always taken a pan and there was no way to
+            # give it one.  Clicking steps across the field and wraps, which
+            # matches how the rest of this table is used - the exact value
+            # is shown beside it, so a step is never a guess.
+            self.app.set_track_flag(track.id, pan=_next_pan(track.pan))
         else:
             idx = self.instrument_box.findData(track.instrument)
             if idx >= 0:
@@ -344,6 +413,25 @@ class ArrangementPanel(QWidget):
             self.start_spin.setValue(0.0)
             self.end_spin.setValue(max(1.0, project.duration))
 
+        settings = project.mix_settings
+        for slider, value in ((self.vocal_balance,
+                               int(round(settings.vocal_gain * 100))),
+                              (self.room_amount,
+                               int(round(settings.reverb * 100))),
+                              (self.room_size,
+                               int(round(settings.room * 100)))):
+            if not slider.isSliderDown():
+                slider.blockSignals(True)
+                slider.setValue(value)
+                slider.blockSignals(False)
+        self.dry_btn.setText("Hear it with the room" if not settings.effects
+                             else "Hear it without the room")
+        # Say what the comparison would play.  The creator auditioning
+        # one section should not have to guess whether pressing this takes
+        # them back to the top of the song.
+        self.mix_note.setText(f"{settings.describe()} - comparing "
+                              f"{self.app.audition_scope()}")
+
         tracks = arrangement.tracks if arrangement else []
         self.tracks.setRowCount(len(tracks))
         for row, track in enumerate(tracks):
@@ -351,7 +439,8 @@ class ArrangementPanel(QWidget):
                               f"{'*' if r.locked else ''}" for r in track.regions)
             values = [track.label, track.role, spans,
                       "M" if track.mute else "-", "S" if track.solo else "-",
-                      "LOCK" if track.locked else "-", f"{track.gain:.2f}"]
+                      "LOCK" if track.locked else "-", f"{track.gain:.2f}",
+                      _pan_label(track.pan)]
             for col, value in enumerate(values):
                 item = QTableWidgetItem(value)
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)

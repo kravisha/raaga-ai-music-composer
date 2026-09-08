@@ -377,16 +377,19 @@ class MixSettings:
     reverb: float = 1.0
     #: How large that room is.
     room: float = 0.45
-    #: False renders the same material with the room removed, which is
-    #: what makes a dry and an effected version comparable rather than
-    #: two different takes.
+    #: False renders the same material with the instrument room removed,
+    #: which is what makes two versions comparable rather than two
+    #: different takes.  It does not undo processing already recorded into
+    #: a studio vocal take - that was decided when the take was made - so
+    #: this is not a fully dry voice and nothing here should say it is.
     effects: bool = True
 
     def describe(self) -> str:
         if not self.effects:
-            return f"voice {self.vocal_gain:.2f}, dry (effects off)"
-        return (f"voice {self.vocal_gain:.2f}, reverb {self.reverb:.2f} "
-                f"in a {self.room:.2f} room")
+            return (f"voice {self.vocal_gain:.2f}, instrument room off "
+                    f"(the vocal take keeps its own)")
+        return (f"voice {self.vocal_gain:.2f}, instrument room "
+                f"{self.reverb:.2f} at size {self.room:.2f}")
 
 
 @dataclass
