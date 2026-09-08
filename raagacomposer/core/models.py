@@ -313,6 +313,31 @@ class VocalRender:
     state: ApprovalState = ApprovalState.DRAFT
 
 
+@dataclass
+class RecordedTake:
+    """A take the creator recorded themselves, from Record to Stop.
+
+    It is kept with the place in the song it was made against - the
+    section on the table and the tune and words of the moment - so it can
+    be found again by where it belongs, not only by when it was made.  It
+    is audio the creator gave, nothing more: not a voice profile, not
+    training material, and not anyone's voice until they say so.
+    """
+    id: str = field(default_factory=lambda: new_id("rec_"))
+    created_at: float = field(default_factory=now)
+    audio_path: str = ""
+    duration: float = 0.0
+    sample_rate: int = 44100
+    section_id: str = ""
+    section_name: str = ""
+    start: float = 0.0
+    end: float = 0.0
+    melody_version: int = 0
+    lyrics_version: int = 0
+    label: str = ""
+    notes: str = ""
+
+
 # --------------------------------------------------------------------------
 # Arrangement
 # --------------------------------------------------------------------------
@@ -521,6 +546,8 @@ class Project:
     vocal_direction: VocalDirection = field(default_factory=VocalDirection)
     vocal_renders: List[VocalRender] = field(default_factory=list)
     vocal_master_id: str = ""
+    #: Takes the creator recorded, kept apart from anything rendered.
+    recordings: List[RecordedTake] = field(default_factory=list)
 
     #: Percussion, versioned like the melody and independent of it.  It is
     #: written against the tala rather than the tune, so regenerating one

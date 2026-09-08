@@ -36,8 +36,8 @@ from .core.logging_setup import export_diagnostics, get_logger, setup_logging
 from .core.models import (ApprovalState, ArrangementVersion, BeatVersion,
                           CreativeBrief,
                           ErrorRecord, JobRecord, LyricsVersion, MelodyVersion,
-                          MixVersion, Project, Section, Stage, VocalDirection,
-                          VocalRender, VoiceProfile)
+                          MixVersion, Project, RecordedTake, Section, Stage,
+                          VocalDirection, VocalRender, VoiceProfile)
 from .core.persistence import ProjectStore
 from .core.settings import Settings, config_dir
 from .core.versioning import (LockedContentError, UndoManager,
@@ -61,6 +61,7 @@ from .raaga.library import Raaga, library as raaga_library
 from .raaga.selection import (RaagaSuggestion, expand_feel_words, infer_tempo,
                               suggest as suggest_raagas)
 from .speech.capture import CaptureState, VoiceInputManager
+from .voice.recorder import TakeRecorder
 from .speech.context import ConversationContext
 from .speech.intent import (Command, describe, interpret,
                             unavailable_instrument)
@@ -113,6 +114,11 @@ class AppController:
         self.raagas = raaga_library()
         self.context = ConversationContext()
         self.voice_input = VoiceInputManager(self.settings)
+        # Direct take recording: opened on Record, released on Stop or
+        # Cancel, never held open.  Replaced with an injected stream in
+        # tests so no microphone is touched.
+        self.recorder = TakeRecorder(sample_rate=self.sample_rate)
+        self._take_ticket: Dict[str, Any] = {}
         self.providers = provider_registry.build(
             self.settings, stt_name=self.voice_input.adapter.status())
         # The Knowledge Base: the permanent learned memory.  Opened, never
@@ -643,6 +649,7 @@ class AppController:
         self._clear_ranking()
         self._forget_the_previous_song()
         self._abandon_pending_requests("New song")
+        self._abandon_recording("you started a new song")
         self.dirty = not write
         self.undo.reset(self.project, "new project")
         self.context = ConversationContext()
@@ -663,6 +670,7 @@ class AppController:
         self._clear_ranking()
         self._forget_the_previous_song()
         self._abandon_pending_requests("Opened another song")
+        self._abandon_recording("you opened another song")
         self.dirty = False
         self.undo.reset(self.project, "opened")
         self.context = ConversationContext()
@@ -728,6 +736,7 @@ class AppController:
         except Exception as exc:  # noqa: BLE001
             log.error("final save failed: %s", exc)
         self.voice_input.close()
+        self.recorder.close()
         self.playback.close()
         self.jobs.shutdown()
         try:
@@ -3425,6 +3434,133 @@ class AppController:
 
     def rendered(self, kind: str) -> Optional[RenderedAudio]:
         return self._renders.get(kind)
+
+    # ==================================================================
+    # direct take recording
+    # ==================================================================
+    def recording_status(self) -> str:
+        """What the input is doing, for the screen."""
+        if self.recorder.recording:
+            where = self._take_ticket.get("section_name") or "the whole song"
+            return f"Recording {where}, {self.recorder.seconds:.0f}s"
+        return self.recorder.status_text()
+
+    def _take_context(self, section_id: Optional[str]) -> Dict[str, Any]:
+        """Where in the song a take is made against: the section named, else
+        the one under the selection, else the whole song."""
+        melody = self.project.melody()
+        section = None
+        if melody is not None:
+            if section_id:
+                section = melody.section_by_id(section_id)
+            elif self.selection:
+                at = self.selection[0]
+                section = next((s for s in melody.sections
+                                if s.start <= at < s.end), None)
+        lyrics = self.project.lyrics_version()
+        return {
+            "project": self.project.project_id,
+            "section_id": section.id if section else "",
+            "section_name": section.name if section else "",
+            "start": section.start if section else 0.0,
+            "end": section.end if section else (melody.duration if melody else 0.0),
+            "melody_version": melody.version if melody else 0,
+            "lyrics_version": lyrics.version if lyrics else 0,
+        }
+
+    def start_take(self, section_id: Optional[str] = None) -> bool:
+        """Open the input and start a take.  Says why when it cannot."""
+        if self.recorder.recording:
+            self.status("Already recording. Press Stop to keep the take or "
+                        "Cancel to throw it away.")
+            return False
+        if not self.recorder.available:
+            self.error("recording", self.recorder.state.error)
+            return False
+        if self.voice_input.state.listening:
+            # Both would open the input; the take has it while it runs.
+            self.voice_input.stop()
+            self.status("Voice commands paused while recording.")
+        context = self._take_context(section_id)
+        device = self.settings.mic_device or None
+        if not self.recorder.start(device=device):
+            self.error("recording", self.recorder.state.error)
+            return False
+        context["session"] = self.recorder.session
+        self._take_ticket = context
+        where = context["section_name"] or "the whole song"
+        self.status(f"Recording {where}. Press Stop when you are done, or "
+                    f"Cancel to keep nothing.")
+        return True
+
+    def stop_take(self) -> Optional[RecordedTake]:
+        """Release the input and keep the take, with where it was made."""
+        ticket, self._take_ticket = self._take_ticket, {}
+        audio = self.recorder.stop()
+        if audio is None:
+            self.status("Not recording.")
+            return None
+        if (ticket.get("project") != self.project.project_id
+                or ticket.get("session") != self.recorder.session):
+            self.status("I did not keep that take: the song changed while it "
+                        "was recording.")
+            return None
+        if len(audio) == 0:
+            self.status("Nothing was recorded; the input gave no audio.")
+            return None
+        take = RecordedTake(
+            duration=len(audio) / float(self.recorder.sample_rate),
+            sample_rate=self.recorder.sample_rate,
+            section_id=ticket.get("section_id", ""),
+            section_name=ticket.get("section_name", ""),
+            start=float(ticket.get("start", 0.0)), end=float(ticket.get("end", 0.0)),
+            melody_version=int(ticket.get("melody_version", 0)),
+            lyrics_version=int(ticket.get("lyrics_version", 0)))
+        where = take.section_name or "whole song"
+        slug = re.sub(r"[^a-z0-9]+", "-", where.lower()).strip("-") or "song"
+        take.label = f"Take {len(self.project.recordings) + 1} - {where}"
+        path = self._write_artifact("audio", f"take_{take.id[-6:]}_{slug}.wav", audio)
+        take.audio_path = str(path)
+        self.project.recordings.append(take)
+        self._changed("take.recorded", f"Recorded {take.label} ({take.duration:.1f}s)")
+        self.status(f"Kept {take.label}, {take.duration:.1f}s. It is yours to play "
+                    f"back; nothing else in the song has changed.")
+        return take
+
+    def cancel_take(self) -> None:
+        was = self.recorder.recording
+        self.recorder.cancel()
+        self._take_ticket = {}
+        if was:
+            self.status("Recording cancelled; nothing was kept.")
+
+    def _abandon_recording(self, why: str) -> None:
+        """Leaving a song releases the input and keeps nothing: a take
+        finished after the switch would land in the wrong song."""
+        if self.recorder.recording:
+            self.recorder.cancel()
+            log.info("recording abandoned: %s", why)
+        self._take_ticket = {}
+
+    def play_take(self, take_id: str) -> bool:
+        """Play one recorded take, and only that: nothing rendered changes."""
+        take = next((t for t in self.project.recordings if t.id == take_id), None)
+        if take is None:
+            self.status("There is no such take.")
+            return False
+        try:
+            import soundfile as sf
+            audio, sr = sf.read(take.audio_path, dtype="float32", always_2d=False)
+        except Exception as exc:  # noqa: BLE001
+            self.error("recording", f"{take.label} could not be read: {exc}")
+            return False
+        if getattr(audio, "ndim", 1) > 1:
+            audio = audio.mean(axis=1)
+        self.playback.load(audio, int(sr), "take")
+        started = self.playback.play()
+        if started:
+            self.status(f"Playing {take.label}, {take.duration:.1f}s, recorded by you.")
+        return started
 
     def current_vocal_take(self):
         """The vocal take to play, and which render holds its audio.
