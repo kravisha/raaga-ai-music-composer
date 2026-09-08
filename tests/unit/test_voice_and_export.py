@@ -428,6 +428,50 @@ def test_a_fricative_close_is_brighter_than_a_nasal_one():
     assert centroid(_one_note("s")) > centroid(_one_note("n")) * 1.5
 
 
+@pytest.mark.parametrize("length", [0.02, 0.05, 0.3])
+@pytest.mark.parametrize("coda", ["s", "n", "t", "l"])
+def test_a_short_note_does_not_carry_its_coda_into_the_next(length, coda):
+    """Arya's finding, and a correction to the test I wrote first.
+
+    _close_with_consonant clamped where the consonant began and left its
+    length at the full default, so a twenty-millisecond note wrote a
+    seventy-five-millisecond fricative over the note after it.  My own
+    boundary test used three-hundred-millisecond notes, long enough that
+    the clamp never engaged: it asserted the guarantee in the one case
+    that could not break it.
+
+    What is asserted here is what an end-to-end render can honestly show.
+    The four resonators carry their state across notes, so changing the
+    end of one note does change the beginning of the next - measured at
+    about -78 dB, gone within fifty milliseconds.  That is the filter
+    ringing out, not a consonant in the wrong place.  A real spill is
+    orders of magnitude larger and does not decay.  The buffer-level
+    guarantee is asserted directly in the integration boundary tests.
+    """
+    import numpy as np
+    from raagacomposer.core.models import VocalDirection
+    from raagacomposer.voice.profiles import BUILTIN
+    from raagacomposer.voice.renderer import SungSegment, render
+    sr = 44100
+    second = 0.2 + length
+    pair = [SungSegment(start=0.2, end=second, midi=60, vowel="aa",
+                        coda=coda),
+            SungSegment(start=second, end=second + 0.3, midi=62, vowel="ee")]
+    plain = [SungSegment(start=0.2, end=second, midi=60, vowel="aa"),
+             SungSegment(start=second, end=second + 0.3, midi=62, vowel="ee")]
+    total = second + 0.4
+    with_coda = render(pair, BUILTIN[2], VocalDirection(), sr,
+                       total_seconds=total, seed=3)
+    without = render(plain, BUILTIN[2], VocalDirection(), sr,
+                     total_seconds=total, seed=3)
+    difference = np.abs(with_coda - without)
+
+    ring = difference[int(second * sr):int((second + 0.05) * sr)]
+    assert ring.max() < 1e-3,         f"{length * 1000:.0f} ms note, {coda!r}: {ring.max():.6f} into the next"
+    settled = difference[int((second + 0.05) * sr):]
+    assert settled.max() < 1e-5,         f"{coda!r} was still audible {settled.max():.8f} past the next note"
+
+
 def test_a_coda_stays_inside_its_own_note():
     """A closing consonant must not arrive on top of the next vowel."""
     import numpy as np
@@ -446,3 +490,68 @@ def test_a_coda_stays_inside_its_own_note():
     after = np.abs(with_coda[int(0.52 * sr):int(0.78 * sr)]
                    - without[int(0.52 * sr):int(0.78 * sr)]).max()
     assert after < 1e-6, f"the coda bled into the next note by {after:.6f}"
+
+
+# --------------------------------------------------------------------------
+# A consonant has a place in the mouth, and F2 moves through it
+# --------------------------------------------------------------------------
+def _sung(onset="", coda="", vowel="aa", sr=44100):
+    from raagacomposer.core.models import VocalDirection
+    from raagacomposer.voice.profiles import BUILTIN
+    from raagacomposer.voice.renderer import SungSegment, render
+    seg = SungSegment(start=0.2, end=0.9, midi=60, vowel=vowel,
+                      consonant=onset, coda=coda)
+    return render([seg], BUILTIN[2], VocalDirection(), sr,
+                  total_seconds=1.1, seed=3)
+
+
+def _tilt(audio, at, sr=44100, width=0.030):
+    """Energy above the vowel's F2 against energy below it.
+
+    Peak-picking cannot see this movement: at a 262 Hz fundamental the
+    spectrum is sampled every 262 Hz, so a formant moving a few hundred
+    Hz need not move any harmonic - what it moves is the balance between
+    them.  A centroid over the whole voice band cannot see it either,
+    because F1 carries most of the energy and swamps the change.
+    """
+    import numpy as np
+    w = audio[int((at - width / 2) * sr):int((at + width / 2) * sr)]
+    spec = np.abs(np.fft.rfft(w * np.hanning(len(w))))
+    freqs = np.fft.rfftfreq(len(w), 1 / sr)
+    high = spec[(freqs >= 1400) & (freqs < 2800)].sum()
+    low = spec[(freqs >= 600) & (freqs < 1400)].sum()
+    return float(high / max(low, 1e-9))
+
+
+def test_a_lip_consonant_starts_the_vowel_lower():
+    """"m" is made at the lips, and F2 comes up from below into the vowel."""
+    plain = _tilt(_sung(), 0.212)
+    labial = _tilt(_sung("m"), 0.212)
+    assert labial < plain * 0.9, f"{labial:.4f} against {plain:.4f}"
+
+
+def test_a_tongue_consonant_starts_the_vowel_higher():
+    plain = _tilt(_sung(), 0.212)
+    for onset in ("t", "k", "l"):
+        moved = _tilt(_sung(onset), 0.212)
+        assert moved > plain * 1.4, f"{onset!r}: {moved:.4f} vs {plain:.4f}"
+
+
+def test_the_two_places_separate_from_each_other():
+    """A transition that exists but cannot be told apart is decoration."""
+    assert _tilt(_sung("t"), 0.212) > _tilt(_sung("m"), 0.212) * 2
+
+
+def test_the_movement_is_over_before_the_note_is():
+    """It is a transition, not a different vowel: by the middle of the
+    note the sound has arrived and the consonant is no longer shaping it."""
+    plain = _tilt(_sung(), 0.55)
+    for onset in ("m", "t", "k"):
+        assert abs(_tilt(_sung(onset), 0.55) - plain) < plain * 0.05
+
+
+def test_a_vowel_with_no_consonant_beside_it_does_not_move():
+    import numpy as np
+    from raagacomposer.voice.renderer import SungSegment, _f2_track
+    seg = SungSegment(start=0.0, end=0.7, midi=60, vowel="aa")
+    assert _f2_track(seg, 30000, 44100) is None
