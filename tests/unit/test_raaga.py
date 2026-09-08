@@ -534,3 +534,57 @@ def test_a_story_that_opens_with_a_refusal_is_still_a_story():
         got = read_section_requests("", "", narrative)
         assert not got.wanted, f"{narrative!r} asked for {got.wanted}"
         assert not got.refused, f"{narrative!r} refused {got.refused}"
+
+
+def test_a_direction_may_say_which_song_it_is_about():
+    """Arya's three.  Counting the words after the section name threw away
+    ordinary instructions that carry their scope with them - and "Anu
+    Pallavi" spent part of that budget on its own second word, so the same
+    direction behaved differently depending on how it was spelled."""
+    from raagacomposer.music.structure import read_section_requests
+
+    baseline = plan_sections(240.0, 72, 8, "film song")
+    assert any(s.kind is SectionKind.ANUPALLAVI for s in baseline), \
+        "this proves nothing unless the plan has one to begin with"
+
+    for phrasing in ("No Anupallavi in this song.",
+                     "Skip the Anupallavi for this version.",
+                     "No Anu Pallavi for now.",
+                     "Please skip the Anupallavi this time.",
+                     "no anupallavi again"):
+        asked = read_section_requests(phrasing)
+        assert asked.refused == (SectionKind.ANUPALLAVI,), \
+            f"{phrasing!r} was not read as a refusal: {asked}"
+        assert asked.wanted == (), f"{phrasing!r} asked for something"
+        sections = plan_sections(240.0, 72, 8, "film song",
+                                 requested=asked.wanted,
+                                 refused=asked.refused)
+        assert not any(s.kind is SectionKind.ANUPALLAVI for s in sections), \
+            f"{phrasing!r} left it in: {[s.name for s in sections]}"
+
+
+def test_the_same_direction_reads_the_same_in_either_spelling():
+    """A creator who says "Anu Pallavi" is giving the same instruction as
+    one who writes "Anupallavi"."""
+    from raagacomposer.music.structure import read_section_requests
+
+    for tail in ("", " in this song", " for this version", " for now"):
+        joined = read_section_requests(f"No Anupallavi{tail}.")
+        spaced = read_section_requests(f"No Anu Pallavi{tail}.")
+        assert joined == spaced, (tail, joined, spaced)
+        assert joined.refused == (SectionKind.ANUPALLAVI,), (tail, joined)
+
+
+def test_scope_after_the_name_is_not_the_same_as_a_sentence():
+    """What follows "not the ending" is "they hoped for", and no
+    arrangement of those words says which take anything applies to."""
+    from raagacomposer.music.structure import read_section_requests
+
+    for narrative in ("Not the ending they hoped for",
+                      "no one told him about the interlude of his life",
+                      "There is no bridge over the river",
+                      "nothing without a bridge to carry them across it",
+                      "no ending could console the two of them"):
+        got = read_section_requests("", "", narrative)
+        assert not got.wanted, f"{narrative!r} asked for {got.wanted}"
+        assert not got.refused, f"{narrative!r} refused {got.refused}"
