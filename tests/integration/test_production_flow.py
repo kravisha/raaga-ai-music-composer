@@ -620,3 +620,89 @@ def test_a_lock_placed_while_the_variation_runs_refuses_its_result(app, monkeypa
         release.set()
         if not producer.finished:
             producer.cancel("test over")
+
+
+# ----------------------------------------------------------------------
+# The Critic's revisions land on the passage they name (queue item 4)
+# ----------------------------------------------------------------------
+def _revise_tune_once(app, revision_text, seed=104, max_rounds=2, before=None):
+    """Produce with a Critic that asks one revision of the tune, once."""
+    def policy(stage, packet, calls):
+        if stage == "tune" and calls.count("tune") == 1:
+            return {"accept": False, "revisions": [revision_text]}
+        return None
+    codex = FakeCodex(policy)
+    app.critic = CodexCritic(codex)
+    producer = app.produce_song(seed=seed, max_rounds=max_rounds)
+    drive(app, producer)
+    return producer, codex
+
+
+def _changed_sections(v1, v2):
+    by_name = {s.name: s for s in v1.sections}
+    return [s.name for s in v2.sections
+            if _notes_of(v2, s.id) != _notes_of(v1, by_name[s.name].id)]
+
+
+def test_a_revision_naming_a_section_rewrites_only_that_section(app):
+    a_whole_song_brief(app, "Only the Charanam")
+    producer, codex = _revise_tune_once(
+        app, "Melody specialist: reshape the Charanam's opening phrase into a "
+             "closer contour and a clearer cadence")
+    assert producer.phase == "done", producer.report()
+    v1, v2 = app.project.melodies[0], app.project.melody()
+    assert v2.version == 2 and codex.calls.count("tune") == 2
+    assert _changed_sections(v1, v2) == ["Charanam 1"], _changed_sections(v1, v2)
+    assert "rewriting Charanam 1" in "\n".join(producer.events)
+    assert v2.derived_from.endswith("regenerated Charanam 1")
+
+
+def test_a_revision_naming_a_time_rewrites_the_section_at_that_time(app):
+    a_whole_song_brief(app, "Only the Anupallavi")
+    app.generate_tune(seed=104)
+    deadline = time.time() + 60
+    while (app.project.melody() is None or app.jobs.active_jobs()) and time.time() < deadline:
+        app.pump()
+        time.sleep(0.02)
+    anupallavi = next(s for s in app.project.melody().sections
+                      if s.kind == SectionKind.ANUPALLAVI)
+    inside = (anupallavi.start + 0.5, anupallavi.start + 1.5)
+    # The Producer will compose v2 first (no locks); the revision then
+    # names a time inside v2's Anupallavi, which sits where v1's did.
+    producer, codex = _revise_tune_once(
+        app, f"reshape the leap at {inside[0]:.2f}-{inside[1]:.2f} s through "
+             f"intermediate tones")
+    assert producer.phase == "done", producer.report()
+    before = app.project.melodies[-2]
+    after = app.project.melody()
+    assert _changed_sections(before, after) == ["Anupallavi"], _changed_sections(before, after)
+
+
+def test_a_revision_naming_nothing_rewrites_the_whole_tune_and_says_so(app):
+    a_whole_song_brief(app, "Nothing named")
+    producer, codex = _revise_tune_once(app, "make it warmer and more inward")
+    assert producer.phase == "done", producer.report()
+    v1, v2 = app.project.melodies[0], app.project.melody()
+    assert len(_changed_sections(v1, v2)) >= 1
+    assert "no passage" in "\n".join(producer.events).lower()
+
+
+def test_a_revision_naming_a_locked_section_leaves_it_and_says_so(app):
+    original, pallavi, protected, notes = _first_tune_with_a_locked_pallavi(app, "Locked target")
+    producer, codex = _revise_tune_once(
+        app, "Give the Pallavi a recognizable motif and develop the Charanam's answer")
+    assert producer.phase == "done", producer.report()
+    current = app.project.melody()
+    kept = next(s for s in current.sections if s.kind == SectionKind.PALLAVI)
+    assert kept.locked and _notes_of(current, kept.id) == notes
+    events = "\n".join(producer.events)
+    assert "Pallavi is locked" in events and "rewriting Charanam 1" in events
+
+
+def test_a_revision_outside_the_song_makes_no_edit(app):
+    a_whole_song_brief(app, "Out of range")
+    producer, codex = _revise_tune_once(app, "the passage at 500-510 s is abrupt")
+    assert producer.phase == "done", producer.report()
+    assert len(app.project.melodies) == 1, "an out-of-range revision must not rewrite anything"
+    assert codex.calls.count("tune") == 2, "the same tune is put to the Critic again"
+    assert "outside the song" in "\n".join(producer.events)

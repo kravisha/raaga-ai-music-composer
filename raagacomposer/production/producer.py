@@ -60,6 +60,7 @@ from .contracts import (PRODUCTION_STAGES, Critic, InstrumentProfile,
                         Verdict, production_team, review_stage)
 from .critic import CancelledReview
 from .state import canonical_json
+from .targets import place_revisions
 
 #: Below this a section of the vocal-only master is silent in fact, not
 #: merely expected to be: a rest at -60 dB FS is thirty times quieter than
@@ -195,6 +196,10 @@ class Producer:
         self._idle_pumps = 0
         self._artifact: Any = None
         self._ref = ""
+        #: Sections the Critic's last revision named, still to be rewritten
+        #: one at a time, and what was placed, for the next packet.
+        self._targets: List[str] = []
+        self._rewrite: Dict[str, Any] = {}
 
     # ------------------------------------------------------------------
     # lifecycle
@@ -301,6 +306,11 @@ class Producer:
             self._fail(f"I could not describe the {self.stage} for review "
                        f"({type(exc).__name__})")
             return
+        if self.stage == "tune" and self._targets:
+            # One named passage has landed; the next one is rewritten on
+            # top of it before the Critic sees the round.
+            self._submit()
+            return
         self.refs[self.stage] = self._ref
         self._record_ref(self.stage, self._ref)
         self._note(f"{self.stage}: {self._ref} landed (round {self.round})")
@@ -312,6 +322,8 @@ class Producer:
     def _begin_stage(self, stage: str) -> None:
         self.stage = stage
         self.round = 1
+        self._targets = []
+        self._rewrite = {}
         self._submit()
 
     def _submit(self) -> None:
@@ -322,6 +334,30 @@ class Producer:
         if stage == "brief":
             self._marker = 0
             self.phase = "landed"
+            return
+        if stage == "tune" and self._targets:
+            # The Critic named a passage: rewrite that section and nothing
+            # else, through the same door the creator's "Rewrite section"
+            # uses.  Several named sections go one at a time, each on top
+            # of the last, so every other note stays where it was.
+            melody = project.melody()
+            section_id = self._targets.pop(0)
+            section = melody.section_by_id(section_id) if melody else None
+            if section is None:
+                self._note("tune: a named section is no longer in the tune; skipped")
+                self._submit() if self._targets else self._review_current_again()
+                return
+            self._marker = len(project.melodies)
+            self._note(f"tune: rewriting {section.name} as the Critic asked; every "
+                       f"other section is kept")
+            try:
+                app.regenerate_tune_section(section_id)
+            except Exception as exc:  # noqa: BLE001 - a lock arrived, or the like
+                self._note(f"tune: {section.name} could not be rewritten "
+                           f"({type(exc).__name__}: {exc}); left as it is")
+                self._submit() if self._targets else self._review_current_again()
+                return
+            self.phase = "working"
             return
         if stage == "tune":
             melody = project.melody()
@@ -514,9 +550,22 @@ class Producer:
                           f"({exhausted.reason}); round {self.round} stands with "
                           f"the Critic's advice on record: {advice}")
             return
-        self._apply_advice(verdict)
+        mode = self._apply_advice(verdict)
         self.round += 1
+        if mode == "none":
+            # The only places named lie outside the song: nothing is
+            # rewritten, and the same tune goes back to the Critic with
+            # that said, rather than a rewrite nobody asked for.
+            self._review_current_again()
+            return
         self._submit()
+
+    def _review_current_again(self) -> None:
+        """Put the artifact already on the desk to the Critic for the next
+        round, unchanged."""
+        self._note(f"{self.stage}: nothing was rewritten; the same "
+                   f"{self._ref} goes to the Critic for round {self.round}")
+        self._review()
 
     def _review_cancelled(self) -> None:
         """The review job was cancelled from outside the Producer - by a
@@ -541,23 +590,57 @@ class Producer:
             return
         self._decide(f"{why}; the Producer proceeded without an accepted review")
 
-    def _apply_advice(self, verdict: Verdict) -> None:
-        """Turn the Critic's revisions into the next attempt's guidance.
+    def _apply_advice(self, verdict: Verdict) -> str:
+        """Turn the Critic's revisions into the next attempt.
 
-        The tune engine learns from lessons: a lesson's kind becomes a
-        lever on the next composition.  The Critic's advice enters that way,
-        under the Critic's own name and at a reviewer's confidence - never as
-        the creator's testimony, which ``give_feedback`` would make it, with
-        the phrase-confidence changes and high-weight lessons that carries.
-        The other specialists are reseeded; the advice stays on record.
+        Two things happen for a tune.  The advice is filed as lessons under
+        the Critic's own name, at a reviewer's confidence - never as the
+        creator's testimony, which ``give_feedback`` would make it - and a
+        lesson's kind is a lever on the next composition.  And the *place*
+        the advice names is read: a named section, or a time, is rewritten
+        on its own through the same path as the creator's "Rewrite
+        section", every other note kept.  What the engine cannot yet do is
+        apply the musical property asked for - "a closer register" - beyond
+        rewriting the passage; the journal says so.
+
+        Returns how the next round is made: "targets" (named passages will
+        be rewritten one by one), "whole" (nothing could be placed, so the
+        whole tune is rewritten as before), or "none" (the only places
+        named lie outside the song; nothing is rewritten).  Other stages
+        are reseeded and return "whole".
         """
         advice = "; ".join(verdict.revisions)
         if not advice:
-            return
+            return "whole"
         app = self.app
         app.project.log_history("critic.advice", advice[:200])
         if self.stage != "tune":
-            return
+            return "whole"
+        placement = place_revisions(verdict.revisions, app.project.melody())
+        self._targets = [s.id for s in placement.targets]
+        self._rewrite = {"targets": [s.name for s in placement.targets],
+                         "skipped_locked": list(placement.skipped_locked),
+                         "out_of_range": list(placement.out_of_range),
+                         "unplaced": len(placement.unplaced),
+                         "notes": list(placement.notes),
+                         "applies": "the named passages are rewritten afresh; the "
+                                    "musical property asked for is not itself a "
+                                    "lever the engine has"}
+        if placement.notes:
+            self._note(f"{self.stage}: {'; '.join(placement.notes)}")
+        if placement.targets:
+            mode = "targets"
+        elif placement.out_of_range and not placement.unplaced:
+            mode = "none"
+        else:
+            mode = "whole"
+            self._note(f"{self.stage}: no passage could be placed; the whole tune "
+                       f"is rewritten with the advice as lessons")
+        self._file_lessons(advice)
+        return mode
+
+    def _file_lessons(self, advice: str) -> None:
+        app = self.app
         try:
             kinds = list(app.agent.feedback_kinds(advice)) or ["critic_advice"]
             raaga = app.project.raaga.selected
@@ -569,9 +652,9 @@ class Producer:
                     source_run=f"production:{app.project.project_id}:"
                                f"r{self.state.revision if self.state else 0}"))
             self._note(f"{self.stage}: advice filed as lesson(s) {', '.join(kinds)} "
-                       f"under the Critic's name; the melody engine applies lesson "
-                       f"kinds and a new seed, not the timed instructions, which "
-                       f"stay on record in the journal")
+                       f"under the Critic's name; lesson kinds guide the rewrite, "
+                       f"and the passage named is rewritten afresh - the musical "
+                       f"property asked for is not itself a lever the engine has")
         except Exception as exc:  # noqa: BLE001
             log.warning("could not file the Critic's advice as a lesson: %s", exc)
 
@@ -763,6 +846,7 @@ class Producer:
             "guidance": melody.guidance_note,
             "kept_locked": [s.name for s in melody.sections if s.locked],
             "derived_from": melody.derived_from,
+            "rewritten_this_round": dict(self._rewrite) if self.round > 1 else {},
         }
         return self._packet("tune", body), f"tune:v{melody.version}"
 
