@@ -360,3 +360,70 @@ def test_the_unfitted_count_follows_every_refit(melody):
     assert lyrics.unfitted == 0
     refit_line(lyrics, melody, lyrics.lines[1].id, "...")
     assert lyrics.lines[1].unfitted and lyrics.unfitted == 1
+
+
+# --------------------------------------------------------------------------
+# a writer that answers with fewer lines than were asked for leaves the
+# rest missing - never quietly filled with lexicon vocables (2026-09-08)
+# --------------------------------------------------------------------------
+def test_a_writer_s_missing_lines_stay_missing_not_lexicon(melody):
+    slots = build_slots(melody)
+    assert len(slots) > 2
+    lyrics = generate(melody, CreativeBrief(language="Tamil"), seed=4,
+                      llm=_Writer([TAMIL_FIRST_LINE, "மலர்ந்தேன் நானே"]))
+    assert [l.text for l in lyrics.lines[:2]] == [TAMIL_FIRST_LINE, "மலர்ந்தேன் நானே"]
+    assert all(l.source == "llm:test-writer" for l in lyrics.lines[:2])
+    rest = lyrics.lines[2:]
+    assert all(l.text == "" and l.syllables == [] and l.unfitted for l in rest), \
+        [(l.text, l.source) for l in rest]
+    assert all(l.source == "missing:test-writer" for l in rest)
+    assert lyrics.unfitted == len(slots) - 2
+    assert not any(l.source == "lexicon" for l in lyrics.lines)
+    for slot in slots[2:]:
+        assert slot.section_name in lyrics.notes, (slot.section_name, lyrics.notes)
+
+
+def test_a_writer_that_returns_nothing_leaves_every_requested_line_missing(melody):
+    slots = build_slots(melody)
+    lyrics = generate(melody, CreativeBrief(language="Tamil"), seed=4, llm=_Writer([]))
+    assert lyrics.unfitted == len(slots)
+    assert all(l.text == "" and l.source == "missing:test-writer" for l in lyrics.lines)
+    # Without any writer at all, the lexicon is the writer and says so.
+    plain = generate(melody, CreativeBrief(language="Tamil"), seed=4, llm=None)
+    assert plain.unfitted == 0 and all(l.source == "lexicon" for l in plain.lines)
+
+
+def test_missing_lines_respect_the_selected_sections_and_locks(melody):
+    from raagacomposer.core.models import SectionKind
+    slots = build_slots(melody)
+    full = generate(melody, CreativeBrief(language="Tamil"), seed=4,
+                    llm=_Writer([TAMIL_FIRST_LINE] * len(slots)))
+    full.lines[0].locked = True
+    charanam = next(s for s in melody.sections if s.kind == SectionKind.CHARANAM)
+    mine = [i for i, s in enumerate(slots) if s.section_id == charanam.id]
+    assert len(mine) >= 2, "this tune's Charanam needs at least two phrases"
+    again = generate(melody, CreativeBrief(language="Tamil"), seed=5,
+                     llm=_Writer(["விடமாட்டேன்"]), previous=full,
+                     section_ids=[charanam.id])
+    assert again.lines[mine[0]].text == "விடமாட்டேன்"
+    assert again.lines[mine[0]].source == "llm:test-writer"
+    for i in mine[1:]:
+        assert again.lines[i].text == "" and again.lines[i].unfitted
+        assert again.lines[i].source == "missing:test-writer"
+    assert again.unfitted == len(mine) - 1
+    for i, line in enumerate(again.lines):
+        if i not in mine:
+            assert line.text == TAMIL_FIRST_LINE and line.source == "llm:test-writer"
+            assert not line.unfitted
+    assert again.lines[0].locked and again.lines[0].text == TAMIL_FIRST_LINE
+
+
+def test_regenerate_line_with_a_silent_writer_leaves_the_line(melody):
+    lyrics = generate(melody, CreativeBrief(language="Tamil"), seed=4,
+                      llm=_Writer([TAMIL_FIRST_LINE] * len(build_slots(melody))))
+    before = (lyrics.lines[0].text, list(lyrics.lines[0].syllables), lyrics.lines[0].source)
+    warnings = regenerate_line(lyrics, melody, lyrics.lines[0].id,
+                               CreativeBrief(language="Tamil"), seed=9, llm=_Writer([]))
+    assert (lyrics.lines[0].text, list(lyrics.lines[0].syllables), lyrics.lines[0].source) == before
+    assert warnings and "unchanged" in warnings[0].lower()
+    assert lyrics.unfitted == 0

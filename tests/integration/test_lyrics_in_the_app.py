@@ -95,3 +95,23 @@ def test_a_writer_s_blank_answer_does_not_replace_the_approved_words(app, settle
         assert app.project.approved_lyrics == first.version, \
             "a blank answer replaced the approved words"
         assert "draft" in app.status_text, app.status_text
+
+
+def test_a_partial_answer_keeps_the_approved_words_and_says_what_is_missing(app, settle):
+    _a_tune(app, "Partial answer")
+    from raagacomposer.lyrics.fitting import build_slots
+    slots = build_slots(app.project.melody())
+    first = _write(app, settle, _Writer([TAMIL_FIRST_LINE] * len(slots)))
+    assert app.project.approved_lyrics == first.version
+    approved_text = [l.text for l in first.lines]
+
+    draft = _write(app, settle, _Writer([TAMIL_FIRST_LINE]))
+    assert draft.unfitted == len(slots) - 1, draft.notes
+    assert draft.lines[0].text == TAMIL_FIRST_LINE
+    assert all(l.text == "" and l.source == "missing:test-writer" for l in draft.lines[1:])
+    assert not any(l.source == "lexicon" for l in draft.lines)
+    assert app.project.approved_lyrics == first.version
+    assert [l.text for l in app.project.lyrics_version(first.version).lines] == approved_text
+    assert "draft" in app.status_text and str(len(slots) - 1) in app.status_text, app.status_text
+    for slot in slots[1:]:
+        assert slot.section_name in draft.notes

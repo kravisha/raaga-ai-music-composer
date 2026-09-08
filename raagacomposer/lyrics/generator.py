@@ -246,14 +246,17 @@ def generate(melody: MelodyVersion, brief: CreativeBrief, version: int = 1,
 
     lines: List[str] = []
     writer = ""
-    if llm is not None and getattr(llm, "available", False):
+    writer_name = getattr(llm, "name", "llm") if llm is not None else ""
+    has_writer = llm is not None and getattr(llm, "available", False)
+    if has_writer:
         try:
             lines = [str(t) if t is not None else "" for t in llm.write_lyrics(wanted, brief)]
-            writer = f"llm:{getattr(llm, 'name', 'llm')}"
-            log.info("lyrics drafted by %s", getattr(llm, "name", "llm"))
-        except Exception as exc:  # noqa: BLE001 - fall back, never block
-            log.warning("LLM lyrics failed (%s); using the local engine", exc)
+            log.info("lyrics drafted by %s", writer_name)
+        except Exception as exc:  # noqa: BLE001 - never block; say so instead
+            log.warning("LLM lyrics failed (%s); the requested lines are missing", exc)
             lines = []
+        writer = f"llm:{writer_name}"
+        lines = lines[:len(wanted)]
     # The writer's words are the words.  A line the fitter finds nothing to
     # sing in - punctuation, an empty answer - is kept as written, with no
     # notes, and the version counts it as unfitted so nobody approves it
@@ -266,9 +269,23 @@ def generate(melody: MelodyVersion, brief: CreativeBrief, version: int = 1,
             log.warning("a lyric line has nothing the fitter can sing, kept as "
                         "written: %r", text[:40])
     if len(lines) < len(wanted):
-        local = generate_lines(wanted, brief, seed)
-        lines = lines + local[len(lines):]
-        sources = sources + ["lexicon"] * (len(lines) - len(sources))
+        if has_writer:
+            # A writer that answered short - or not at all - leaves the
+            # rest of the requested lines missing: empty, unfitted, and
+            # named as missing, so the draft cannot be approved unread.
+            # Filling them from the lexicon would present vocables nobody
+            # asked for as the writer's words.
+            missing = len(wanted) - len(lines)
+            log.warning("%s returned %d of %d requested lines; %d left missing",
+                        writer_name, len(lines), len(wanted), missing)
+            lines = lines + [""] * missing
+            sources = sources + [f"missing:{writer_name}"] * missing
+        else:
+            # No writer at all: the lexicon is the writer, and every line
+            # says so.  That is the only way vocables enter a song.
+            local = generate_lines(wanted, brief, seed)
+            lines = lines + local[len(lines):]
+            sources = sources + ["lexicon"] * (len(lines) - len(sources))
 
     # Lay the new lines back onto the whole song by slot, so unselected
     # phrases keep the words they had.  fit_lines takes it from here and
@@ -301,10 +318,15 @@ def regenerate_line(lyrics: LyricsVersion, melody: MelodyVersion, line_id: str,
     if llm is not None and getattr(llm, "available", False):
         try:
             got = llm.write_lyrics([slot], brief)
-            text = got[0] if got else ""
+            text = str(got[0]) if got and got[0] is not None else ""
             source = f"llm:{getattr(llm, 'name', 'llm')}"
         except Exception as exc:  # noqa: BLE001
             log.warning("LLM line rewrite failed: %s", exc)
+        if not text.strip():
+            # A writer that says nothing changes nothing.  The line keeps
+            # its words, its fit and its author; the creator is told.
+            return [f"{getattr(llm, 'name', 'the writer')} returned nothing for "
+                    f"this line; it is unchanged."]
     if not text:
         pool = _language_pool(brief.language)
         words: List[str] = []
