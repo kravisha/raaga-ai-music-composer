@@ -53,6 +53,28 @@ VOWEL_GAINS: Dict[str, Tuple[float, float, float, float]] = {
 }
 FORMANT_BW = (80.0, 110.0, 160.0, 220.0)
 
+#: Where a consonant pulls the second formant, in Hz.  A listener reads a
+#: consonant largely from the way F2 moves into and out of the vowel beside
+#: it, not from the burst itself - the burst is a fraction of the sound and
+#: the movement lasts as long as the syllable does.  Grouped by place of
+#: articulation, which is what decides the direction of that movement:
+#: lips low, tongue-tip in the middle, back of the tongue high.
+F2_LOCUS: Dict[str, float] = {
+    # labial
+    "p": 800.0, "b": 800.0, "m": 800.0, "v": 900.0, "f": 900.0, "w": 700.0,
+    # dental and alveolar
+    "t": 1750.0, "d": 1750.0, "n": 1700.0, "s": 1800.0, "z": 1800.0,
+    "l": 1500.0, "r": 1400.0, "th": 1700.0, "tt": 1750.0, "dd": 1750.0,
+    # palatal
+    "ch": 2100.0, "j": 2100.0, "sh": 2000.0, "y": 2200.0, "ny": 2000.0,
+    # velar
+    "k": 2300.0, "g": 2300.0, "ng": 2200.0, "h": 1600.0,
+}
+
+#: How long the mouth takes to get there.  Short enough to sit inside a
+#: sung note without bending its pitch, long enough to be heard.
+TRANSITION = 0.045
+
 PLOSIVES = set("kgtdpb") | {"ch", "j", "tt", "dd"}
 FRICATIVES = set("sfhvz") | {"sh", "th"}
 NASALS = set("mn") | {"ng", "ny"}
@@ -150,6 +172,54 @@ def plan_segments(melody: MelodyVersion,
             gamaka=note.gamaka, legato=(note.start - prev_end) < 0.06))
         prev_end = note.end
     return segments
+
+
+def _f2_track(seg: "SungSegment", length: int, sr: int) -> Optional[np.ndarray]:
+    """Where F2 should be, sample by sample, or None when it does not move.
+
+    It starts at the onset consonant's locus, arrives at the vowel, and
+    leaves for the coda's locus - which is what a listener hears as the
+    consonant having a place in the mouth.  A steady target is a vowel with
+    a scratch in front of it, which is what this sounded like.
+    """
+    onset = F2_LOCUS.get((seg.consonant or "")[:2]) or \
+        F2_LOCUS.get((seg.consonant or "")[:1])
+    coda = F2_LOCUS.get((seg.coda or "")[:2]) or \
+        F2_LOCUS.get((seg.coda or "")[:1])
+    if onset is None and coda is None:
+        return None
+    target = float(VOWEL_FORMANTS.get(seg.vowel, VOWEL_FORMANTS["a"])[1])
+    track = np.full(length, target, dtype=np.float64)
+    glide = min(int(TRANSITION * sr), length // 2)
+    if glide < 2:
+        return None
+    if onset is not None:
+        track[:glide] = np.linspace(onset, target, glide)
+    if coda is not None:
+        track[length - glide:] = np.linspace(target, coda, glide)
+    return track
+
+
+def _sweep(x: np.ndarray, base: float, track: np.ndarray, bw: float,
+           sr: int, state) -> Tuple[np.ndarray, object]:
+    """Filter through a moving resonance, in short blocks.
+
+    Block by block rather than sample by sample: recomputing coefficients
+    every sample would cost far more than it is worth for a movement that
+    takes forty milliseconds, and the filter state carries across the
+    blocks so there is no seam.
+    """
+    step = max(64, int(0.005 * sr))
+    out = np.empty(len(x), dtype=np.float64)
+    for start in range(0, len(x), step):
+        stop = min(start + step, len(x))
+        freq = float(np.mean(track[start:stop]))
+        bnum, aden = _resonator(freq, bw, sr)
+        if state is None:
+            state = lfilter_zi(bnum, aden) * float(x[start])
+        chunk, state = lfilter(bnum, aden, x[start:stop], zi=state)
+        out[start:stop] = chunk
+    return out.astype(np.float32), state
 
 
 def _resonator(freq: float, bw: float, sr: int) -> Tuple[np.ndarray, np.ndarray]:
@@ -292,14 +362,23 @@ def render(segments: Sequence[SungSegment], profile: VoiceProfile,
         formants = VOWEL_FORMANTS.get(seg.vowel, VOWEL_FORMANTS["a"])
         gains = VOWEL_GAINS.get(seg.vowel, FORMANT_GAINS)
         mixed = np.zeros(len(seg_src), dtype=np.float32)
+        track = _f2_track(seg, len(seg_src), sr)
         for k, (f, gain, bw) in enumerate(zip(formants, gains, FORMANT_BW)):
             freq = f * shift * (1.0 + 0.06 * (profile.brightness - 1.0) * k)
-            bnum, aden = _resonator(freq, bw * (1.0 + 0.3 * k), sr)
-            zi = states[k]
-            if zi is None:
-                zi = lfilter_zi(bnum, aden) * float(seg_src[0])
-            y, zf = lfilter(bnum, aden, seg_src, zi=zi)
-            states[k] = zf
+            width = bw * (1.0 + 0.3 * k)
+            if k == 1 and track is not None:
+                # The second formant moves; the others hold.  F2 is the one
+                # a listener reads a consonant's place from, and moving all
+                # four turns the vowel into something else on the way.
+                y, states[k] = _sweep(seg_src, freq, track * shift, width,
+                                      sr, states[k])
+            else:
+                bnum, aden = _resonator(freq, width, sr)
+                zi = states[k]
+                if zi is None:
+                    zi = lfilter_zi(bnum, aden) * float(seg_src[0])
+                y, zf = lfilter(bnum, aden, seg_src, zi=zi)
+                states[k] = zf
             mixed += (y * gain).astype(np.float32)
         peak = float(np.abs(mixed).max())
         if peak > 0:
@@ -353,8 +432,8 @@ def _close_with_consonant(buf: np.ndarray, cons: str, a: int, b: int,
     if length < 4:
         return buf
     start = max(a, b - length)
-    length = min(length, b - start)
-    if length < 4 or start + length > len(buf):
+    length = min(length, b - start, len(buf) - start)
+    if length < 4:
         return buf
     voice = float(np.sqrt(np.mean(buf[start:start + length] ** 2)))
     # The mouth closes: the vowel falls away rather than continuing under
@@ -403,10 +482,17 @@ def _add_consonant(buf: np.ndarray, cons: str, at: int, sr: int,
         return buf
     length = int(dur * sr)
     if trailing:
+        # Both ends, not one.  Clamping the start to the note's beginning
+        # and leaving the length at the consonant's full duration is how a
+        # ten-millisecond note wrote a seventy-five-millisecond fricative
+        # over the note that followed it - the guard moved where the sound
+        # began and not how much of it there was.
         start = max(limit, at - length)
+        length = min(length, at - start)
     else:
         start = max(0, at - int((dur + gap) * sr))
-    if start + length >= len(buf) or length < 4 or start < 0:
+    length = min(length, len(buf) - start)
+    if length < 4 or start < 0:
         return buf
     noise = rng.standard_normal(length).astype(np.float32)
     alpha = float(np.exp(-2 * np.pi * colour / sr))
