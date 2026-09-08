@@ -176,6 +176,10 @@ class AppController:
         self.status_text = "Ready"
         self.selection: Optional[Tuple[float, float]] = None
         self._playhead = 0.0
+        #: The span the creator last actually listened to, and the name of
+        #: it.  A comparison that jumps back to the top of the song is not
+        #: a comparison of what they were hearing.
+        self._audition: Optional[Tuple[Tuple[float, float], str]] = None
         self.last_evaluation = None
 
         # The action status contract (v0.3 section 6.1).  ``actions`` holds
@@ -513,6 +517,7 @@ class AppController:
         self.last_evaluation = None
         self._loaded_render = None
         self._playhead = 0.0
+        self._audition = None
 
     def _abandon_pending_requests(self, what: str) -> int:
         """Drop conversation still owed to a song we are leaving.
@@ -2749,6 +2754,20 @@ class AppController:
                          on_error=lambda e: self.error("voice", f"Vocal render failed: {e}"),
                          description=f"Render the {kind} vocal")
 
+    def _span_name(self, melody, span) -> str:
+        """What the creator would call the stretch they are hearing."""
+        if melody is None or not span:
+            return "the whole song"
+        start, end = span
+        for sec in melody.sections:
+            if abs(sec.start - start) < 0.01 and abs(sec.end - end) < 0.01:
+                return sec.name
+        return f"{start:.1f}s to {end:.1f}s"
+
+    def audition_scope(self) -> str:
+        """The stretch a comparison would play, in the creator's words."""
+        return self._audition[1] if self._audition else "the whole song"
+
     def preview_section(self, section_id: str, autoplay: bool = True) -> None:
         """Hear one section: its words sung, over its accompaniment.
 
@@ -2985,10 +3004,16 @@ class AppController:
             return
         was = self.project.mix_settings.effects
         self.project.mix_settings.effects = not was
-        state = "dry" if was else "with its effects"
-        self.status(f"Rendering the same mix {state}...")
-        self._changed("mix.compare", f"Heard the mix {state}")
-        self.render(kind="full", autoplay=True)
+        # Say what actually changes.  A studio vocal take carries the
+        # processing it was mastered with, and this switch does not reach
+        # inside it, so calling the result "dry" would be a promise the
+        # render does not keep.
+        state = ("without the instrument room" if was
+                 else "with the instrument room")
+        where = self.audition_scope()
+        self._changed("mix.compare", f"Heard {where} {state}")
+        self.render(kind="full", autoplay=True,
+                    play_range=self._audition[0] if self._audition else None)
 
     def set_track_flag(self, track_id: str, *, mute: Optional[bool] = None,
                        solo: Optional[bool] = None, locked: Optional[bool] = None,
@@ -3129,6 +3154,7 @@ class AppController:
                play_range: Optional[Tuple[float, float]] = None) -> None:
         """Render one of the audio products in the background."""
         melody = self.project.melody()
+        scope_name = self._span_name(melody, play_range)
         if melody is None:
             self.status("Nothing to render yet.")
             return
@@ -3152,7 +3178,8 @@ class AppController:
         # Read once, here, so every part of one render is mixed to the same
         # settings even if the creator moves a control while it runs.
         settings = replace(self.project.mix_settings)
-        self.status(f"Rendering the {kind.replace('_', ' ')}...")
+        self.status(f"Rendering the {kind.replace('_', ' ')}..."
+                    if not play_range else f"Rendering {scope_name}...")
 
         def work(ctx: JobContext) -> Tuple[str, np.ndarray, dict]:
             if kind == "tune":
@@ -3231,6 +3258,11 @@ class AppController:
             self.status(f"{rendered_kind.replace('_', ' ').title()} ready"
                         + (f" - {info['summary']}" if info.get("summary") else ""))
             if autoplay:
+                # Whatever they last heard is the scope any comparison
+                # should keep.  Recorded here because this is the one
+                # place the mix is actually played.
+                self._audition = ((play_range, scope_name) if play_range
+                                  else None)
                 self.play_render(rendered_kind, play_range)
 
         self.jobs.submit(f"render.{kind}", f"render:{kind}", work, on_done=done,

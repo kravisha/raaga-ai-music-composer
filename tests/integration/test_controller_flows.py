@@ -2376,3 +2376,56 @@ def test_rendering_the_same_song_twice_gives_the_same_length(ready, settle):
         settle()
         lengths.append(len(app._renders["full"].audio))
     assert len(set(lengths)) == 1, f"the song grew: {lengths}"
+
+
+def test_a_comparison_stays_on_the_section_being_auditioned(ready, settle):
+    """Krish auditions the Pallavi, then asks to hear it without the room.
+    Sending him back to the top of the song is not a comparison of what he
+    was listening to."""
+    app = ready
+    app.auto_arrange()
+    settle()
+    melody = app.project.melody()
+    section = next(sec for sec in melody.sections if not sec.kind.instrumental)
+
+    assert app.audition_scope() == "the whole song"
+    app.preview_section(section.id, autoplay=True)
+    settle()
+    assert app.audition_scope() == section.name, \
+        f"the app forgot what was being heard: {app.audition_scope()}"
+
+    played = []
+    original = app.play_render
+    app.play_render = lambda kind, span=None: played.append((kind, span))
+    try:
+        app.compare_dry()
+        # Read this now: the render sets its own status again when it
+        # finishes, and by then this one is gone.
+        asked = app.status_text
+        settle()
+    finally:
+        app.play_render = original
+
+    assert section.name in asked, asked
+    assert played, "the comparison played nothing"
+    kind, span = played[-1]
+    assert span is not None, "the comparison jumped back to the whole song"
+    assert abs(span[0] - section.start) < 0.01, span
+    assert abs(span[1] - section.end) < 0.01, span
+
+
+def test_hearing_the_whole_song_widens_the_comparison_again(ready, settle):
+    """The scope is whatever was last actually heard, not a mode to escape."""
+    app = ready
+    app.auto_arrange()
+    settle()
+    melody = app.project.melody()
+    section = next(sec for sec in melody.sections if not sec.kind.instrumental)
+    app.preview_section(section.id, autoplay=True)
+    settle()
+    assert app.audition_scope() == section.name
+
+    app.render(kind="full", autoplay=True)
+    settle()
+    assert app.audition_scope() == "the whole song", \
+        "playing the whole song left the comparison on one section"

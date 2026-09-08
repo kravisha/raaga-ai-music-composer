@@ -906,3 +906,126 @@ def test_the_chosen_cycle_and_its_reason_are_on_screen(window):
     note = window.tune.tala_note.text()
     assert note.startswith("you chose"), note
     assert "Rupaka" in note
+
+
+# --------------------------------------------------------------------------
+# The mix has controls (Arya's pre-Jam gap, 2026-09-07 20:27)
+# --------------------------------------------------------------------------
+def test_a_track_can_be_moved_across_the_field_from_the_table(window):
+    """Pan was supported by the controller and had no way in."""
+    app = window.app
+
+    # This window is shared by the whole module, so renders left running by
+    # earlier tests hold the worker pool.  Waiting for an empty job list
+    # returns at once - the job has not been submitted when the first check
+    # runs - and waiting only for the thing itself can time out behind that
+    # backlog.  So: let the floor clear, then wait for the thing.
+    def wait_for(done, seconds=60.0):
+        end = time.time() + seconds
+        while time.time() < end:
+            app.pump()
+            if done():
+                return True
+            time.sleep(0.01)
+        return False
+
+    assert wait_for(lambda: not app.jobs.active_jobs()),         f"the pool never cleared: {app.jobs.active_jobs()}"
+    if app.project.melody() is None:
+        app.select_raaga("Keeravani", "for the test")
+        app.generate_tune(seed=4)
+        assert wait_for(lambda: app.project.melody() is not None),             f"no tune: {app.status_text}"
+    app.auto_arrange()
+    assert wait_for(lambda: app.project.arrangement() is not None),         f"nothing was arranged: {app.status_text}"
+    panel = window.arrangement
+    arrangement = app.project.arrangement()
+    assert arrangement and arrangement.tracks, "nothing was arranged"
+    track = arrangement.tracks[0]
+    before = track.pan
+
+    panel._cell_clicked(0, 7)
+    assert track.pan != before, "clicking the pan cell did nothing"
+
+    window.refresh()
+    shown = panel.tracks.item(0, 7).text()
+    assert shown, "the pan column is empty"
+    assert shown == "centre" or shown[0] in "LR", shown
+
+
+def test_stepping_the_pan_comes_back_round(window):
+    """Five positions, and the fifth click returns to where it started."""
+    from raagacomposer.ui.panels.arrangement_panel import _next_pan
+    seen, pan = [], 0.0
+    for _ in range(len(__import__(
+            "raagacomposer.ui.panels.arrangement_panel",
+            fromlist=["PAN_STEPS"]).PAN_STEPS)):
+        pan = _next_pan(pan)
+        seen.append(pan)
+    assert seen[-1] == 0.0, f"stepping did not come back round: {seen}"
+    assert len(set(seen)) == len(seen), f"a position repeated: {seen}"
+
+
+def test_the_mix_sliders_reach_the_song(window):
+    app = window.app
+    panel = window.arrangement
+    panel.vocal_balance.setValue(40)
+    panel.room_amount.setValue(150)
+    panel.room_size.setValue(70)
+    panel._mix_changed()
+
+    settings = app.project.mix_settings
+    assert settings.vocal_gain == pytest.approx(0.40)
+    assert settings.reverb == pytest.approx(1.50)
+    assert settings.room == pytest.approx(0.70)
+
+
+def test_the_mix_row_says_where_the_song_stands(window):
+    app = window.app
+    app.set_mix(vocal_gain=0.8, reverb=1.2, room=0.5)
+    window.refresh()
+    note = window.arrangement.mix_note.text()
+    assert "0.80" in note and "1.20" in note, note
+
+
+def test_the_dry_button_says_which_way_it_will_go(window):
+    """The creator should know what pressing it does before pressing it."""
+    app = window.app
+    app.set_mix(effects=True)
+    window.refresh()
+    on = window.arrangement.dry_btn.text().lower()
+    assert "without the room" in on, on
+
+    app.set_mix(effects=False)
+    window.refresh()
+    off = window.arrangement.dry_btn.text().lower()
+    assert "with the room" in off and "without" not in off, off
+
+
+def test_the_mix_does_not_promise_a_dry_voice(window):
+    """The switch takes the instrument room away.  It does not reach inside
+    a studio vocal take, which carries the processing it was mastered with,
+    so nothing the creator reads should say the voice is dry."""
+    app = window.app
+    panel = window.arrangement
+    for effects in (True, False):
+        app.set_mix(effects=effects)
+        window.refresh()
+        for label in (panel.dry_btn.text(), panel.mix_note.text(),
+                      panel.dry_btn.toolTip(), app.project.mix_settings.describe()):
+            words = label.lower()
+            assert "dry" not in words or "not" in words,                 f"this claims a dry voice: {label!r}"
+
+
+def test_a_refresh_does_not_move_a_slider_under_the_hand(window):
+    """Refresh happens on every project change, and a creator dragging a
+    control should not have it snatched back to the stored value."""
+    app = window.app
+    panel = window.arrangement
+    app.set_mix(vocal_gain=1.0)
+    panel.vocal_balance.setSliderDown(True)
+    try:
+        panel.vocal_balance.setValue(25)
+        window.refresh()
+        assert panel.vocal_balance.value() == 25, \
+            "the slider jumped back while it was being dragged"
+    finally:
+        panel.vocal_balance.setSliderDown(False)
