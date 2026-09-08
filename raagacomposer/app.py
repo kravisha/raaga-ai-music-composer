@@ -2679,8 +2679,17 @@ class AppController:
             return None
         return singable
 
+    def _lyrics_holding(self, line_id: str):
+        """The version a line belongs to.  A draft's lines can be edited,
+        rewritten and locked while the approved version stays in use; the
+        line id says which version is meant, so the panel does not have to."""
+        for lyrics in reversed(self.project.lyrics):
+            if lyrics.line_by_id(line_id) is not None:
+                return lyrics
+        return None
+
     def edit_lyric_line(self, line_id: str, text: str) -> List[str]:
-        lyrics = self.project.lyrics_version()
+        lyrics = self._lyrics_holding(line_id)
         melody = self.project.melody()
         if lyrics is None or melody is None:
             return []
@@ -2694,7 +2703,7 @@ class AppController:
         return warnings
 
     def regenerate_lyric_line(self, line_id: str) -> List[str]:
-        lyrics = self.project.lyrics_version()
+        lyrics = self._lyrics_holding(line_id)
         melody = self.project.melody()
         if lyrics is None or melody is None:
             return []
@@ -2704,7 +2713,7 @@ class AppController:
         return warnings
 
     def set_lyric_line_lock(self, line_id: str, locked: bool) -> None:
-        lyrics = self.project.lyrics_version()
+        lyrics = self._lyrics_holding(line_id)
         if lyrics is None:
             return
         line = lyrics.line_by_id(line_id)
@@ -2713,17 +2722,35 @@ class AppController:
         line.locked = locked
         self._changed("lyrics.lock", f"{'Locked' if locked else 'Unlocked'} a line")
 
-    def accept_lyrics(self) -> None:
-        lyrics = self.project.lyrics_version()
+    def accept_lyrics(self, version: Optional[int] = None) -> bool:
+        """Make a version the song's words.  A draft with missing lines is
+        refused, and the status says which lines; the approved words stay."""
+        lyrics = self.project.lyrics_version(version)
         if lyrics is None:
-            return
+            return False
+        if lyrics.unfitted:
+            melody = self.project.melody()
+            names = []
+            for line in lyrics.lines:
+                if line.unfitted:
+                    section = melody.section_by_id(line.section_id) if melody else None
+                    names.append(section.name if section else "a line")
+            where = ", ".join(dict.fromkeys(names))
+            self.status(f"Lyrics v{lyrics.version} cannot be accepted: "
+                        f"{lyrics.unfitted} line(s) missing ({where}). Write them "
+                        f"first; v{self.project.approved_lyrics} stays approved."
+                        if self.project.approved_lyrics is not None else
+                        f"Lyrics v{lyrics.version} cannot be accepted: "
+                        f"{lyrics.unfitted} line(s) missing ({where}). Write them first.")
+            return False
         lyrics.state = ApprovalState.LOCKED
         self.project.approved_lyrics = lyrics.version
         self.project.current_stage = Stage.VOICE
         self._changed("lyrics.accept", f"Accepted lyrics v{lyrics.version}")
+        return True
 
-    def lyric_alignment(self) -> str:
-        lyrics = self.project.lyrics_version()
+    def lyric_alignment(self, version: Optional[int] = None) -> str:
+        lyrics = self.project.lyrics_version(version)
         melody = self.project.melody()
         if lyrics is None or melody is None:
             return "No lyrics yet."
