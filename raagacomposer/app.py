@@ -2953,6 +2953,43 @@ class AppController:
         self._changed("arrange.regenerate", "Regenerated a region")
         self.render(kind="full", autoplay=False)
 
+    def set_mix(self, *, vocal_gain: Optional[float] = None,
+                reverb: Optional[float] = None, room: Optional[float] = None,
+                effects: Optional[bool] = None) -> None:
+        """Change how the song is balanced.  Saved with it, and undoable.
+
+        These are decisions about the song, not about one playback, which
+        is why they live on the project and come back when it is reopened.
+        """
+        settings = self.project.mix_settings
+        if vocal_gain is not None:
+            settings.vocal_gain = max(0.0, min(2.0, float(vocal_gain)))
+        if reverb is not None:
+            settings.reverb = max(0.0, min(2.0, float(reverb)))
+        if room is not None:
+            settings.room = max(0.05, min(0.95, float(room)))
+        if effects is not None:
+            settings.effects = bool(effects)
+        self._changed("mix.settings", f"Mix: {settings.describe()}")
+        self.status(f"Mix: {settings.describe()}")
+
+    def compare_dry(self) -> None:
+        """Render the same material with the room taken away.
+
+        The comparison only means something if nothing else changes, so
+        this renders from the takes already in hand rather than singing or
+        playing anything again.
+        """
+        if self.project.melody() is None:
+            self.status("There is nothing to compare yet.")
+            return
+        was = self.project.mix_settings.effects
+        self.project.mix_settings.effects = not was
+        state = "dry" if was else "with its effects"
+        self.status(f"Rendering the same mix {state}...")
+        self._changed("mix.compare", f"Heard the mix {state}")
+        self.render(kind="full", autoplay=True)
+
     def set_track_flag(self, track_id: str, *, mute: Optional[bool] = None,
                        solo: Optional[bool] = None, locked: Optional[bool] = None,
                        gain: Optional[float] = None,
@@ -3096,7 +3133,7 @@ class AppController:
             self.status("Nothing to render yet.")
             return
         sr = self.sample_rate
-        total = max(melody.duration, self.project.duration) + 0.5
+        total = max(melody.duration, self.project.material_duration) + 0.5
         arrangement = self.project.arrangement()
         # The same selection Play Vocal uses.  Fixing the button and
         # leaving the mix reading "master first, preview otherwise" meant
@@ -3112,6 +3149,9 @@ class AppController:
                 vocal_audio = cached.audio
         raaga = self.require_raaga()
         provider = self.providers.music
+        # Read once, here, so every part of one render is mixed to the same
+        # settings even if the creator moves a control while it runs.
+        settings = replace(self.project.mix_settings)
         self.status(f"Rendering the {kind.replace('_', ' ')}...")
 
         def work(ctx: JobContext) -> Tuple[str, np.ndarray, dict]:
@@ -3151,6 +3191,8 @@ class AppController:
 
             result = mixer.mix(arrangement, vocal_audio, sr, total,
                                kind="full" if kind == "full" else kind,
+                               vocal_gain=settings.vocal_gain,
+                               settings=settings,
                                progress=prog, cancelled=lambda: ctx.cancelled)
             return kind, result.audio, {"summary": result.summary(),
                                         "notes": result.notes,

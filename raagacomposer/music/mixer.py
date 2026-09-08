@@ -13,7 +13,8 @@ from typing import Callable, Dict, List, Optional, Tuple
 import numpy as np
 
 from ..audio import dsp
-from ..core.models import ArrangementVersion, MelodyVersion, Track
+from ..core.models import (ArrangementVersion, MelodyVersion, MixSettings,
+                            Track)
 from .instruments import get as get_instrument
 from .synth import render_track
 
@@ -63,7 +64,8 @@ def audible_tracks(arrangement: ArrangementVersion) -> List[Track]:
 def render_instrumental(arrangement: Optional[ArrangementVersion], sr: int,
                         total_seconds: float,
                         progress: Optional[Callable[[float, str], None]] = None,
-                        cancelled: Optional[Callable[[], bool]] = None
+                        cancelled: Optional[Callable[[], bool]] = None,
+                        settings: Optional[MixSettings] = None
                         ) -> Tuple[np.ndarray, int]:
     """Sum every audible track into a stereo bed."""
     bus = dsp.silence(total_seconds, sr, stereo=True)
@@ -84,8 +86,17 @@ def render_instrumental(arrangement: Optional[ArrangementVersion], sr: int,
             mono = dsp.low_pass(mono, lp, sr)
         mono = dsp.compressor(mono, -20.0, ratio, 0.015, 0.2, sr, makeup_db=1.0)
         stereo = dsp.pan_mono(mono, track.pan)
-        if send > 0:
-            stereo = dsp.reverb(stereo, sr, size=0.45, wet=send, damping=0.5)
+        # The family decides the character of the send and the creator
+        # decides how much of it there is: scaling rather than replacing
+        # keeps a mridangam drier than a veena while still letting the
+        # whole room open or close.
+        wet = send * (settings.reverb if settings else 1.0)
+        room = settings.room if settings else 0.45
+        if settings is not None and not settings.effects:
+            wet = 0.0
+        if wet > 0:
+            stereo = dsp.reverb(stereo, sr, size=room, wet=min(wet, 1.0),
+                                damping=0.5)
         gain = ROLE_GAIN.get(track.role, 0.8)
         bus = dsp.mix_into(bus, dsp.pad_to(stereo, len(bus)), 0, gain)
     return bus.astype(np.float32), len(tracks)
@@ -95,7 +106,8 @@ def mix(arrangement: Optional[ArrangementVersion], vocal: Optional[np.ndarray],
         sr: int, total_seconds: float, kind: str = "full",
         vocal_gain: float = 1.0,
         progress: Optional[Callable[[float, str], None]] = None,
-        cancelled: Optional[Callable[[], bool]] = None) -> MixResult:
+        cancelled: Optional[Callable[[], bool]] = None,
+        settings: Optional[MixSettings] = None) -> MixResult:
     notes: List[str] = []
     total_seconds = max(1.0, float(total_seconds))
 
@@ -104,7 +116,7 @@ def mix(arrangement: Optional[ArrangementVersion], vocal: Optional[np.ndarray],
         track_count = 0
     else:
         bed, track_count = render_instrumental(arrangement, sr, total_seconds,
-                                               progress, cancelled)
+                                               progress, cancelled, settings)
         if track_count == 0:
             notes.append("No audible instrument tracks; the mix is vocal only.")
 
