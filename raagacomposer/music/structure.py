@@ -103,7 +103,9 @@ _ALIASES: Tuple[Tuple[SectionKind, str], ...] = tuple(sorted(
 _ASKING = ("include", "including", "add", "adds", "insert", "put in",
            "feature", "featuring", "contains", "containing", "structure",
            "sections", "start with", "starts with", "begin with",
-           "begins with", "end with", "ends with", "open with", "close with")
+           "begins with", "end with", "ends with", "open with", "close with",
+           "keep", "i want", "we want", "i'd like", "we'd like",
+           "i would like", "we would like", "i need", "we need")
 
 #: And what turns it into a refusal.  Read close to the name, because
 #: "no drums, and include a Charanam" refuses one thing and asks for
@@ -266,15 +268,22 @@ def _asked_for_at(clause: str, at: int) -> bool:
     "he begins with a prelude of doubt" asked for a Prelude.  The cue has
     to be the thing introducing this name - determiners and a preposition
     may sit between them, a sentence about someone's life may not.
+
+    The cue is looked for before each lead-in word is set aside, not only
+    after all of them are.  Half the cues end in one - "begin with",
+    "put in" - and stripping first ate the cue's own last word, so
+    "begin with a prelude" asked for nothing.
     """
     before = [w.strip(".,!?;:") for w in clause[:at].split()]
     before = [w for w in before if w]
-    while before and before[-1] in _LEAD_IN:
+    while before:
+        if any(before[-len(cue.split()):] == cue.split()
+               for cue in _ASKING if len(cue.split()) <= len(before)):
+            return True
+        if before[-1] not in _LEAD_IN:
+            return False
         before.pop()
-    if not before:
-        return False
-    return any(before[-len(cue.split()):] == cue.split()
-               for cue in _ASKING if len(cue.split()) <= len(before))
+    return False
 
 
 def _reads_as_a_list(clause: str, names: List[Tuple[SectionKind, int, int]]
