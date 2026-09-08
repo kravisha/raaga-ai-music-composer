@@ -76,14 +76,14 @@ TEMPLATES = {
 }
 
 
-#: What a creator calls each section when they ask for one.  "pallavi"
-#: is a part of "anupallavi", which is why these are matched on word
-#: boundaries and not as substrings - asking for an Anupallavi must not
-#: also read as asking for a Pallavi, and vice versa.
+#: What a creator calls each section.  "pallavi" sits inside
+#: "anupallavi", and the spoken spelling puts a space in the middle of it,
+#: so these are matched longest first and each match is consumed - "anu
+#: pallavi" must not also read as a request for a Pallavi.
 SECTION_WORDS: Dict[SectionKind, Tuple[str, ...]] = {
     SectionKind.PRELUDE: ("prelude", "intro", "introduction"),
     SectionKind.PALLAVI: ("pallavi",),
-    SectionKind.ANUPALLAVI: ("anupallavi",),
+    SectionKind.ANUPALLAVI: ("anupallavi", "anu pallavi", "anu-pallavi"),
     SectionKind.INTERLUDE: ("interlude",),
     SectionKind.CHARANAM: ("charanam", "charana"),
     SectionKind.BRIDGE: ("bridge",),
@@ -92,24 +92,101 @@ SECTION_WORDS: Dict[SectionKind, Tuple[str, ...]] = {
     SectionKind.CHORUS: ("chorus",),
 }
 
+#: Longest first, so "anu pallavi" is read before "pallavi" is.
+_ALIASES: Tuple[Tuple[SectionKind, str], ...] = tuple(sorted(
+    ((kind, word) for kind, words in SECTION_WORDS.items() for word in words),
+    key=lambda pair: -len(pair[1])))
 
-def sections_asked_for(*texts: str) -> Tuple[SectionKind, ...]:
-    """The sections named in the creator's own words.
+#: What turns a name into a request.  A brief is mostly narrative, and a
+#: narrative is full of these words used for something else, so a name on
+#: its own is not an instruction.
+_ASKING = ("include", "including", "add", "adds", "insert", "put in",
+           "feature", "featuring", "contains", "containing", "structure",
+           "sections", "start with", "starts with", "begin with",
+           "begins with", "end with", "ends with", "open with", "close with")
 
-    Only a name counts.  This does not try to read intent from a mood or a
-    situation - "a bridge between two worlds" is not a request for a
-    Bridge section, and guessing would be worse than not looking.
+#: And what turns it into a refusal.  Read close to the name, because
+#: "no drums, and include a Charanam" refuses one thing and asks for
+#: another in the same breath.
+_REFUSING = ("no", "not", "without", "dont", "don't", "skip", "omit",
+             "exclude", "avoid", "leave out", "drop")
+
+#: How many words back a refusal still reaches.
+_REFUSAL_REACH = 4
+
+
+@dataclass(frozen=True)
+class SectionRequest:
+    """What the creator asked for, and what they asked against."""
+
+    wanted: Tuple[SectionKind, ...] = ()
+    refused: Tuple[SectionKind, ...] = ()
+
+    def __bool__(self) -> bool:
+        return bool(self.wanted or self.refused)
+
+
+def _clauses(blob: str) -> List[str]:
+    return [c for c in re.split(r"[.;:\n!?]|,? but ", blob) if c.strip()]
+
+
+def _named(clause: str) -> List[Tuple[SectionKind, int]]:
+    """Every section named in one clause, with where it was named.
+
+    Matches are consumed as they are found so a longer name cannot be
+    read a second time as the shorter one inside it.
+    """
+    room = clause
+    found = []
+    for kind, word in _ALIASES:
+        for match in re.finditer(rf"\b{re.escape(word)}\b", room):
+            found.append((kind, match.start()))
+        room = re.sub(rf"\b{re.escape(word)}\b",
+                      lambda m: " " * len(m.group(0)), room)
+    return found
+
+
+def _refused_at(clause: str, at: int) -> bool:
+    before = clause[:at].split()
+    return any(w.strip(",") in _REFUSING for w in before[-_REFUSAL_REACH:])
+
+
+def read_section_requests(*texts: str) -> SectionRequest:
+    """The sections the creator actually asked for, or asked against.
+
+    A name on its own is not a request: "a bridge between two worlds" is a
+    description and "a happy ending to their long separation" is a story.
+    A clause counts when it either carries a word that asks for something,
+    or names two or more sections, which is how a creator writes a list of
+    the structure they want.
     """
     blob = " ".join(t for t in texts if t).lower()
     if not blob:
-        return ()
-    found = []
-    for kind, words in SECTION_WORDS.items():
-        for word in words:
-            if re.search(rf"\b{re.escape(word)}\b", blob):
-                found.append(kind)
-                break
-    return tuple(found)
+        return SectionRequest()
+    wanted: List[SectionKind] = []
+    refused: List[SectionKind] = []
+    for clause in _clauses(blob):
+        names = _named(clause)
+        if not names:
+            continue
+        asking = any(cue in clause for cue in _ASKING)
+        listed = len({kind for kind, _ in names}) > 1
+        if not (asking or listed):
+            continue
+        for kind, at in names:
+            target = refused if _refused_at(clause, at) else wanted
+            if kind not in target:
+                target.append(kind)
+    # A refusal wins: saying both is a contradiction, and the safer
+    # reading of a contradiction is the one that leaves the song shorter
+    # rather than the one that puts in something unwanted.
+    wanted = [k for k in wanted if k not in refused]
+    return SectionRequest(tuple(wanted), tuple(refused))
+
+
+def sections_asked_for(*texts: str) -> Tuple[SectionKind, ...]:
+    """Just the wanted half, for callers that do not care about refusals."""
+    return read_section_requests(*texts).wanted
 
 
 def choose_template(song_type: str) -> List[Slot]:
@@ -124,6 +201,7 @@ def plan_sections(duration_target: float, tempo_bpm: int, beats_per_cycle: int,
                   song_type: str = "film song",
                   existing: Optional[List[Section]] = None,
                   requested: Sequence[SectionKind] = (),
+                  refused: Sequence[SectionKind] = (),
                   notes: Optional[List[str]] = None) -> List[Section]:
     """Lay out named sections that add up to roughly ``duration_target``.
 
@@ -133,12 +211,24 @@ def plan_sections(duration_target: float, tempo_bpm: int, beats_per_cycle: int,
     60-second brief that said "include an Anupallavi" came back without
     one and said nothing about it.  If one genuinely cannot fit, that goes
     into ``notes`` rather than happening quietly.
+
+    ``refused`` is what they asked against, which a list of wanted names
+    cannot express: "do not include an Anupallavi" is not silence about
+    the Anupallavi.
     """
     slots = choose_template(song_type)
     cyc = cycle_seconds(tempo_bpm, beats_per_cycle)
     target = max(cyc * 4, float(duration_target or 150.0))
     asked = set(requested or ())
+    unwanted = set(refused or ()) - asked
     said = notes if notes is not None else []
+
+    # Asked against by name.  The template offering one is not a reason to
+    # include it.
+    if unwanted:
+        kept = [s for s in slots if s.kind not in unwanted]
+        if kept:
+            slots = kept
 
     # Asked for by name, so no longer a candidate for pruning - but only
     # the first of each kind.  Asking for "an Interlude" is not asking for
@@ -148,6 +238,19 @@ def plan_sections(duration_target: float, tempo_bpm: int, beats_per_cycle: int,
         first = next((s for s in slots if s.kind is kind), None)
         if first is not None:
             first.optional = False
+
+    # A creator who names the structure they want has not asked for the
+    # template's reprises of it.  Those become the first things dropped
+    # when the song is short - otherwise an unrequested Pallavi 2 and
+    # Pallavi 3 stay mandatory and turn a request that fits comfortably
+    # into an apology that it does not.
+    if asked:
+        seen = set()
+        for slot in slots:
+            if slot.kind in seen and slot.kind in asked:
+                slot.optional = True
+                slot.priority = 5
+            seen.add(slot.kind)
 
     # Asked for and not in this template at all: add it before the ending,
     # which is where another one of its kind would have sat.
@@ -177,9 +280,13 @@ def plan_sections(duration_target: float, tempo_bpm: int, beats_per_cycle: int,
     # with the brief.
     floor = len(slots) * cyc
     if asked and floor > target * 1.15:
+        # Their number, not the clamped one.  ``target`` has already been
+        # raised to four cycles, so quoting it told a creator who asked
+        # for 30 seconds that they had asked for 31.
+        wanted_seconds = float(duration_target or 150.0)
         said.append(
             f"{len(slots)} sections at one cycle each need "
-            f"{floor:.0f}s, and you asked for about {target:.0f}s. "
+            f"{floor:.0f}s, and you asked for about {wanted_seconds:.0f}s. "
             f"I have kept every section you named and they are each as "
             f"short as a cycle allows.")
 
@@ -204,6 +311,26 @@ def plan_sections(duration_target: float, tempo_bpm: int, beats_per_cycle: int,
             s.cycles -= 1
 
     locked = {s.name: s for s in (existing or []) if s.locked}
+
+    # Pruning a reprise leaves a hole in the numbering, and "Pallavi" then
+    # "Pallavi 3" with no Pallavi 2 reads as a missing section rather than
+    # a shorter song.  The numbers each kind already used are reassigned
+    # in order to the slots that survived.  A locked section is addressed
+    # by name, so its name is never one of the ones moved.
+    by_kind: Dict[SectionKind, List[Slot]] = {}
+    for slot in slots:
+        by_kind.setdefault(slot.kind, []).append(slot)
+    for kind, group in by_kind.items():
+        if len(group) < 2:
+            continue
+        names = [s.name for s in choose_template(song_type)
+                 if s.kind is kind][:len(group)]
+        if len(names) < len(group) or any(n in locked for n in names):
+            continue
+        if any(s.name in locked for s in group):
+            continue
+        for slot, name in zip(group, names):
+            slot.name = name
     sections: List[Section] = []
     t = 0.0
     for slot in slots:

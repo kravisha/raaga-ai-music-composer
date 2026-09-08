@@ -106,6 +106,12 @@ class SungSegment:
     gamaka: str = ""
     legato: bool = False
     coda: str = ""
+    #: The earliest this segment's sound may begin: the start of the
+    #: section it belongs to.  An onset consonant leads its note by up to
+    #: 40 ms, and the first syllable of a chosen section had that lead
+    #: placed in the section before it - outside the stretch the creator
+    #: hears, so the word arrived without its first sound.
+    floor: float = 0.0
 
 
 def split_syllable(syllable: str) -> Tuple[str, str, str]:
@@ -169,7 +175,8 @@ def plan_segments(melody: MelodyVersion,
         segments.append(SungSegment(
             start=note.start, end=note.end, midi=note.midi, syllable=syl,
             vowel=sound, consonant=cons, coda=coda, velocity=note.velocity,
-            gamaka=note.gamaka, legato=(note.start - prev_end) < 0.06))
+            gamaka=note.gamaka, legato=(note.start - prev_end) < 0.06,
+            floor=section.start if section is not None else 0.0))
         prev_end = note.end
     return segments
 
@@ -397,7 +404,8 @@ def render(segments: Sequence[SungSegment], profile: VoiceProfile,
         if not seg.consonant:
             continue
         out = _add_consonant(out, seg.consonant, a, sr, rng,
-                             level=0.35 * style["intensity"] + 0.1)
+                             level=0.35 * style["intensity"] + 0.1,
+                             limit=int(seg.floor * sr))
 
     # Codas.  A closing consonant is not something added on top of a
     # vowel - it is the vowel stopping.  Measured on one note, adding it
@@ -497,7 +505,12 @@ def _add_consonant(buf: np.ndarray, cons: str, at: int, sr: int,
         start = max(limit, at - length)
         length = min(length, at - start)
     else:
-        start = max(0, at - int((dur + gap) * sr))
+        # An onset leads its note, but not out of the section it belongs
+        # to.  Without this floor the first syllable of a chosen section
+        # began 40 ms before the stretch being played, so "kai" was heard
+        # as "ai" and the missing "k" was sitting in the Prelude.
+        start = max(max(0, limit), at - int((dur + gap) * sr))
+        length = min(length, max(0, at + length - start))
     length = min(length, len(buf) - start)
     if length < 4 or start < 0:
         return buf

@@ -598,3 +598,90 @@ def test_a_transition_arrives_at_the_same_vowel_it_would_have_held(
     assert residual < 0.005, (
         f"brightness {brightness}, shift {shift}: the sustained vowel "
         f"differs by {residual * 100:.2f}% once the transition has settled")
+
+
+# --------------------------------------------------------------------------
+# An onset belongs to its own section (Arya, 2026-09-08)
+# --------------------------------------------------------------------------
+def _one_section_song(start: float = 5.5555556, syllables=("kai", "va")):
+    """A Prelude, then a Pallavi whose first syllable begins with a stop."""
+    from raagacomposer.core.models import (LyricLine, LyricsVersion,
+                                           MelodyVersion, Note, Section,
+                                           SectionKind)
+    prelude = Section(id="pre", name="Prelude", kind=SectionKind.PRELUDE,
+                      start=0.0, end=start)
+    pallavi = Section(id="pal", name="Pallavi", kind=SectionKind.PALLAVI,
+                      start=start, end=start + 1.2 * len(syllables))
+    notes, at = [], start
+    for _ in syllables:
+        notes.append(Note(midi=60, start=at, duration=1.0, velocity=90,
+                          section_id="pal"))
+        at += 1.2
+    melody = MelodyVersion(version=1, notes=notes,
+                           sections=[prelude, pallavi])
+    line = LyricLine(id="l1", section_id="pal", text=" ".join(syllables),
+                     syllables=list(syllables), start=pallavi.start,
+                     end=pallavi.end,
+                     note_indices=list(range(len(syllables))))
+    return melody, LyricsVersion(version=1, lines=[line]), pallavi
+
+
+def test_a_sung_section_does_not_begin_before_itself():
+    """The onset of "kai" leads its note by about 40ms, and that lead was
+    landing in the Prelude - outside the stretch a creator hears when they
+    audition the Pallavi, so the word arrived without its first sound."""
+    melody, lyrics, pallavi = _one_section_song()
+    profile = VoiceProfile(name="test", formant_shift=1.0)
+    audio = render_melody(melody, lyrics, profile, VocalDirection(),
+                          sr=22050, section_ids=["pal"])
+    assert audio.ndim == 1
+    sounding = np.nonzero(np.abs(audio) > 1e-4)[0]
+    assert len(sounding), "nothing was sung"
+    first = sounding[0] / 22050.0
+    assert first >= pallavi.start - 0.001, (
+        f"the voice starts {(pallavi.start - first) * 1000:.1f}ms before "
+        f"the section it belongs to")
+
+
+def test_the_onset_is_still_there_when_the_section_makes_room():
+    """Bounding it must not delete it: the consonant is what makes the
+    word a word, so it has to survive being kept inside the section.
+
+    Measured on the placement itself.  Two renders of "kai" against "ai"
+    also differ in the F2 transition the onset causes, so they are never
+    equal whether the burst survives or not, and a check on the whole
+    waveform could not have failed.
+    """
+    from raagacomposer.voice.renderer import _add_consonant
+
+    sr = 22050
+    at = int(0.5 * sr)          # the note, and the section, start together
+    empty = np.zeros(sr, dtype=np.float32)
+
+    placed = _add_consonant(empty.copy(), "k", at, sr,
+                            np.random.default_rng(3), level=0.4, limit=at)
+    assert float(np.abs(placed[:at]).max()) == 0.0, \
+        "the consonant sounded before the section it belongs to"
+    after = float(np.abs(placed[at:at + int(0.05 * sr)]).max())
+    assert after > 0.0, "the consonant was bounded out of existence"
+
+    # With room in front of it, it still leads the note as a consonant
+    # should - only the boundary binds it.
+    free = _add_consonant(empty.copy(), "k", at, sr,
+                          np.random.default_rng(3), level=0.4, limit=0)
+    assert float(np.abs(free[:at]).max()) > 0.0, \
+        "an onset with room in front of it stopped leading its note"
+
+
+def test_an_onset_in_the_middle_of_a_song_still_leads_its_note():
+    """Only the section boundary binds it.  A syllable inside the section
+    keeps the lead-in that makes it sound like a consonant."""
+    melody, lyrics, pallavi = _one_section_song()
+    profile = VoiceProfile(name="test", formant_shift=1.0)
+    sr = 22050
+    audio = render_melody(melody, lyrics, profile, VocalDirection(),
+                          sr=sr, section_ids=["pal"])
+    second = pallavi.start + 1.2
+    before = audio[int((second - 0.035) * sr):int(second * sr)]
+    assert float(np.abs(before).max()) > 0.0, \
+        "the second syllable lost its lead-in as well"

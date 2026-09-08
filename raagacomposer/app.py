@@ -49,7 +49,7 @@ from .music import instruments as catalog
 from .music import melody as melody_engine
 from .music import mixer
 from .music.melody import MelodyOptions
-from .music.structure import plan_sections, sections_asked_for
+from .music.structure import plan_sections, read_section_requests
 from .music.synth import render_notes
 from .music.validator import validate
 from .providers import registry as provider_registry
@@ -1499,12 +1499,14 @@ class AppController:
             # planner used to see only a template and a duration, so a
             # 60-second brief asking for an Anupallavi got a tune with no
             # Anupallavi and no explanation.
-            asked = sections_asked_for(brief.notes, brief.feel,
-                                       brief.situation)
+            wants = read_section_requests(brief.notes, brief.feel,
+                                          brief.situation)
             plan_notes: List[str] = []
             sections = plan_sections(opts.duration_target, opts.tempo_bpm,
                                      opts.beats_per_cycle, opts.song_type,
-                                     requested=asked, notes=plan_notes)
+                                     requested=wants.wanted,
+                                     refused=wants.refused,
+                                     notes=plan_notes)
 
             # What the raaga's lessons already say - critiques, failed
             # rewrites of an earlier tune, creator feedback - applies from
@@ -1566,7 +1568,8 @@ class AppController:
 
             ctx.progress(0.9, "Checking raaga fidelity")
             check = validate(best, raaga, opts.voice_low, opts.voice_high)
-            best.validation = rewrite_lines + plan_notes + check.issues
+            best.validation = rewrite_lines + check.issues
+            best.plan_notes = list(plan_notes)
             best.guidance_note = guidance_note
             return best
 
@@ -1930,9 +1933,14 @@ class AppController:
         except Exception as exc:  # noqa: BLE001 - critique must never block a tune
             log.warning("the agent could not mark the tune: %s", exc)
 
+        shape = ""
+        if getattr(melody, "plan_notes", None):
+            # Said here as well as in the report, because the status is
+            # what a creator reads when the tune arrives.
+            shape = f" {melody.plan_notes[0]}"
         self.status(f"{what} tune v{melody.version} "
                     f"({melody.duration:.0f}s, {len(melody.notes)} notes)"
-                    f"{critique}")
+                    f"{critique}.{shape}")
         self.render(kind="tune", autoplay=False)
 
     def accept_tune(self, lock: bool = True) -> None:
@@ -2482,7 +2490,15 @@ class AppController:
         raaga = self.current_raaga()
         if melody is None or raaga is None:
             return "No tune yet."
-        return validate(melody, raaga).summary()
+        # The planner's reasons go first.  They were being stored and never
+        # shown: this recomputed the raaga check and returned only that, so
+        # a song that could not be the length it was asked to be said
+        # "no issues found" and explained nothing.
+        report = validate(melody, raaga).summary()
+        notes = list(getattr(melody, "plan_notes", []) or [])
+        if notes:
+            return "\n".join(notes) + "\n\n" + report
+        return report
 
     # ==================================================================
     # lyrics
