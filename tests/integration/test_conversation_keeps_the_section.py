@@ -1,0 +1,164 @@
+"""Integration: a request that names a section is about that section.
+
+"Write the words for the Pallavi", "sing the Pallavi", "give me a variation
+of the Charanam": the section parser already found the section in each of
+these, and the controller then acted on the whole song.  Real controller,
+a stand-in writer where words are involved, no model, no device.
+"""
+from __future__ import annotations
+
+import time
+
+import pytest
+
+from raagacomposer.core.models import SectionKind
+
+pytestmark = pytest.mark.integration
+
+TAMIL = "திரும்பி வந்தாய், அன்பே"
+
+
+class _Writer:
+    available = True
+    name = "test-writer"
+
+    def __init__(self, line):
+        self.line = line
+        self.asked = []
+
+    def write_lyrics(self, slots, brief):
+        self.asked.append(len(slots))
+        return [self.line] * len(slots)
+
+
+def _a_tune(app, title):
+    app.new_project(title, write=False)
+    app.update_brief(duration_target=60, language="Tamil", tempo_preference=108,
+                     situation="A hopeful reunion after a long separation",
+                     notes="Include Prelude, Pallavi, Anupallavi, Interlude, "
+                           "Charanam and Ending.")
+    app.select_raaga("Hamsadhwani")
+    app.generate_tune(seed=37)
+    _settle(app)
+    assert app.project.melody() is not None, app.status_text
+
+
+def _settle(app, timeout=60.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        app.pump()
+        if not app.jobs.active_jobs():
+            app.pump()
+            if not app.jobs.active_jobs():
+                return
+        time.sleep(0.02)
+    raise TimeoutError([j.description for j in app.jobs.active_jobs()])
+
+
+def _section(app, kind):
+    return next(s for s in app.project.melody().sections if s.kind is kind)
+
+
+def _notes_of(melody, section_id):
+    return [(n.midi, round(n.start, 3), round(n.duration, 3))
+            for n in melody.notes if n.section_id == section_id]
+
+
+def _lines_by_section(lyrics):
+    out = {}
+    for line in lyrics.lines:
+        out.setdefault(line.section_id, []).append(line.text)
+    return out
+
+
+# ----------------------------------------------------------------------
+def test_words_asked_for_one_section_are_written_for_that_section_only(app):
+    _a_tune(app, "Words for the Pallavi")
+    app.providers.llm = _Writer(TAMIL)
+    app.handle_utterance("write the words")
+    _settle(app)
+    whole = app.project.lyrics[-1]
+    before = _lines_by_section(whole)
+    pallavi = _section(app, SectionKind.PALLAVI)
+    assert len(before[pallavi.id]) >= 1 and len(before) >= 2
+
+    app.providers.llm = writer = _Writer("மலர்ந்தேன் நானே")
+    cmd = app.handle_utterance("write the words for the Pallavi")
+    assert cmd.intent == "lyrics.generate" and cmd.section_id == pallavi.id, cmd
+    _settle(app)
+    after = _lines_by_section(app.project.lyrics[-1])
+    assert app.project.lyrics[-1].version == whole.version + 1
+    assert all(t == "மலர்ந்தேன் நானே" for t in after[pallavi.id]), after[pallavi.id]
+    for section_id, lines in before.items():
+        if section_id != pallavi.id:
+            assert after[section_id] == lines, "another section's words were rewritten"
+    assert writer.asked == [len(before[pallavi.id])], \
+        "the writer was asked for the whole song, not the Pallavi"
+
+
+def test_words_asked_for_a_locked_section_are_refused_by_name(app):
+    _a_tune(app, "Locked Pallavi words")
+    pallavi = _section(app, SectionKind.PALLAVI)
+    app.set_section_lock(pallavi.id, True)
+    app.providers.llm = writer = _Writer(TAMIL)
+    versions = len(app.project.lyrics)
+    app.handle_utterance("write the words for the Pallavi")
+    _settle(app)
+    assert len(app.project.lyrics) == versions
+    assert writer.asked == []
+    assert "Pallavi is locked" in app.status_text, app.status_text
+
+
+def test_sing_the_section_sings_that_section_not_the_song(app, monkeypatch):
+    _a_tune(app, "Sing the Pallavi")
+    app.providers.llm = _Writer(TAMIL)
+    app.handle_utterance("write the words")
+    _settle(app)
+    pallavi = _section(app, SectionKind.PALLAVI)
+    asked = []
+    monkeypatch.setattr(app, "preview_section",
+                        lambda section_id, autoplay=True: asked.append(("section", section_id)))
+    monkeypatch.setattr(app, "render_vocal",
+                        lambda *a, **k: asked.append(("whole", k.get("section_ids"))))
+    cmd = app.handle_utterance("sing the Pallavi")
+    assert cmd.intent == "voice.render" and cmd.section_id == pallavi.id, cmd
+    assert asked == [("section", pallavi.id)], asked
+    asked.clear()
+    app.handle_utterance("sing it")
+    assert asked == [("whole", None)], asked
+
+
+def test_a_variation_of_one_section_leaves_the_others_where_they_were(app):
+    _a_tune(app, "Vary the Charanam")
+    v1 = app.project.melody()
+    charanam = _section(app, SectionKind.CHARANAM)
+    cmd = app.handle_utterance("give me a variation of the Charanam")
+    assert cmd.intent == "tune.variation" and cmd.section_id == charanam.id, cmd
+    _settle(app)
+    v2 = app.project.melody()
+    assert v2.version == v1.version + 1, app.status_text
+    changed = [s.name for s in v2.sections
+               if _notes_of(v2, s.id) != _notes_of(v1, next(
+                   o for o in v1.sections if o.name == s.name).id)]
+    assert changed == ["Charanam 1"], changed
+
+
+def test_a_variation_of_a_locked_section_is_refused_and_nothing_moves(app):
+    _a_tune(app, "Vary a locked Charanam")
+    v1 = app.project.melody()
+    charanam = _section(app, SectionKind.CHARANAM)
+    app.set_section_lock(charanam.id, True)
+    app.handle_utterance("give me a variation of the Charanam")
+    _settle(app)
+    assert app.project.melody() is v1
+    assert "locked" in app.status_text.lower(), app.status_text
+
+
+def test_a_variation_with_no_section_named_is_of_the_whole_tune(app):
+    _a_tune(app, "Vary it all")
+    v1 = app.project.melody()
+    cmd = app.handle_utterance("give me a variation")
+    assert cmd.intent == "tune.variation" and not cmd.section_id
+    _settle(app)
+    v2 = app.project.melody()
+    assert v2.version == v1.version + 1 and "variation" in (v2.derived_from or "").lower()

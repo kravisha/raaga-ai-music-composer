@@ -4150,7 +4150,13 @@ class AppController:
             if self._compose_in_named_raaga(cmd):
                 self.generate_tune()
         elif intent == "tune.variation":
-            self.make_variation()
+            # "A variation of the Charanam" is that section varied and
+            # every other note kept - the section rewrite, not a whole-tune
+            # variation that happens to spare the locked ones.
+            if cmd.section_id:
+                self.regenerate_tune_section(cmd.section_id)
+            else:
+                self.make_variation()
         elif intent == "tune.accept":
             self.accept_tune()
         elif intent == "tune.regenerate_section":
@@ -4167,7 +4173,9 @@ class AppController:
                 self.set_tempo(int(melody.tempo_bpm * cmd.value))
 
         elif intent == "lyrics.generate":
-            self.generate_lyrics()
+            # "Words for the Pallavi" writes for the Pallavi and leaves every
+            # other section's words as they were, the way the panel does.
+            self.generate_lyrics(section_ids=[cmd.section_id] if cmd.section_id else None)
         elif intent == "lyrics.accept":
             self.accept_lyrics()
 
@@ -4182,7 +4190,12 @@ class AppController:
             self.set_raaga_lock(True)
 
         elif intent == "voice.render":
-            self.render_vocal("preview")
+            # "Sing the Pallavi" is the Pallavi sung over its accompaniment,
+            # the same door the panel's section preview uses.
+            if cmd.section_id:
+                self.preview_section(cmd.section_id)
+            else:
+                self.render_vocal("preview")
         elif intent == "voice.vocal_only":
             self.render_vocal("master")
         elif intent == "voice.direction":
