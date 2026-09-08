@@ -241,23 +241,44 @@ def own_settings_file(tmp_path_factory: pytest.TempPathFactory,
     begins still read the shared template, which is never written after
     the session starts.
     """
-    from raagacomposer.core import settings as settings_module
-
     # Its own directory, not the test's tmp_path: tests that assert their
     # tmp_path stayed empty must not find a settings file in it.
     path = tmp_path_factory.mktemp("settings") / "settings.json"
     path.write_text(json.dumps(_SETTINGS_TEMPLATE, indent=2), encoding="utf-8")
-    original = Settings.path.__func__
+    monkeypatch.setattr(Settings, "path", classmethod(_settings_path_at(path)))
+    return path
 
-    def path_for_this_test(cls) -> Path:
+
+@pytest.fixture(autouse=True, scope="module")
+def own_settings_file_for_module(tmp_path_factory):
+    """And each module its own, for what its module-scoped fixtures save.
+
+    Those run outside the per-test file above - a window fixture switches
+    to the LEARN workspace at setup and the controller saves at teardown -
+    and in the de0141e suite that reached the shared home and the
+    isolation test after it (2026-09-08).  A module copy catches both;
+    the tests in between still start from the template.
+    """
+    path = tmp_path_factory.mktemp("settings-module") / "settings.json"
+    path.write_text(json.dumps(_SETTINGS_TEMPLATE, indent=2), encoding="utf-8")
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(Settings, "path", classmethod(_settings_path_at(path)))
+        yield path
+
+
+_ORIGINAL_SETTINGS_PATH = Settings.path.__func__
+
+
+def _settings_path_at(path: Path):
+    from raagacomposer.core import settings as settings_module
+
+    def path_for_this_scope(cls) -> Path:
         # A test that relocates the home on purpose - to check what a fresh
         # installation gets - keeps the settings file that home implies.
         if settings_module.config_dir() != _TEST_HOME:
-            return original(cls)
+            return _ORIGINAL_SETTINGS_PATH(cls)
         return path
-
-    monkeypatch.setattr(Settings, "path", classmethod(path_for_this_test))
-    return path
+    return path_for_this_scope
 
 
 @pytest.fixture
