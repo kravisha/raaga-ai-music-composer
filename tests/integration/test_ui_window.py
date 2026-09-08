@@ -17,6 +17,7 @@ import pytest
 pytest.importorskip("PySide6")
 
 from PySide6.QtCore import Qt                         # noqa: E402
+from PySide6.QtTest import QTest                      # noqa: E402
 from PySide6.QtWidgets import QApplication            # noqa: E402
 
 from raagacomposer.app import AppController           # noqa: E402
@@ -1225,3 +1226,143 @@ def test_the_comparison_button_follows_a_section_played_from_the_table(window):
     assert start is not None, "the button jumped back to the whole song"
     assert abs(start - section.start) < 0.01, played[-1]
     assert abs(end - section.end) < 0.01, played[-1]
+
+
+# --------------------------------------------------------------------------
+# The selected-section milestone, walked the way a creator walks it
+# --------------------------------------------------------------------------
+def test_the_whole_selected_section_path_from_the_panels(window):
+    """Prelude instrument, Pallavi-only words, that section sung over its
+    own accompaniment, and a mix that can be adjusted and compared without
+    leaving the section.
+
+    Every leg of this existed and was tested at the controller.  Two of
+    them had no caller anywhere in the application, which is exactly the
+    kind of gap a controller test cannot see - so this one goes through
+    the panels.
+    """
+    app = window.app
+    tune, arrange = window.tune, window.arrangement
+
+    def wait_for(done, seconds=120.0, what=""):
+        end = time.time() + seconds
+        while time.time() < end:
+            app.pump()
+            if done():
+                return True
+            time.sleep(0.01)
+        raise AssertionError(f"{what or 'never happened'}: {app.status_text}")
+
+    wait_for(lambda: not app.jobs.active_jobs(), what="the floor never cleared")
+
+    # -- a tune with a shape ------------------------------------------
+    if app.project.melody() is None:
+        app.select_raaga("Keeravani", "for the walkthrough")
+        app.generate_tune(seed=4)
+        wait_for(lambda: app.project.melody() is not None, what="no tune")
+    if app.project.arrangement() is None:
+        app.auto_arrange()
+        wait_for(lambda: app.project.arrangement() is not None,
+                 what="nothing was arranged")
+    wait_for(lambda: not app.jobs.active_jobs(), what="the arrangement never settled")
+
+    melody = app.project.melody()
+    prelude = next((s for s in melody.sections if s.kind.instrumental), None)
+    pallavi = next(s for s in melody.sections if not s.kind.instrumental)
+    assert prelude is not None, "this tune has no instrumental section"
+
+    # -- the Prelude gets its own instrument, chosen by name ----------
+    window.refresh()
+    names = [arrange.section_box.itemText(i)
+             for i in range(arrange.section_box.count())]
+    arrange.section_box.setCurrentIndex(names.index(prelude.name))
+    assert arrange._range() == pytest.approx((prelude.start, prelude.end),
+                                             abs=0.01)
+
+    wanted = "flute"
+    idx = arrange.instrument_box.findData(wanted)
+    assert idx >= 0, "the catalogue has no flute"
+    arrange.instrument_box.setCurrentIndex(idx)
+    arrange._add()
+    wait_for(lambda: any(
+        t.instrument == wanted and any(
+            abs(r.start - prelude.start) < 0.6 for r in t.regions)
+        for t in app.project.arrangement().tracks),
+        what="the Prelude never got its own instrument")
+
+    # It went to the Prelude and nowhere else.
+    flute = next(t for t in app.project.arrangement().tracks
+                 if t.instrument == wanted)
+    for region in flute.regions:
+        assert region.start >= prelude.start - 0.6, region
+        assert region.end <= prelude.end + 0.6, region
+
+    # -- words for the Pallavi only ------------------------------------
+    row = melody.sections.index(pallavi)
+    tune.sections.selectRow(row)
+    assert tune._selected_section().id == pallavi.id
+    before = app.project.lyrics_version()
+    tune._write_section_words()
+    wait_for(lambda: app.project.lyrics_version() is not before
+             and app.project.lyrics_version() is not None,
+             what="no words were written")
+    wait_for(lambda: not app.jobs.active_jobs(), what="the words never settled")
+
+    lyrics = app.project.lyrics_version()
+    assert lyrics.lines, "no lines at all"
+    # The other sections keep a line each, empty: the tune has a shape
+    # there and no words yet.  What the scope means is that only the
+    # chosen section came back with anything written in it.
+    written = [line for line in lyrics.lines if line.text.strip()]
+    assert written, "the Pallavi got no words"
+    for line in written:
+        assert (line.start >= pallavi.start - 0.01
+                and line.end <= pallavi.end + 0.01), \
+            (f"words landed outside the Pallavi: {line.text!r} "
+             f"at {line.start:.1f}-{line.end:.1f}s")
+    outside = [line for line in lyrics.lines
+               if line.end > pallavi.end + 0.01
+               or line.start < pallavi.start - 0.01]
+    assert all(not line.text.strip() for line in outside), \
+        "another section was written for without being asked"
+
+    # -- that section sung, over its own accompaniment -----------------
+    played = []
+    app.playback.play = lambda start=None, end=None, loop=False: (
+        played.append((start, end)) or True)
+    try:
+        takes_before = len(app.project.vocal_renders)
+        tune._sing_section()
+        wait_for(lambda: len(app.project.vocal_renders) > takes_before,
+                 what="nothing was sung")
+        wait_for(lambda: bool(played), what="nothing was played")
+
+        start, end = played[-1]
+        assert start is not None, "singing the section played the whole song"
+        assert abs(start - pallavi.start) < 0.01, played[-1]
+        assert abs(end - pallavi.end) < 0.01, played[-1]
+        assert app.audition_scope() == pallavi.name
+
+        # -- the mix, adjusted and compared, without leaving it --------
+        window.refresh()
+        assert pallavi.name in arrange.mix_note.text(), arrange.mix_note.text()
+
+        arrange.room_amount.setFocus()
+        QTest.keyClick(arrange.room_amount, Qt.Key_Right)
+        QApplication.processEvents()
+        assert app.project.mix_settings.reverb == pytest.approx(
+            arrange.room_amount.value() / 100.0), \
+            "the room control did not reach the song"
+
+        heard = len(played)
+        arrange.dry_btn.click()
+        wait_for(lambda: len(played) > heard, what="the comparison played nothing")
+        start, end = played[-1]
+        assert start is not None and abs(start - pallavi.start) < 0.01, \
+            f"the comparison left the Pallavi: {played[-1]}"
+        assert app.project.mix_settings.effects is False
+    finally:
+        del app.playback.play
+
+    # -- and the tune it was all fitted to is untouched ----------------
+    assert app.project.melody() is melody, "the tune was rebuilt underneath"
