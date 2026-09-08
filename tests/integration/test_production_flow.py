@@ -28,7 +28,7 @@ class FakeCodex:
         self.policy = policy or (lambda stage, packet, calls: None)
         self.calls = []
 
-    def __call__(self, prompt, schema):
+    def __call__(self, prompt, schema, *, cancelled=None):
         packet = json.loads(prompt.split("Evidence packet:\n", 1)[1])
         self.calls.append(packet["stage"])
         response = dict(request_id=packet["request_id"], stage=packet["stage"],
@@ -150,7 +150,7 @@ def test_without_codex_the_song_is_still_made_and_says_so(app, tmp_path, monkeyp
     a_whole_song_brief(app, "Unreviewed")
     called = []
     app.critic = CodexCritic(CodexCliTransport(
-        tmp_path / "critic", run=lambda *a, **k: called.append(a)))
+        tmp_path / "critic", popen=lambda *a, **k: called.append(a)))
     assert not app.critic.available
     producer = app.produce_song(seed=104)
     drive(app, producer)
@@ -271,10 +271,10 @@ class GateCodex(FakeCodex):
         super().__init__(policy)
         self.entered, self.release = threading.Event(), threading.Event()
 
-    def __call__(self, prompt, schema):
+    def __call__(self, prompt, schema, *, cancelled=None):
         self.entered.set()
         assert self.release.wait(8), "the test must release the reviewer"
-        return super().__call__(prompt, schema)
+        return super().__call__(prompt, schema, cancelled=cancelled)
 
 
 def pump_until(app, predicate, timeout=20.0):
@@ -371,3 +371,58 @@ def test_stop_policy_holds_when_the_budget_is_spent(app):
     assert producer.phase == "failed" and producer.stage == "brief", producer.summary()
     assert producer.decisions == 0
     assert not app.project.melodies
+
+
+def test_a_journal_that_cannot_be_written_stops_the_production(app, monkeypatch):
+    """A record nobody can read is not a record: the production ends
+    visibly rather than carrying on with its history lost."""
+    a_whole_song_brief(app, "Unwritable journal")
+    app.critic = CodexCritic(FakeCodex())
+    producer = app.produce_song(seed=104)
+    monkeypatch.setattr(ProjectState, "save",
+                        lambda self, path: (_ for _ in ()).throw(OSError("disk gone")))
+    drive(app, producer, timeout=120)
+    assert producer.phase == "failed", producer.summary()
+    assert "journal" in producer.error and "disk gone" in producer.error, producer.error
+    assert not app.project.melodies, "nothing may be composed on an unrecorded review"
+
+
+def test_the_voice_packet_measures_the_instrumental_sections(monkeypatch):
+    """An instrumental section is *expected* silent; whether the take is
+    silent there is a measurement, and the two are reported apart."""
+    from types import SimpleNamespace
+    import numpy as np
+    from raagacomposer.production import producer as module
+
+    prelude = SimpleNamespace(name="Prelude", start=0.0, end=1.0,
+                              kind=SimpleNamespace(instrumental=True))
+    pallavi = SimpleNamespace(name="Pallavi", start=1.0, end=2.0,
+                              kind=SimpleNamespace(instrumental=False))
+    take = SimpleNamespace(id="synthetic-take", kind="master", duration=2.0,
+                           melody_version=1, lyrics_version=1)
+    project = SimpleNamespace(vocal_master=take, latest_vocal=take,
+                              melody=lambda: SimpleNamespace(sections=[prelude, pallavi]))
+    monkeypatch.setattr(module.mastering, "report", lambda *args: "controlled")
+
+    def packet_for(audio):
+        fake_app = SimpleNamespace(project=project, sample_rate=8000,
+                                   rendered=lambda kind: SimpleNamespace(audio=audio),
+                                   current_voice=lambda: SimpleNamespace(name="test voice"))
+        producer = Producer(fake_app, SimpleNamespace(available=False))
+        monkeypatch.setattr(producer, "_packet", lambda stage, body: body, raising=False)
+        return producer._evidence_voice()[0]
+
+    # Sound in both sections: the Prelude is expected silent and is not.
+    loud = packet_for(np.full(16000, 0.2, dtype=np.float32))
+    assert loud["expected_silent_sections"] == ["Prelude"]
+    prelude_row = loud["instrumental_sections"][0]
+    assert prelude_row["name"] == "Prelude" and not prelude_row["measured_silent"]
+    assert prelude_row["rms_db"] > module.SILENCE_DB
+    assert "instrumental_sections_silent" not in loud
+
+    # Silence in the Prelude, sound in the Pallavi: the measurement says so.
+    audio = np.zeros(16000, dtype=np.float32)
+    audio[8000:] = 0.2
+    quiet = packet_for(audio)
+    assert quiet["instrumental_sections"][0]["measured_silent"]
+    assert quiet["sung_sections"][0]["rms_db"] > module.SILENCE_DB

@@ -51,13 +51,20 @@ import numpy as np
 
 from ..agent.knowledge import Lesson
 from ..audio import dsp
+from ..core.jobs import JobCancelled
 from ..core.models import SectionKind
 from ..music.structure import read_section_requests
 from ..voice import mastering
 from .contracts import (PRODUCTION_STAGES, Critic, InstrumentProfile,
                         ProjectState, Role, RoleAssignment, StageRecord,
                         Verdict, production_team, review_stage)
+from .critic import CancelledReview
 from .state import canonical_json
+
+#: Below this a section of the vocal-only master is silent in fact, not
+#: merely expected to be: a rest at -60 dB FS is thirty times quieter than
+#: the quietest sung phrase measured on 2026-09-08 (-17.5 dB).
+SILENCE_DB = -60.0
 
 log = logging.getLogger("raaga.production")
 
@@ -406,14 +413,23 @@ class Producer:
 
         def work(ctx) -> Tuple[Verdict, List[StageRecord]]:  # noqa: ANN001
             ctx.progress(0.3, f"Codex reviews the {stage}")
-            verdict = review_stage(critic, stage, snapshot, artifact, artifact_ref=ref,
-                                   round_number=round_number, max_rounds=max_rounds)
+            try:
+                # ctx.cancelled is a property; the reviewer polls it every
+                # 100 ms and stops the CLI child when it turns true.
+                verdict = review_stage(critic, stage, snapshot, artifact,
+                                       artifact_ref=ref, round_number=round_number,
+                                       max_rounds=max_rounds,
+                                       cancelled=lambda: ctx.cancelled)
+            except CancelledReview as exc:
+                # A cancellation is not a verdict: no record, no decision.
+                raise JobCancelled(str(exc)) from exc
             return verdict, list(snapshot.records[already:])
 
         self.app.status(f"Codex is reviewing the {stage}...")
         self.app.jobs.submit("production.review", REVIEW_TARGET, work,
                              on_done=lambda result: self._reviewed(result, ticket),
                              on_error=self._review_crashed,
+                             on_cancelled=self._review_cancelled,
                              description=f"Codex reviews the {stage}",
                              provider="codex")
 
@@ -457,6 +473,14 @@ class Producer:
         self._apply_advice(verdict)
         self.round += 1
         self._submit()
+
+    def _review_cancelled(self) -> None:
+        """The review job was cancelled from outside the Producer - by a
+        superseding job or a shutdown.  Nothing was recorded; the
+        production cannot continue without its verdict, and says so."""
+        if self.phase != "reviewing":
+            return
+        self._fail(f"the {self.stage} review was cancelled before it answered")
 
     def _review_crashed(self, exc: BaseException) -> None:
         if self.phase != "reviewing":
@@ -713,6 +737,8 @@ class Producer:
         body = {"by": "lyrics", "language": lyrics.language, "written_by": written_by,
                 "for_tune": f"tune:v{lyrics.melody_version}",
                 "line_count": len(lyrics.lines), "lines": lines,
+                "lines_shown": len(lines),
+                "lines_omitted": max(0, len(lyrics.lines) - len(lines)),
                 "note": "a syllable may span several notes (melisma); note_indices "
                         "lists every note the line sings, in order",
                 "alignment": app.lyric_alignment()}
@@ -725,7 +751,18 @@ class Producer:
         rendered = app.rendered("vocal_master")
         audio = rendered.audio if rendered is not None else None
         sr = app.sample_rate
-        sung = [s for s in melody.sections if not s.kind.instrumental] if melody else []
+        sections = melody.sections if melody else []
+        sung = [s for s in sections if not s.kind.instrumental]
+        instrumental = [s for s in sections if s.kind.instrumental]
+        # Expected and measured are two different facts, and the Critic gets
+        # both: the singer is *meant* to rest through the instrumental
+        # sections, and here is what the take actually contains there.
+        measured = []
+        for s in instrumental:
+            level = _rms_db(audio, sr, s.start, s.end)
+            measured.append({"name": s.name, "start": round(s.start, 2),
+                             "end": round(s.end, 2), "rms_db": level,
+                             "measured_silent": bool(audio is not None and level < SILENCE_DB)})
         body = {"by": "singer-1", "voice": app.current_voice().name, "take": take.id,
                 "kind": take.kind, "duration": round(take.duration, 2),
                 "for_tune": f"tune:v{take.melody_version}",
@@ -734,9 +771,12 @@ class Producer:
                                    "end": round(s.end, 2),
                                    "rms_db": _rms_db(audio, sr, s.start, s.end)}
                                   for s in sung],
-                "instrumental_sections_silent": [s.name for s in (melody.sections if melody else [])
-                                                 if s.kind.instrumental],
-                "measurement": "RMS in dB FS over the vocal-only master, per section",
+                "expected_silent_sections": [s.name for s in instrumental],
+                "instrumental_sections": measured,
+                "silence_threshold_db": SILENCE_DB,
+                "measurement": "RMS in dB FS over the vocal-only master, per section"
+                               + ("" if audio is not None else
+                                  "; no audio was available to measure"),
                 "report": mastering.report(audio, sr) if audio is not None else ""}
         return self._packet("voice", body), f"voice:{take.id}"
 
