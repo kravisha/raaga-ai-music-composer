@@ -7,7 +7,8 @@ import pytest
 
 from raagacomposer.core.models import CreativeBrief, Section, SectionKind
 from raagacomposer.music.structure import (choose_template, describe,
-                                           plan_sections, section_role)
+                                           plan_sections, section_role,
+                                           sections_asked_for)
 from raagacomposer.raaga.library import (RaagaLibrary, parse_swara, swara_midi,
                                          swara_semitone)
 from raagacomposer.raaga.selection import (compare, expand_feel_words,
@@ -299,3 +300,85 @@ def test_the_comparison_shows_both_raagas_evidence():
     assert "Moods (curated): romantic" in text          # the curated one
     assert "Moods (curated): none recorded" in text     # and the honest gap
     assert "" != text.split("Chitrambari:")[1].strip()
+
+
+def test_a_section_the_creator_named_survives_a_short_song():
+    """Arya's 60-second case.  The brief said "Include Prelude, Pallavi,
+    Anupallavi, Interlude, Charanam and Ending" and the tune came back
+    without an Anupallavi and without a word about it, because the planner
+    saw a template and a duration and never saw the brief."""
+    asked = sections_asked_for(
+        "Include Prelude, Pallavi, Anupallavi, Interlude, Charanam "
+        "and Ending.")
+    assert SectionKind.ANUPALLAVI in asked
+
+    unasked = plan_sections(60.0, 72, 8, "film song")
+    assert not any(s.kind is SectionKind.ANUPALLAVI for s in unasked), \
+        "this test proves nothing if the planner keeps it anyway"
+
+    notes = []
+    sections = plan_sections(60.0, 72, 8, "film song", requested=asked,
+                             notes=notes)
+    kinds = [s.kind for s in sections]
+    for kind in asked:
+        assert kind in kinds, f"{kind.value} was asked for and dropped"
+    for a, b in zip(sections, sections[1:]):
+        assert b.start == pytest.approx(a.end)
+
+    # Sixty seconds is not actually a conflict once the repeats nobody
+    # asked for are gone, so there is nothing to explain and the planner
+    # should not invent a complaint.
+    assert notes == [], notes
+    assert 50 <= sections[-1].end <= 70, sections[-1].end
+
+    # Asking for one interlude is not asking for both of the template's.
+    assert sum(1 for k in kinds if k is SectionKind.INTERLUDE) == 1, \
+        [s.name for s in sections]
+
+
+def test_a_song_too_short_for_what_was_asked_for_says_so():
+    """When it genuinely will not fit, the creator hears why rather than
+    getting a song that quietly disagrees with the brief."""
+    asked = sections_asked_for(
+        "Include Prelude, Pallavi, Anupallavi, Interlude, Charanam "
+        "and Ending.")
+    notes = []
+    sections = plan_sections(30.0, 72, 8, "film song", requested=asked,
+                             notes=notes)
+    for kind in asked:
+        assert kind in [s.kind for s in sections], \
+            f"{kind.value} was dropped instead of explained"
+    assert notes, "the song came back shorter than asked with nothing said"
+    said = " ".join(notes)
+    assert "30s" in said and "kept every section you named" in said, said
+
+
+def test_asking_for_a_pallavi_is_not_asking_for_an_anupallavi():
+    """One name contains the other, so this is matched on word boundaries
+    rather than as a substring."""
+    assert sections_asked_for("just a pallavi") == (SectionKind.PALLAVI,)
+    assert sections_asked_for("add an anupallavi") == (SectionKind.ANUPALLAVI,)
+    assert sections_asked_for("a hopeful, romantic song") == ()
+
+
+def test_a_section_the_template_does_not_have_is_added_when_asked_for():
+    plain = plan_sections(150.0, 72, 8, "devotional")
+    assert not any(s.kind is SectionKind.BRIDGE for s in plain)
+
+    notes = []
+    with_bridge = plan_sections(150.0, 72, 8, "devotional",
+                                requested=(SectionKind.BRIDGE,), notes=notes)
+    kinds = [s.kind for s in with_bridge]
+    assert SectionKind.BRIDGE in kinds
+    assert kinds[-1] is SectionKind.OUTRO, "the bridge landed after the ending"
+    assert any("Bridge" in n for n in notes), notes
+
+
+def test_a_long_song_still_drops_what_nobody_asked_for():
+    """Keeping a named section must not turn into keeping everything."""
+    everything = plan_sections(240.0, 72, 8, "film song")
+    short = plan_sections(60.0, 72, 8, "film song",
+                          requested=(SectionKind.ANUPALLAVI,))
+    assert len(short) < len(everything), \
+        "the short song kept as much as the long one"
+    assert any(s.kind is SectionKind.ANUPALLAVI for s in short)
