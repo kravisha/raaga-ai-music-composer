@@ -75,6 +75,11 @@ class ArrangementPanel(QWidget):
         self.end_spin.setSuffix(" s")
         self.whole_box = QCheckBox("whole song")
         self.whole_box.setChecked(True)
+        self.section_box = QComboBox()
+        self.section_box.setToolTip(
+            "Fill the span from a section of the tune, so the Prelude can "
+            "be given its own instrument without reading off its seconds.")
+        self.section_box.currentIndexChanged.connect(self._section_span)
 
         self.intensity = QSlider(Qt.Horizontal)
         self.intensity.setRange(10, 100)
@@ -110,16 +115,19 @@ class ArrangementPanel(QWidget):
         self.vocal_balance.setValue(100)
         self.vocal_balance.setFixedWidth(110)
         self.vocal_balance.sliderReleased.connect(self._mix_changed)
+        self.vocal_balance.valueChanged.connect(self._mix_edited)
         self.room_amount = QSlider(Qt.Horizontal)
         self.room_amount.setRange(0, 200)
         self.room_amount.setValue(100)
         self.room_amount.setFixedWidth(110)
         self.room_amount.sliderReleased.connect(self._mix_changed)
+        self.room_amount.valueChanged.connect(self._mix_edited)
         self.room_size = QSlider(Qt.Horizontal)
         self.room_size.setRange(5, 95)
         self.room_size.setValue(45)
         self.room_size.setFixedWidth(90)
         self.room_size.sliderReleased.connect(self._mix_changed)
+        self.room_size.valueChanged.connect(self._mix_edited)
         self.dry_btn = QPushButton("Hear it without the room")
         self.dry_btn.setToolTip(
             "Play the same mix with the instrument room taken away, so the "
@@ -144,6 +152,7 @@ class ArrangementPanel(QWidget):
         c2.addWidget(QLabel("To"))
         c2.addWidget(self.end_spin)
         c2.addWidget(self.whole_box)
+        c2.addWidget(self.section_box)
         c2.addWidget(add_btn)
         c2.addWidget(remove_btn)
         c2.addWidget(replace_btn)
@@ -213,6 +222,15 @@ class ArrangementPanel(QWidget):
         if self.whole_box.isChecked():
             return 0.0, max(1.0, self.app.project.duration)
         return float(self.start_spin.value()), float(self.end_spin.value())
+
+    def _section_span(self, index: int) -> None:
+        span = self.section_box.itemData(index)
+        if not span:
+            return
+        start, end = span
+        self.whole_box.setChecked(False)
+        self.start_spin.setValue(start)
+        self.end_spin.setValue(end)
 
     def _instrument(self) -> str:
         return str(self.instrument_box.currentData())
@@ -369,6 +387,23 @@ class ArrangementPanel(QWidget):
                 self.instrument_box.setCurrentIndex(idx)
         self.changed.emit()
 
+    def _mix_edited(self) -> None:
+        """A slider moved by some means other than being dragged.
+
+        sliderReleased alone reaches only the mouse.  An arrow key, the
+        wheel, a page step and Home/End all move the visible control and
+        emit nothing on release, so the song kept the old setting while
+        the slider showed the new one.  valueChanged catches all of them;
+        a drag is skipped here because its release commits it, and
+        committing every pixel on the way would fill the undo history
+        with positions the creator was only passing through.  Refresh
+        blocks these signals, so a programmatic update cannot feed back.
+        """
+        slider = self.sender()
+        if slider is not None and slider.isSliderDown():
+            return
+        self._mix_changed()
+
     def _mix_changed(self) -> None:
         self.app.set_mix(vocal_gain=self.vocal_balance.value() / 100.0,
                          reverb=self.room_amount.value() / 100.0,
@@ -412,6 +447,19 @@ class ArrangementPanel(QWidget):
         if self.whole_box.isChecked():
             self.start_spin.setValue(0.0)
             self.end_spin.setValue(max(1.0, project.duration))
+
+        melody = project.melody()
+        sections = melody.sections if melody else []
+        wanted = [("span...", None)] + [(sec.name, (sec.start, sec.end))
+                                        for sec in sections]
+        have = [(self.section_box.itemText(i), self.section_box.itemData(i))
+                for i in range(self.section_box.count())]
+        if have != wanted:
+            self.section_box.blockSignals(True)
+            self.section_box.clear()
+            for name, span in wanted:
+                self.section_box.addItem(name, span)
+            self.section_box.blockSignals(False)
 
         settings = project.mix_settings
         for slider, value in ((self.vocal_balance,

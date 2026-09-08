@@ -3258,11 +3258,6 @@ class AppController:
             self.status(f"{rendered_kind.replace('_', ' ').title()} ready"
                         + (f" - {info['summary']}" if info.get("summary") else ""))
             if autoplay:
-                # Whatever they last heard is the scope any comparison
-                # should keep.  Recorded here because this is the one
-                # place the mix is actually played.
-                self._audition = ((play_range, scope_name) if play_range
-                                  else None)
                 self.play_render(rendered_kind, play_range)
 
         self.jobs.submit(f"render.{kind}", f"render:{kind}", work, on_done=done,
@@ -3362,8 +3357,17 @@ class AppController:
         start, end = (play_range or (None, None))
         ok = self.playback.play(start, end, loop)
         if not ok:
+            # Nothing was heard, so the creator is still listening to
+            # whatever they were listening to before.  Leaving the scope
+            # alone is what keeps the comparison honest.
             self.error("playback", self.playback.last_error or "Playback failed.")
         else:
+            # Every way of hearing the song arrives here - a fresh render,
+            # a cached one, a section played from the table - so this is
+            # the one place that knows what is actually being heard.
+            span = (start, end) if start is not None and end is not None else None
+            self._audition = ((span, self._span_name(self.project.melody(), span))
+                              if span else None)
             self.status(f"Playing {kind.replace('_', ' ')}"
                         + (f" {start:.0f}-{end:.0f}s" if start is not None and end else ""))
         return ok

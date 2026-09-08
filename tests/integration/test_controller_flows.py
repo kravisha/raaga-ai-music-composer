@@ -2429,3 +2429,53 @@ def test_hearing_the_whole_song_widens_the_comparison_again(ready, settle):
     settle()
     assert app.audition_scope() == "the whole song", \
         "playing the whole song left the comparison on one section"
+
+
+def test_the_scope_follows_what_was_actually_heard(ready, settle):
+    """Arya's three failures, one cause: the scope was recorded when a
+    render finished rather than when something was played, so playing a
+    render already in hand - the ordinary case - never reached it."""
+    app = ready
+    app.auto_arrange()
+    settle()
+    melody = app.project.melody()
+    section = next(sec for sec in melody.sections if not sec.kind.instrumental)
+
+    app.render(kind="full", autoplay=False)
+    settle()
+    assert "full" in app._renders, "nothing to play"
+
+    # Cached playback of a section: no render runs at all.
+    assert app.play_render("full", (section.start, section.end))
+    assert app.audition_scope() == section.name, \
+        f"playing a section did not become the scope: {app.audition_scope()}"
+
+    # Cached playback of the whole song widens it again.
+    assert app.play_render("full")
+    assert app.audition_scope() == "the whole song", \
+        "playing the whole song left the comparison on one section"
+
+
+def test_a_playback_that_failed_leaves_the_scope_alone(ready, settle):
+    """Nothing was heard, so the creator is still listening to whatever
+    they were listening to before."""
+    app = ready
+    app.auto_arrange()
+    settle()
+    melody = app.project.melody()
+    section = next(sec for sec in melody.sections if not sec.kind.instrumental)
+    app.render(kind="full", autoplay=False)
+    settle()
+
+    assert app.play_render("full", (section.start, section.end))
+    assert app.audition_scope() == section.name
+
+    original = app.playback.play
+    app.playback.play = lambda *a, **k: False
+    try:
+        assert not app.play_render("full")
+    finally:
+        app.playback.play = original
+
+    assert app.audition_scope() == section.name, \
+        "a playback nobody heard moved the comparison"
