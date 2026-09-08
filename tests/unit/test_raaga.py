@@ -661,3 +661,64 @@ def test_a_narrative_situation_does_not_restructure_the_song():
     assert [s.name for s in plain] == [s.name for s in told], \
         "a story changed the shape of the song"
     assert not any(s.kind is Kind.BRIDGE for s in told)
+
+
+def test_a_cue_that_ends_in_a_lead_in_word_still_asks():
+    """The cue rule set lead-in words aside before looking for the cue,
+    and half the cues end in one - "begin with", "put in" - so it ate the
+    cue's own last word and "Begin with a Prelude." asked for nothing.
+    The test that came with the rule used only one-word cues, so it
+    could not have failed on this."""
+    from raagacomposer.music.structure import read_section_requests
+
+    for phrasing, kinds in (
+            ("Begin with a Prelude.", {SectionKind.PRELUDE}),
+            ("start with a prelude", {SectionKind.PRELUDE}),
+            ("end with an outro", {SectionKind.OUTRO}),
+            ("put in a bridge", {SectionKind.BRIDGE}),
+            ("open with a prelude and close with an ending",
+             {SectionKind.PRELUDE, SectionKind.OUTRO})):
+        got = read_section_requests(phrasing)
+        assert set(got.wanted) == kinds, (phrasing, got)
+        assert not got.refused, (phrasing, got)
+
+    # The narrative the rule was written for still reads as narrative:
+    # the cue is found now, and what follows the name says it is a
+    # sentence.
+    for narrative in ("he begins with a prelude of doubt",
+                      "he starts with a prelude of doubt and ends with "
+                      "the bridge he burned"):
+        got = read_section_requests("", "", narrative)
+        assert not got, f"{narrative!r} read as {got}"
+
+
+def test_a_creator_may_want_or_keep_a_section():
+    """"I want an Anu Pallavi for this version." and "Keep the Charanam
+    for now." are how a creator talks, and neither was read as anything.
+    Wanting is a cue only in the first person: "he wants an ending" is
+    a story about him, and a situation is full of people wanting things."""
+    from raagacomposer.music.structure import read_section_requests
+
+    for phrasing, kind in (
+            ("I want an Anu Pallavi for this version.",
+             SectionKind.ANUPALLAVI),
+            ("Keep the Charanam for now.", SectionKind.CHARANAM),
+            ("we want a bridge in this song", SectionKind.BRIDGE),
+            ("I'd like an interlude here", SectionKind.INTERLUDE)):
+        got = read_section_requests(phrasing)
+        assert got.wanted == (kind,), (phrasing, got)
+        assert not got.refused, (phrasing, got)
+
+    # A keep after a refusal starts its own scope, as include does.
+    both = read_section_requests("no bridge, keep the charanam")
+    assert both.refused == (SectionKind.BRIDGE,), both
+    assert both.wanted == (SectionKind.CHARANAM,), both
+
+    for narrative in ("he wants an ending",
+                      "he wants an ending to the war",
+                      "she wants to keep the bridge between them",
+                      "they keep the bridge between the two villages open",
+                      "I want to tell the story of a bridge he could not "
+                      "cross"):
+        got = read_section_requests("", "", narrative)
+        assert not got, f"{narrative!r} read as {got}"
