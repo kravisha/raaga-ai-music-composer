@@ -237,6 +237,10 @@ class LyricLine:
     start: float = 0.0
     end: float = 0.0
     locked: bool = False
+    #: Who wrote the text: "creator", "lexicon", "llm:<name>", or "" when
+    #: the line predates this record.  Authored words are never labelled
+    #: as a model's, and a model's are never labelled as the creator's.
+    source: str = ""
 
 
 @dataclass
@@ -248,6 +252,9 @@ class LyricsVersion:
     lines: List[LyricLine] = field(default_factory=list)
     state: ApprovalState = ApprovalState.DRAFT
     notes: str = ""
+    #: Lines whose text could not be given to the singer: kept as written,
+    #: with no notes.  A version with any is not one to approve unread.
+    unfitted: int = 0
 
     def line_by_id(self, lid: str) -> Optional[LyricLine]:
         return next((l for l in self.lines if l.id == lid), None)

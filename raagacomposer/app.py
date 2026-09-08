@@ -2620,13 +2620,24 @@ class AppController:
             lyrics.version = max((l.version for l in self.project.lyrics),
                                  default=0) + 1
             self.project.lyrics.append(lyrics)
-            self.project.approved_lyrics = lyrics.version
-            self.project.current_stage = Stage.VOICE
-            self._changed("lyrics.version", f"Lyrics v{lyrics.version}")
             where = ""
             if chosen:
                 names = [s.name for s in melody.sections if s.id in set(chosen)]
                 where = f" for {', '.join(names)}" if names else ""
+            if lyrics.unfitted:
+                # A version with lines the singer was given nothing of is a
+                # draft to read, not words to approve: the previous approved
+                # words stay approved, and the creator is told which lines.
+                self._changed("lyrics.version",
+                              f"Lyrics v{lyrics.version} (draft, {lyrics.unfitted} unfitted)")
+                self.status(f"Lyrics v{lyrics.version} kept as a draft{where}: "
+                            f"{lyrics.unfitted} line(s) had nothing the fitter "
+                            f"could sing and were kept as written, unfitted. "
+                            f"Edit them, or regenerate.")
+                return
+            self.project.approved_lyrics = lyrics.version
+            self.project.current_stage = Stage.VOICE
+            self._changed("lyrics.version", f"Lyrics v{lyrics.version}")
             self.status(f"Lyrics v{lyrics.version}: {len(lyrics.lines)} lines "
                         f"fitted{where}")
 
@@ -2674,6 +2685,11 @@ class AppController:
         if lyrics is None or melody is None:
             return []
         warnings = lyric_fitting.refit_line(lyrics, melody, line_id, text)
+        line = lyrics.line_by_id(line_id)
+        if line is not None:
+            # Words the creator typed are the creator's, whoever drafted
+            # the line before.
+            line.source = "creator"
         self._changed("lyrics.edit", "Edited a lyric line")
         return warnings
 

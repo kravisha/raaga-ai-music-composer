@@ -760,7 +760,9 @@ class Producer:
             tokens = list(line.syllables)
             holds = [t for t in tokens if t.startswith("~")]
             lines.append({"section": names.get(line.section_id, line.section_id),
-                          "text": line.text, "note_tokens": tokens,
+                          "text": line.text,
+                          "written_by": getattr(line, "source", "") or "not recorded",
+                          "note_tokens": tokens,
                           "note_token_count": len(tokens),
                           "sounded_syllables": [t for t in tokens if not t.startswith("~")],
                           "sounded_syllable_count": len(tokens) - len(holds),
@@ -773,9 +775,10 @@ class Producer:
         # when it fell back - and a guess from what is available now is not
         # a record.  Say so; the application log and routing_attempts.jsonl
         # hold the route that was actually taken.
-        written_by = ("route not recorded on the lyric version; the application "
-                      "log records 'lyrics drafted by <writer>' and "
-                      "routing_attempts.jsonl records the model")
+        written_by = ("per line, in lines[].written_by: 'creator', 'lexicon', "
+                      "'llm:<writer>', or 'not recorded' for lines that predate "
+                      "the record; routing_attempts.jsonl names the model behind "
+                      "a writer")
         body = {"by": "lyrics", "language": lyrics.language, "written_by": written_by,
                 "text_note": f"transliterated {lyrics.language or 'text'}; the "
                              "fitter keeps ASCII letters only, so accented letters "

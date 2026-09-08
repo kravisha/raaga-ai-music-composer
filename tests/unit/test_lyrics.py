@@ -199,3 +199,133 @@ def test_generation_with_no_vocal_phrases_reports_it(keeravani):
     lyrics = generate(melody, CreativeBrief(language="Tamil"))
     assert lyrics.lines == []
     assert "no vocal phrases" in lyrics.notes
+
+
+# --------------------------------------------------------------------------
+# text the singer is given is text the creator wrote: Tamil script and
+# accented transliteration survive fitting (2026-09-08, Arya's finding)
+# --------------------------------------------------------------------------
+TAMIL_FIRST_LINE = "திரும்பி வந்தாய், அன்பே"
+TAMIL_SLOTS = ["தி", "ரும்", "பி", "வந்", "தாய்", "அன்", "பே"]
+
+
+def test_tamil_script_syllabifies_by_akshara_with_dead_consonant_as_coda():
+    """A consonant with its vowel sign is one syllable; a dead consonant
+    (pulli) closes the syllable before it.  The seven slots are the ones
+    hand-articulated for the authored first line."""
+    assert syllabify("திரும்பி") == ["தி", "ரும்", "பி"]
+    assert syllabify("வந்தாய்,") == ["வந்", "தாய்"]
+    assert syllabify("அன்பே") == ["அன்", "பே"]
+    assert split_line_syllables(TAMIL_FIRST_LINE) == TAMIL_SLOTS
+    assert count_syllables(TAMIL_FIRST_LINE) == 7
+
+
+@pytest.mark.parametrize("accented,plain", [
+    ("Praṇaṇa", "Pranana"),
+    ("kādhal", "kaadhal"),
+    ("nilavē", "nilavee"),
+])
+def test_accented_transliteration_keeps_its_letters(accented, plain):
+    """A diacritic is not punctuation.  The split follows the plain
+    spelling; the tokens keep the accented letters the creator wrote."""
+    tokens = syllabify(accented)
+    assert len(tokens) == len(syllabify(plain)), (tokens, syllabify(plain))
+    assert "".join(tokens) == "".join(c for c in accented if c.isalnum() or not c.isascii())
+
+
+def test_tamil_line_fits_its_notes_and_keeps_its_text(melody):
+    from raagacomposer.lyrics.fitting import PhraseSlot
+    exact = PhraseSlot(section_id="s", section_name="Pallavi",
+                       note_indices=list(range(7)), durations=[0.5] * 7,
+                       stresses=[True] + [False] * 6)
+    syllables, notes, warnings = fit_line(TAMIL_FIRST_LINE, exact)
+    assert syllables == TAMIL_SLOTS and not warnings
+
+    # Two more notes than syllables: two holds, no written syllable consumed.
+    longer = PhraseSlot(section_id="s", section_name="Pallavi",
+                        note_indices=list(range(9)), durations=[0.5] * 9,
+                        stresses=[True] + [False] * 8)
+    syllables, notes, warnings = fit_line(TAMIL_FIRST_LINE, longer)
+    assert len(syllables) == 9 and not warnings
+    assert [s for s in syllables if not s.startswith("~")] == TAMIL_SLOTS
+    assert sum(1 for s in syllables if s.startswith("~")) == 2
+
+    # Fewer notes: packed, warned, and still the creator's syllables.
+    shorter = PhraseSlot(section_id="s", section_name="Pallavi",
+                         note_indices=list(range(5)), durations=[0.5] * 5,
+                         stresses=[True] + [False] * 4)
+    syllables, notes, warnings = fit_line(TAMIL_FIRST_LINE, shorter)
+    assert len(syllables) == 5 and warnings
+    assert "".join(syllables) == "".join(TAMIL_SLOTS)
+
+    # And through fit_lines the text itself is verbatim.
+    lv = fit_lines([TAMIL_FIRST_LINE] * 3, melody, "Tamil")
+    assert lv.lines[0].text == TAMIL_FIRST_LINE
+
+
+class _Writer:
+    """A stand-in language model that answers with given lines."""
+    available = True
+    name = "test-writer"
+
+    def __init__(self, lines):
+        self._lines = lines
+
+    def write_lyrics(self, slots, brief):
+        return list(self._lines)
+
+
+def test_a_writer_s_tamil_lines_are_kept_not_replaced_by_vocables(melody):
+    """Native script counted as zero syllables and was replaced one for one
+    by lexicon vocables, silently.  The creator's or the writer's words are
+    the words; each line records who wrote it."""
+    slots = build_slots(melody)
+    lines = [TAMIL_FIRST_LINE] * len(slots)
+    lyrics = generate(melody, CreativeBrief(language="Tamil"), seed=4,
+                      llm=_Writer(lines))
+    assert [l.text for l in lyrics.lines] == lines
+    assert all(l.source == "llm:test-writer" for l in lyrics.lines), \
+        [l.source for l in lyrics.lines]
+    assert all(len(l.syllables) == len(l.note_indices) for l in lyrics.lines)
+
+
+def test_an_unsingable_line_is_kept_and_flagged_not_swapped(melody):
+    """A line with nothing to sing stays as written, unfitted, and the
+    version says so - it is not quietly swapped for lexicon syllables."""
+    slots = build_slots(melody)
+    lines = ["..."] + [TAMIL_FIRST_LINE] * (len(slots) - 1)
+    lyrics = generate(melody, CreativeBrief(language="Tamil"), seed=4,
+                      llm=_Writer(lines))
+    assert lyrics.lines[0].text == "..."
+    assert lyrics.lines[0].syllables == []
+    assert "no singable syllables" in lyrics.notes.lower(), lyrics.notes
+    assert lyrics.unfitted == 1
+    assert lyrics.lines[1].text == TAMIL_FIRST_LINE
+
+
+def test_lexicon_lines_say_so_and_swara_singing_is_still_a_line(melody):
+    lyrics = generate(melody, CreativeBrief(language="Tamil"), seed=4)
+    assert all(l.source == "lexicon" for l in lyrics.lines)
+    slot = build_slots(melody)[0]
+    syllables, _, warnings = fit_line("sa ri ga ma pa dha ni sa", slot)
+    assert syllables and "".join(syllables).startswith("sa")
+
+
+def test_a_lyric_line_s_source_survives_a_saved_project(tmp_path):
+    from dataclasses import asdict
+    from raagacomposer.core.models import LyricLine, Project
+    from raagacomposer.core.persistence import ProjectStore
+    from raagacomposer.core.settings import Settings
+    settings = Settings()
+    settings.projects_dir = str(tmp_path / "projects")
+    store = ProjectStore(settings)
+    project = Project(title="Provenance")
+    from raagacomposer.core.models import LyricsVersion
+    project.lyrics.append(LyricsVersion(lines=[
+        LyricLine(text=TAMIL_FIRST_LINE, syllables=TAMIL_SLOTS,
+                  note_indices=list(range(7)), source="creator")]))
+    directory = store.ensure_dirs(tmp_path / "projects" / "prov")
+    store.save(project, directory)
+    again = store.open(directory)
+    assert again.lyrics[0].lines[0].text == TAMIL_FIRST_LINE
+    assert again.lyrics[0].lines[0].source == "creator"

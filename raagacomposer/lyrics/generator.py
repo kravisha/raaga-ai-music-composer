@@ -245,46 +245,46 @@ def generate(melody: MelodyVersion, brief: CreativeBrief, version: int = 1,
     wanted = [slots[i] for i in targets]
 
     lines: List[str] = []
+    writer = ""
     if llm is not None and getattr(llm, "available", False):
         try:
-            lines = llm.write_lyrics(wanted, brief)
+            lines = [str(t) if t is not None else "" for t in llm.write_lyrics(wanted, brief)]
+            writer = f"llm:{getattr(llm, 'name', 'llm')}"
             log.info("lyrics drafted by %s", getattr(llm, "name", "llm"))
         except Exception as exc:  # noqa: BLE001 - fall back, never block
             log.warning("LLM lyrics failed (%s); using the local engine", exc)
             lines = []
-    # A line the singer cannot pronounce is not a line.  A model may ignore
-    # the request for Roman transliteration and answer in a native script,
-    # which the syllable engine cannot count and the synthesiser cannot sing.
-    # Those are replaced one for one - by position, so the remaining lines
-    # stay with the slots they were written for - and the lexicon engine
-    # supplies the substitute.
-    fallback: Optional[List[str]] = None
-    kept: List[str] = []
-    for i, text in enumerate(lines):
-        if count_syllables(text) > 0:
-            kept.append(text)
-            continue
-        log.warning("unsingable lyric line discarded: %r", text[:40])
-        if fallback is None:
-            fallback = generate_lines(wanted, brief, seed)
-        kept.append(fallback[i] if i < len(fallback) else "")
-    lines = kept
+    # The writer's words are the words.  A line the fitter finds nothing to
+    # sing in - punctuation, an empty answer - is kept as written, with no
+    # notes, and the version counts it as unfitted so nobody approves it
+    # unread.  It used to be replaced one for one by lexicon syllables,
+    # which is how a whole Tamil lyric turned into vocables without a word
+    # of warning: native script counted as zero syllables.
+    sources: List[str] = [writer] * len(lines)
+    for text in lines:
+        if not count_syllables(text):
+            log.warning("a lyric line has nothing the fitter can sing, kept as "
+                        "written: %r", text[:40])
     if len(lines) < len(wanted):
         local = generate_lines(wanted, brief, seed)
         lines = lines + local[len(lines):]
+        sources = sources + ["lexicon"] * (len(lines) - len(sources))
 
     # Lay the new lines back onto the whole song by slot, so unselected
     # phrases keep the words they had.  fit_lines takes it from here and
     # preserves locked lines by slot index as it already did.
     whole = [""] * len(slots)
+    whole_sources = [""] * len(slots)
     if previous is not None:
         for i, line in enumerate(previous.lines):
             if i < len(whole):
                 whole[i] = line.text
+                whole_sources[i] = line.source
     for position, index in enumerate(targets):
         whole[index] = lines[position] if position < len(lines) else ""
+        whole_sources[index] = sources[position] if position < len(sources) else ""
     return fit_lines(whole, melody, brief.language, version=version,
-                     previous=previous)
+                     previous=previous, sources=whole_sources)
 
 
 def regenerate_line(lyrics: LyricsVersion, melody: MelodyVersion, line_id: str,
@@ -295,10 +295,12 @@ def regenerate_line(lyrics: LyricsVersion, melody: MelodyVersion, line_id: str,
     index = [l.id for l in lyrics.lines].index(line_id)
     slot = slots[index]
     text = ""
+    source = ""
     if llm is not None and getattr(llm, "available", False):
         try:
             got = llm.write_lyrics([slot], brief)
             text = got[0] if got else ""
+            source = f"llm:{getattr(llm, 'name', 'llm')}"
         except Exception as exc:  # noqa: BLE001
             log.warning("LLM line rewrite failed: %s", exc)
     if not text:
@@ -308,4 +310,9 @@ def regenerate_line(lyrics: LyricsVersion, melody: MelodyVersion, line_id: str,
             words.extend(pool.get(t, []))
         text = make_line(slot.syllable_count, words,
                          random.Random(seed or index * 7919 + 13))
-    return refit_line(lyrics, melody, line_id, text)
+        source = "lexicon"
+    warnings = refit_line(lyrics, melody, line_id, text)
+    line = lyrics.line_by_id(line_id)
+    if line is not None:
+        line.source = source
+    return warnings

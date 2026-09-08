@@ -11,6 +11,7 @@ stressed (long or downbeat) notes.
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -69,40 +70,121 @@ def build_slots(melody: MelodyVersion, include_instrumental: bool = False
     return slots
 
 
-def syllabify(word: str) -> List[str]:
-    """Split a Roman-transliterated word into singable syllables."""
-    w = word.strip()
-    if not w:
-        return []
-    letters = re.sub(r"[^A-Za-z]", "", w)
+def _roman_letters(word: str) -> Tuple[str, List[str]]:
+    """The word's letters as plain ASCII, beside the characters they came from.
+
+    ``Praṇaṇa`` becomes ``Pranana`` for the split, and each plain letter
+    remembers its written form (``ṇ``), so the syllables handed back carry
+    the diacritics the creator wrote.  Anything that is not a letter -
+    punctuation, digits - is dropped, as it always was.
+    """
+    skeleton: List[str] = []
+    written: List[str] = []
+    for ch in unicodedata.normalize("NFC", word):
+        base = unicodedata.normalize("NFKD", ch)[0]
+        if "A" <= base <= "Z" or "a" <= base <= "z":
+            skeleton.append(base)
+            written.append(ch)
+        elif unicodedata.category(ch).startswith("M") and written:
+            # A combining mark that survived NFC belongs to the letter before.
+            written[-1] += ch
+    return "".join(skeleton), written
+
+
+def _syllabify_roman(word: str) -> List[str]:
+    letters, written = _roman_letters(word)
     if not letters:
         return []
-    syllables: List[str] = []
+    spans: List[Tuple[int, int]] = []
     i = 0
-    current = ""
+    start = 0
     while i < len(letters):
         m = VOWEL_GROUP.match(letters, i)
         if m:
-            current += m.group(0)
             i = m.end()
             # A single trailing consonant closes the syllable.
             if i < len(letters) and not VOWEL_GROUP.match(letters, i):
                 nxt = VOWEL_GROUP.search(letters, i)
                 consonants = letters[i:nxt.start()] if nxt else letters[i:]
                 if len(consonants) > 1 or not nxt:
-                    current += consonants[0]
                     i += 1
-            syllables.append(current)
-            current = ""
+            spans.append((start, i))
+            start = i
         else:
-            current += letters[i]
             i += 1
-    if current:
-        if syllables:
-            syllables[-1] += current
+    if start < len(letters):
+        if spans:
+            spans[-1] = (spans[-1][0], len(letters))
         else:
-            syllables.append(current)
+            spans.append((start, len(letters)))
+    return ["".join(written[a:b]) for a, b in spans]
+
+
+def _is_virama(ch: str) -> bool:
+    try:
+        return "VIRAMA" in unicodedata.name(ch)
+    except ValueError:
+        return False
+
+
+def _syllabify_script(word: str) -> List[str]:
+    """Syllables of a word in an Indic script, by its orthography.
+
+    A base letter with the marks that follow it is one unit; a consonant
+    killed by a virama (Tamil pulli) closes the unit before it, the way a
+    single trailing consonant closes a Roman syllable.  ``திரும்பி`` is
+    ``தி | ரும் | பி``.  This is orthographic syllabification, which for
+    Tamil is what singers articulate; it is not a validated phonological
+    analysis, and the fitter says so wherever it matters.
+    """
+    units: List[Tuple[str, bool]] = []
+    for ch in unicodedata.normalize("NFC", word):
+        category = unicodedata.category(ch)
+        if category.startswith("M") or ch in ("‌", "‍"):
+            if units:
+                text, dead = units[-1]
+                units[-1] = (text + ch, dead or _is_virama(ch))
+        elif category.startswith("L"):
+            units.append((ch, False))
+    syllables: List[str] = []
+    pending = ""
+    for text, dead in units:
+        if dead:
+            if syllables:
+                syllables[-1] += text
+            else:
+                pending += text      # a word-initial cluster: ஸ்ரீ
+        else:
+            syllables.append(pending + text)
+            pending = ""
+    if pending:
+        if syllables:
+            syllables[-1] += pending
+        else:
+            syllables.append(pending)
     return syllables
+
+
+def _uses_a_script(word: str) -> bool:
+    return any(not ch.isascii() and unicodedata.category(ch).startswith("L")
+               and not unicodedata.normalize("NFKD", ch)[0].isascii()
+               for ch in word)
+
+
+def syllabify(word: str) -> List[str]:
+    """Split one written word into singable syllables.
+
+    Roman transliteration, with or without diacritics, splits by its
+    vowels and keeps the letters as written.  A word in an Indic script
+    splits by its orthography.  What comes back is the creator's text in
+    pieces, never a re-spelling of it.
+    """
+    w = word.strip()
+    if not w:
+        return []
+    if _uses_a_script(w):
+        return _syllabify_script(w)
+    return _syllabify_roman(w)
 
 
 def count_syllables(text: str) -> int:
@@ -117,8 +199,26 @@ def split_line_syllables(text: str) -> List[str]:
 
 
 def _vowel_of(syllable: str) -> str:
+    """The vowel a melisma holds: the syllable's Roman vowel group, or in
+    a script its last vowel sign or independent vowel."""
     m = VOWEL_GROUP.search(syllable or "")
-    return (m.group(0).lower() if m else "a")
+    if m and syllable.isascii():
+        return m.group(0).lower()
+    signs = [ch for ch in syllable or "" if unicodedata.category(ch).startswith("M")
+             and not _is_virama(ch)]
+    if signs:
+        return signs[-1]
+    vowels = [ch for ch in syllable or "" if "VOWEL" in _name(ch)]
+    if vowels:
+        return vowels[-1]
+    return m.group(0).lower() if m else "a"
+
+
+def _name(ch: str) -> str:
+    try:
+        return unicodedata.name(ch)
+    except ValueError:
+        return ""
 
 
 def fit_line(text: str, slot: PhraseSlot) -> Tuple[List[str], List[int], List[str]]:
@@ -131,6 +231,11 @@ def fit_line(text: str, slot: PhraseSlot) -> Tuple[List[str], List[int], List[st
     syllables = split_line_syllables(text)
     notes = list(slot.note_indices)
     if not syllables:
+        if text.strip():
+            # Kept as written, given no notes: the words are the creator's
+            # or the writer's, and a count is not a reason to replace them.
+            return [], notes, [f"No singable syllables found in {text.strip()!r}; "
+                               f"the line is kept as written and not fitted."]
         return [], notes, ["Line is empty."]
 
     if len(syllables) == len(notes):
@@ -172,8 +277,14 @@ def fit_line(text: str, slot: PhraseSlot) -> Tuple[List[str], List[int], List[st
 
 def fit_lines(lines: Sequence[str], melody: MelodyVersion, language: str,
               version: int = 1,
-              previous: Optional[LyricsVersion] = None) -> LyricsVersion:
-    """Fit a list of written lines onto the melody's phrase slots."""
+              previous: Optional[LyricsVersion] = None,
+              sources: Optional[Sequence[str]] = None) -> LyricsVersion:
+    """Fit a list of written lines onto the melody's phrase slots.
+
+    ``sources`` names who wrote each line ("creator", "lexicon",
+    "llm:<name>"), by position; a line carried over from ``previous``
+    keeps the source it had.
+    """
     slots = build_slots(melody)
     lv = LyricsVersion(version=version, language=language,
                        melody_version=melody.version)
@@ -184,6 +295,7 @@ def fit_lines(lines: Sequence[str], melody: MelodyVersion, language: str,
                 locked_by_slot[i] = line
 
     warnings: List[str] = []
+    unfitted = 0
     for i, slot in enumerate(slots):
         if i in locked_by_slot:
             lv.lines.append(locked_by_slot[i])
@@ -191,10 +303,20 @@ def fit_lines(lines: Sequence[str], melody: MelodyVersion, language: str,
         text = lines[i] if i < len(lines) else ""
         syllables, indices, warn = fit_line(text, slot)
         warnings.extend(f"{slot.section_name}: {w}" for w in warn)
+        if text.strip() and not syllables:
+            unfitted += 1
+        source = ""
+        if sources is not None and i < len(sources) and sources[i]:
+            source = sources[i]
+        elif previous is not None and i < len(previous.lines) \
+                and previous.lines[i].text == text:
+            source = previous.lines[i].source
         lv.lines.append(LyricLine(
             section_id=slot.section_id, text=text, syllables=syllables,
-            note_indices=indices, start=slot.start, end=slot.end))
+            note_indices=indices, start=slot.start, end=slot.end,
+            source=source))
     lv.notes = "\n".join(warnings)
+    lv.unfitted = unfitted
     return lv
 
 
