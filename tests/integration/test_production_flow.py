@@ -13,7 +13,8 @@ import pytest
 from raagacomposer.core.models import SectionKind
 from raagacomposer.production.contracts import (PRODUCTION_STAGES,
                                                 CodexCliTransport,
-                                                CodexCritic, ProjectState)
+                                                CodexCritic, ProjectState,
+                                                StageRecord, Verdict)
 from raagacomposer.production.producer import Producer, locate_codex
 
 
@@ -128,10 +129,19 @@ def test_a_revision_is_asked_of_the_tune_and_the_advice_reaches_the_agent(app):
     assert verdicts == [(1, "revise"), (2, "accept")], verdicts
     assert journal.is_accepted("tune", "tune:v2")
     assert not journal.is_accepted("tune", "tune:v1")
-    # The advice went to the agent through the feedback door, not into a log
-    # nobody reads.
-    fed = [h for h in app.project.history if h.action == "agent.feedback"]
-    assert fed and advice in fed[-1].description, [h.description for h in fed]
+    # The advice reached the agent as a lesson with Codex's name on it - not
+    # as the creator's testimony, and not into a log nobody reads.
+    noted = [h for h in app.project.history if h.action == "critic.advice"]
+    assert noted and advice in noted[-1].description, \
+        [h.description for h in app.project.history]
+    lessons = [l for l in app.agent.repo.lessons(raaga="Hamsadhwani")
+               if l.method == "codex critic"]
+    assert lessons and all(l.dimension == "critic" and l.confidence < 0.9
+                           for l in lessons), \
+        [(l.kind, l.method, l.dimension, l.confidence) for l in lessons]
+    assert not any(l.method == "creator feedback" or l.dimension == "creator"
+                   for l in app.agent.repo.lessons(raaga="Hamsadhwani")), \
+        "Codex's advice was filed as the creator's own words"
 
 
 def test_without_codex_the_song_is_still_made_and_says_so(app, tmp_path, monkeypatch):
@@ -166,8 +176,12 @@ def test_a_production_told_to_stop_on_a_blocked_review_stops(app, tmp_path, monk
     monkeypatch.setattr(module.shutil, "which", lambda executable: None)
     a_whole_song_brief(app, "Stops when unreviewed")
     app.critic = CodexCritic(CodexCliTransport(tmp_path / "critic"))
-    app.settings.production_on_blocked = "stop"
-    producer = app.produce_song(seed=104)
+    # Built directly rather than through the setting: saving a project
+    # persists the whole settings object into the shared test home, and a
+    # "stop" written there would reach every later test's Settings.load().
+    producer = Producer(app, app.critic, seed=104, on_blocked="stop")
+    app.producer = producer
+    assert producer.start()
     drive(app, producer, timeout=120)
     assert producer.phase == "failed" and producer.stage == "brief"
     assert "unavailable" in producer.error, producer.error
@@ -240,3 +254,120 @@ def test_locate_codex_prefers_the_configured_path(tmp_path, monkeypatch):
         import os
         os.utime(path, (when, when))
     assert locate_codex("") == str(new)
+
+
+# ----------------------------------------------------------------------
+# Boundaries Arya found by independent review of the first integration
+# (their producer_boundary_cases.py, ported here so they run in the suite).
+# ----------------------------------------------------------------------
+import threading
+
+
+class GateCodex(FakeCodex):
+    """Accepts, but only once the test lets it: the review is held open so
+    the song can change underneath it."""
+
+    def __init__(self, policy=None):
+        super().__init__(policy)
+        self.entered, self.release = threading.Event(), threading.Event()
+
+    def __call__(self, prompt, schema):
+        self.entered.set()
+        assert self.release.wait(8), "the test must release the reviewer"
+        return super().__call__(prompt, schema)
+
+
+def pump_until(app, predicate, timeout=20.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        app.pump()
+        if predicate():
+            return
+        time.sleep(0.01)
+    raise AssertionError("the production did not reach the expected phase")
+
+
+def test_a_second_production_continues_the_journal_it_finds(app):
+    """A restart used to build a fresh ProjectState beside an existing
+    production.json; every later save then hit the stale-journal guard and
+    _save_journal swallowed it, so the new history never reached disk."""
+    a_whole_song_brief(app, "Produced twice")
+    first = Producer(app, CodexCritic(FakeCodex()))
+    assert first.start()
+    first.state.add_record(StageRecord(
+        stage="brief", role="critic", artifact_ref="brief:first",
+        rationale="First review preserved", verdict="accept", round=1,
+        provider="codex"))
+    first.cancel("first run stopped")
+    assert len(ProjectState.load(first.journal_path).records) == 1
+
+    second = Producer(app, CodexCritic(FakeCodex()))
+    assert second.start(), second.error
+    assert second.state.revision == 1, "a restart is a new revision of the same journal"
+    second.state.add_record(StageRecord(
+        stage="brief", role="critic", artifact_ref="brief:second",
+        rationale="Second review must survive", verdict="accept", round=1,
+        revision=second.state.revision, provider="codex"))
+    second.cancel("second run stopped")
+    saved = ProjectState.load(second.journal_path)
+    assert [r.rationale for r in saved.records] == \
+        ["First review preserved", "Second review must survive"], second.events
+    assert not saved.is_accepted("brief", "brief:first"), \
+        "an earlier revision's acceptance must not count for this one"
+
+
+def test_a_brief_edited_during_its_review_is_not_accepted(app):
+    """The reviewer answered about a snapshot; the creator changed the brief
+    while it thought.  The verdict is about a brief that no longer exists."""
+    a_whole_song_brief(app, "Edited under review")
+    gate = GateCodex()
+    app.critic = CodexCritic(gate)
+    producer = app.produce_song(seed=104)
+    try:
+        pump_until(app, gate.entered.is_set)
+        assert producer.phase == "reviewing" and producer.stage == "brief"
+        app.update_brief(situation="A farewell with no hope of reunion")
+        gate.release.set()
+        pump_until(app, lambda: producer.phase != "reviewing")
+        assert producer.accepted == 0, "the old brief was accepted after the live brief changed"
+        assert not any(r.verdict == "accept" and r.provider == "codex"
+                       for r in producer.state.records)
+        assert producer.phase == "failed" and "changed" in producer.error, producer.error
+        assert not app.project.melodies, "production must not have gone on to the tune"
+    finally:
+        gate.release.set()
+        if not producer.finished:
+            producer.cancel("test over")
+
+
+def test_codex_advice_is_never_filed_as_the_creators_words(app):
+    a_whole_song_brief(app, "Advice provenance")
+    producer = Producer(app, CodexCritic(FakeCodex()))
+    assert producer.start()
+    producer.stage = "tune"
+    before = {l.id for l in app.agent.repo.lessons(raaga="Hamsadhwani")}
+    producer._apply_advice(Verdict(
+        False, "Variation is required", provider="codex",
+        revisions=["The melody is too repetitive and mechanical; vary the answer phrase"]))
+    added = [l for l in app.agent.repo.lessons(raaga="Hamsadhwani") if l.id not in before]
+    assert added, "the advice must reach the agent somewhere"
+    wrong = [l for l in added if l.method == "creator feedback" or l.dimension == "creator"
+             or l.confidence >= 0.9]
+    assert not wrong, [(l.kind, l.method, l.dimension, l.confidence) for l in wrong]
+    assert all(l.method == "codex critic" for l in added)
+    producer.cancel("test over")
+
+
+def test_stop_policy_holds_when_the_budget_is_spent(app):
+    """Exhaustion took the proceed path directly, bypassing on_blocked."""
+    a_whole_song_brief(app, "Stops on exhaustion")
+    codex = FakeCodex(lambda stage, packet, calls: (
+        {"accept": False, "revisions": ["Clarify the dramatic situation before composing"]}
+        if stage == "brief" else None))
+    producer = Producer(app, CodexCritic(codex), max_rounds=1, on_blocked="stop", seed=104)
+    app.producer = producer
+    assert producer.start()
+    drive(app, producer, timeout=60)
+    assert producer.phase == "failed" and producer.stage == "brief", producer.summary()
+    assert producer.decisions == 0
+    assert not app.project.melodies

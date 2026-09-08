@@ -15,6 +15,13 @@ running a loop of its own: it submits a stage, waits for the artifact to
 land, describes it as evidence, hands the evidence to the Critic in a job
 of its own, and acts on the verdict.  The window never waits on it.
 
+A review is of a snapshot.  The Critic thinks for twenty seconds, and the
+creator may edit the brief or write another tune while it does; so the
+review runs against a copy of the journal, and its records are committed
+only once the song's work ticket still holds.  A verdict about a song that
+no longer exists is discarded, and the production stops rather than build
+on it.
+
 What the Critic cannot accept, the Producer may still pass - but only as a
 decision recorded under its own name.  ``ProjectState.is_accepted`` stays
 false for such a stage, and the report says which stages Codex accepted and
@@ -27,7 +34,7 @@ is what a working demo needs when the reviewer is down; ``on_blocked="stop"``
 halts at the first stage the Critic could not review, which is what a
 production that must be entirely reviewed needs.  A *revise* verdict is
 neither: it is answered with another round until the budget is spent, and
-only then does the policy apply.
+only then does the policy apply - to exhaustion as to any other block.
 """
 from __future__ import annotations
 
@@ -42,6 +49,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
+from ..agent.knowledge import Lesson
 from ..audio import dsp
 from ..core.models import SectionKind
 from ..music.structure import read_section_requests
@@ -64,10 +72,52 @@ STAGE_TARGETS = {
 }
 REVIEW_TARGET = "production:review"
 
+#: Which ProjectState field a stage's artifact reference lives in.
+_STATE_REF = {"tune": "tune_ref", "lyrics": "lyric_ref", "beat": "beat",
+              "arrangement": "arrangement", "mix": "mix"}
+
 #: How many consecutive idle pumps before "nothing landed" is believed.  A
 #: worker can finish between ``drain`` and ``advance`` inside one pump, with
 #: its completion still queued; one more pump delivers it.
 _IDLE_PUMPS_BEFORE_FAILURE = 3
+
+#: Told to the Critic in every packet.  It cannot listen, and a reviewer
+#: that blocks for want of ears blocks every stage; what only listening
+#: could settle belongs under uncertainty.
+REVIEW_SCOPE = (
+    "The reviewer cannot hear audio and cannot open files.  Judge this stage "
+    "on the facts in this packet, against the brief, as a guiding mentor: keep "
+    "what works, name specific weaknesses with evidence, give actionable "
+    "revisions with reasons, and reusable lessons.  What only listening could "
+    "settle - timbre, diction, audible balance, felt emotion - goes under "
+    "uncertainty, not into a block.  Block only when the packet is malformed, "
+    "contradicts itself, or lacks the facts named in what_to_judge.")
+
+WHAT_TO_JUDGE = {
+    "brief": "Whether the brief gives the specialists enough to start: "
+             "situation, emotional direction, language, raaga, tempo, "
+             "duration, requested sections.",
+    "tune": "The timed melody: raaga pitch inventory, section form, motif "
+            "and its development, repetition, phrase pacing and rests, "
+            "cadences.  The evaluator's scores are model assessments, "
+            "supplied as evidence.",
+    "lyrics": "Fit of syllables to notes per line, coverage of the sung "
+              "sections, repetition and development.  When no language model "
+              "wrote them the lines are transliterated syllables from the "
+              "built-in lyric engine: judge fit and structure, not translation.",
+    "voice": "The take's linkage to the tune and lyrics, coverage of the sung "
+             "sections, level per section, technical measurements.  Timbre, "
+             "diction and expression are listening matters.",
+    "beat": "The timed strokes against the tala and tempo, density and "
+            "variation across the sections, and whether the beat is in the "
+            "arrangement.",
+    "arrangement": "The cast, each track's timed regions against the sections, "
+                   "roles and separation, and the vocal's place: it is mixed "
+                   "from the vocal master take and is not a track.",
+    "mix": "Section boundaries, level per section, loudness and peak, length "
+           "against the timeline, linkage to the arrangement.  Balance and "
+           "clarity are listening matters.",
+}
 
 
 def locate_codex(configured: str = "") -> str:
@@ -91,13 +141,17 @@ def locate_codex(configured: str = "") -> str:
     return ""
 
 
-def _rms_db(audio: np.ndarray, sr: int, start: float, end: float) -> float:
+def _rms_db(audio: Optional[np.ndarray], sr: int, start: float, end: float) -> float:
     if audio is None or len(audio) == 0:
         return -120.0
     lo, hi = max(0, int(start * sr)), min(len(audio), int(end * sr))
     if hi <= lo:
         return -120.0
     return round(float(dsp.rms_db(audio[lo:hi])), 1)
+
+
+def _digest(data: Any) -> str:
+    return hashlib.sha256(canonical_json(data).encode("utf-8")).hexdigest()[:12]
 
 
 class Producer:
@@ -169,10 +223,30 @@ class Producer:
             app.save()
         self.journal_path = Path(app.project_dir) / self.journal_name
         self._generation = app._project_generation
-        self.state = ProjectState(project_id=app.project.project_id,
-                                  brief=self._brief_dict())
+        brief = self._brief_dict()
+        if self.journal_path.exists():
+            # A song produced before keeps its journal: this run is a new
+            # revision of it, with every earlier review still on record and
+            # none of them counting for this one.
+            try:
+                self.state = ProjectState.load(self.journal_path)
+            except Exception as exc:  # noqa: BLE001
+                self._fail(f"the existing production journal could not be read "
+                           f"({type(exc).__name__}: {exc}); nothing was overwritten")
+                return False
+            if self.state.project_id != app.project.project_id:
+                self._fail("the production journal beside this song belongs to "
+                           "another song; nothing was overwritten")
+                return False
+            self.state.invalidate_from("brief", "a new production was started")
+            self.state.brief = brief
+            self._note(f"continuing the journal at revision {self.state.revision}; "
+                       f"{len(self.state.records)} earlier record(s) kept")
+        else:
+            self.state = ProjectState(project_id=app.project.project_id, brief=brief)
         self._note(f"production started: {app.project.title!r} in "
-                   f"{app.project.raaga.selected}; critic: {self.critic_status()}")
+                   f"{app.project.raaga.selected}; critic: {self.critic_status()}; "
+                   f"on a blocked review: {self.on_blocked}")
         app.status(f"Producing a whole song in {app.project.raaga.selected}...")
         self._begin_stage(PRODUCTION_STAGES[0])
         return True
@@ -216,6 +290,7 @@ class Producer:
                        f"({type(exc).__name__})")
             return
         self.refs[self.stage] = self._ref
+        self._record_ref(self.stage, self._ref)
         self._note(f"{self.stage}: {self._ref} landed (round {self.round})")
         self._review()
 
@@ -275,6 +350,16 @@ class Producer:
                   "mix": len(project.mixes)}
         return counts[stage] > self._marker
 
+    def _record_ref(self, stage: str, ref: str) -> None:
+        """The journal names the artifact under review, not only the Producer."""
+        if self.state is None:
+            return
+        if stage == "voice":
+            if ref not in self.state.vocal_takes:
+                self.state.vocal_takes.append(ref)
+        elif stage in _STATE_REF:
+            setattr(self.state, _STATE_REF[stage], ref)
+
     def _next_stage(self) -> None:
         index = PRODUCTION_STAGES.index(self.stage) + 1
         if index >= len(PRODUCTION_STAGES):
@@ -285,30 +370,70 @@ class Producer:
     # ------------------------------------------------------------------
     # review
     # ------------------------------------------------------------------
+    def _ticket(self) -> Dict[str, Any]:
+        """What must still be true when the verdict lands."""
+        app = self.app
+        ticket = app.song_work_ticket()
+        ticket["lyric_fingerprint"] = app.lyric_fingerprint(app.project.lyrics_version())
+        ticket["voice_profile_id"] = app.current_voice().id
+        ticket["brief_digest"] = _digest(self._brief_dict())
+        ticket["artifact_ref"] = self._ref
+        return ticket
+
+    def _stale(self, ticket: Dict[str, Any]) -> str:
+        app = self.app
+        if app._project_generation != self._generation:
+            return "the song changed while I was producing it"
+        reason = app.stale_reason(ticket)
+        if reason:
+            return reason
+        if ticket.get("brief_digest") != _digest(self._brief_dict()):
+            return "the brief changed while I was producing"
+        return ""
+
     def _review(self) -> None:
-        stage, state, artifact, ref = self.stage, self.state, self._artifact, self._ref
+        stage, artifact, ref = self.stage, self._artifact, self._ref
         if not self.critic_available:
             self._blocked(f"the Codex reviewer is unavailable - {self.critic_status()}")
             return
         self.phase = "reviewing"
         round_number, max_rounds, critic = self.round, self.max_rounds, self.critic
+        ticket = self._ticket()
+        # The reviewer works on a copy.  Its records join the journal only
+        # once the ticket has been checked on this thread.
+        snapshot = ProjectState.from_dict(self.state.to_dict())
+        already = len(snapshot.records)
 
-        def work(ctx) -> Verdict:  # noqa: ANN001
+        def work(ctx) -> Tuple[Verdict, List[StageRecord]]:  # noqa: ANN001
             ctx.progress(0.3, f"Codex reviews the {stage}")
-            return review_stage(critic, stage, state, artifact, artifact_ref=ref,
-                                round_number=round_number, max_rounds=max_rounds)
+            verdict = review_stage(critic, stage, snapshot, artifact, artifact_ref=ref,
+                                   round_number=round_number, max_rounds=max_rounds)
+            return verdict, list(snapshot.records[already:])
 
         self.app.status(f"Codex is reviewing the {stage}...")
         self.app.jobs.submit("production.review", REVIEW_TARGET, work,
-                             on_done=self._reviewed,
+                             on_done=lambda result: self._reviewed(result, ticket),
                              on_error=self._review_crashed,
                              description=f"Codex reviews the {stage}",
                              provider="codex")
 
-    def _reviewed(self, verdict: Verdict) -> None:
+    def _reviewed(self, result: Tuple[Verdict, List[StageRecord]],
+                  ticket: Dict[str, Any]) -> None:
         if self.phase != "reviewing":
             return
-        self._save_journal()
+        verdict, records = result
+        stale = self._stale(ticket)
+        if stale:
+            # The verdict is about a song that no longer exists.  Nothing of
+            # it is committed, and nothing is built on it.
+            self._note(f"{self.stage}: a verdict arrived for a song that changed "
+                       f"({stale}); discarded")
+            self._fail(f"the song changed during the {self.stage} review: {stale}")
+            return
+        for record in records:
+            self.state.add_record(record)
+        if not self._save_journal():
+            return
         stage = self.stage
         if verdict.accept:
             self.accepted += 1
@@ -325,9 +450,9 @@ class Producer:
                                      artifact_ref=self._ref,
                                      round_number=self.round + 1,
                                      max_rounds=self.max_rounds)
-            self._decide(f"the revision budget of {self.max_rounds} is spent "
-                         f"({exhausted.reason}); the Producer kept round "
-                         f"{self.round} with the Critic's advice on record: {advice}")
+            self._blocked(f"the revision budget of {self.max_rounds} is spent "
+                          f"({exhausted.reason}); round {self.round} stands with "
+                          f"the Critic's advice on record: {advice}")
             return
         self._apply_advice(verdict)
         self.round += 1
@@ -341,26 +466,44 @@ class Producer:
         self._blocked(f"the review job failed ({type(exc).__name__})")
 
     def _blocked(self, why: str) -> None:
-        """A stage the Critic could not review: the policy decides."""
+        """A stage the Critic could not review, or would not accept within
+        the budget: the policy decides, and the same policy every time."""
         if self.on_blocked == "stop":
-            self._fail(f"the Critic could not review the {self.stage}: {why}")
+            self._fail(f"the Critic could not accept the {self.stage}: {why}")
             return
-        self._decide(f"{why}; the Producer proceeded without a review")
+        self._decide(f"{why}; the Producer proceeded without an accepted review")
 
     def _apply_advice(self, verdict: Verdict) -> None:
         """Turn the Critic's revisions into the next attempt's guidance.
 
-        The tune engine already learns from feedback - a creator's words
-        become lessons that guide the next composition - so the Critic's
-        advice enters by the same door.  The other specialists are reseeded;
-        their advice stays on record for the creator and the learner.
+        The tune engine learns from lessons: a lesson's kind becomes a
+        lever on the next composition.  The Critic's advice enters that way,
+        under the Critic's own name and at a reviewer's confidence - never as
+        the creator's testimony, which ``give_feedback`` would make it, with
+        the phrase-confidence changes and high-weight lessons that carries.
+        The other specialists are reseeded; the advice stays on record.
         """
         advice = "; ".join(verdict.revisions)
-        if self.stage == "tune" and advice:
-            try:
-                self.app.give_feedback(f"The Critic asks: {advice}")
-            except Exception as exc:  # noqa: BLE001
-                log.warning("could not pass the Critic's advice to the agent: %s", exc)
+        if not advice:
+            return
+        app = self.app
+        app.project.log_history("critic.advice", advice[:200])
+        if self.stage != "tune":
+            return
+        try:
+            kinds = list(app.agent.feedback_kinds(advice)) or ["critic_advice"]
+            raaga = app.project.raaga.selected
+            for kind in kinds:
+                app.agent.repo.add_lesson(Lesson(
+                    raaga=raaga, kind=kind, dimension="critic", task="composition",
+                    method="codex critic", failure_reason=advice[:200],
+                    correction=advice[:200], confidence=0.6,
+                    source_run=f"production:{app.project.project_id}:"
+                               f"r{self.state.revision if self.state else 0}"))
+            self._note(f"{self.stage}: advice filed as lesson(s) {', '.join(kinds)} "
+                       f"under the Critic's name")
+        except Exception as exc:  # noqa: BLE001
+            log.warning("could not file the Critic's advice as a lesson: %s", exc)
 
     def _decide(self, reason: str) -> None:
         """Proceed past a stage the Critic did not accept, under the
@@ -372,7 +515,8 @@ class Producer:
         self.state.add_record(record)
         self.decisions += 1
         self._note(f"{self.stage}: Producer decision - {reason}")
-        self._save_journal()
+        if not self._save_journal():
+            return
         self._next_stage()
 
     # ------------------------------------------------------------------
@@ -386,7 +530,8 @@ class Producer:
         self._note(f"done: Codex accepted {self.accepted} of {len(PRODUCTION_STAGES)} "
                    f"stages, Producer decided {self.decisions}"
                    + (f"; mix {mix.duration:.1f}s at {mix.audio_path}" if mix else ""))
-        self._save_journal()
+        if not self._save_journal():
+            return
         self._write_report()
         app.project.log_history("production.done", self.summary())
         app.dirty = True
@@ -406,14 +551,24 @@ class Producer:
         self._save_journal()
         self.app.status(f"Production stopped at the {self.stage}: {reason}.")
 
-    def _save_journal(self) -> None:
+    def _save_journal(self) -> bool:
+        """Write the journal.  A journal that cannot be written ends the
+        production visibly: a record nobody can read is not a record."""
         if self.state is None or self.journal_path is None:
-            return
+            return True
         try:
             self.state.save(self.journal_path)
-        except Exception as exc:  # noqa: BLE001 - the journal is a record, not the song
+            return True
+        except Exception as exc:  # noqa: BLE001
             log.error("could not write the production journal: %s", exc)
             self._note(f"journal not written: {type(exc).__name__}: {exc}")
+            if self.phase not in ("failed", "cancelled"):
+                self.phase = "failed"
+                self.error = f"the production journal could not be written: {exc}"
+                self.finished_at = time.time()
+                self.app.status(f"Production stopped at the {self.stage}: "
+                                f"{self.error}")
+            return False
 
     def _write_report(self) -> None:
         if self.journal_path is None:
@@ -450,13 +605,43 @@ class Producer:
             "refused_sections": [k.value for k in wants.refused],
         }
 
+    def _timeline(self) -> Dict[str, Any]:
+        """One authoritative timeline, in every packet after the tune."""
+        app = self.app
+        melody = app.project.melody()
+        if melody is None:
+            return {}
+        notes_end = max((n.end for n in melody.notes), default=0.0)
+        tala = app.current_tala()
+        return {
+            "authority": "the tune's sections define the song; the singer "
+                         "renders the song length plus a one-second tail and "
+                         "the mixer adds a half-second tail, so renders run "
+                         "longer than the last section ends",
+            "sections": [{"name": s.name, "kind": s.kind.value,
+                          "start": round(s.start, 2), "end": round(s.end, 2)}
+                         for s in melody.sections],
+            "sections_end": round(max((s.end for s in melody.sections), default=0.0), 2),
+            "last_note_end": round(notes_end, 2),
+            "tune_duration": round(melody.duration, 2),
+            "tempo_bpm": melody.tempo_bpm, "beats_per_cycle": melody.beats_per_cycle,
+            "tala": getattr(tala, "name", ""),
+        }
+
+    def _packet(self, stage: str, body: Dict[str, Any]) -> Dict[str, Any]:
+        packet = {"stage": stage, "review_scope": REVIEW_SCOPE,
+                  "what_to_judge": WHAT_TO_JUDGE[stage]}
+        if stage != "brief":
+            packet["timeline"] = self._timeline()
+        packet.update(body)
+        return packet
+
     def _evidence(self) -> Tuple[Dict[str, Any], str]:
         return getattr(self, f"_evidence_{self.stage}")()
 
     def _evidence_brief(self) -> Tuple[Dict[str, Any], str]:
-        data = {"stage": "brief", "by": "producer", **self._brief_dict()}
-        digest = hashlib.sha256(canonical_json(data).encode("utf-8")).hexdigest()[:12]
-        return data, f"brief:{digest}"
+        body = {"by": "producer", **self._brief_dict()}
+        return self._packet("brief", body), f"brief:{_digest(body)}"
 
     def _evidence_tune(self) -> Tuple[Dict[str, Any], str]:
         app = self.app
@@ -467,19 +652,34 @@ class Producer:
             brief=app.project.brief, tempo_bpm=melody.tempo_bpm,
             expected_seconds=app.project.brief.duration_target,
             learned_phrases=app.agent.phrase_bank(raaga.name))
+        names = {s.id: s.name for s in melody.sections}
+        timed = []
+        previous_end = 0.0
+        for note in melody.notes:
+            rest = round(note.start - previous_end, 2)
+            entry = {"t": round(note.start, 2), "d": round(note.duration, 2),
+                     "swara": note.swara, "midi": note.midi,
+                     "section": names.get(note.section_id, "")}
+            if note.gamaka:
+                entry["gamaka"] = note.gamaka
+            if rest > 0.05:
+                entry["rest_before"] = rest
+            timed.append(entry)
+            previous_end = note.end
         sections = []
         for section in melody.sections:
             notes = [n for n in melody.notes if n.section_id == section.id]
             sections.append({"name": section.name, "kind": section.kind.value,
                              "start": round(section.start, 2),
                              "end": round(section.end, 2), "notes": len(notes),
-                             "swaras": " ".join(n.swara for n in notes[:24])})
-        data = {
-            "stage": "tune", "by": "producer (melody engine)",
-            "raaga": melody.raaga, "tempo_bpm": melody.tempo_bpm,
-            "beats_per_cycle": melody.beats_per_cycle,
+                             "swaras": " ".join(n.swara for n in notes)})
+        body = {
+            "by": "producer (melody engine)",
+            "raaga": melody.raaga, "tonic_midi": melody.tonic_midi,
+            "tempo_bpm": melody.tempo_bpm, "beats_per_cycle": melody.beats_per_cycle,
             "duration": round(melody.duration, 2), "note_count": len(melody.notes),
             "sections": sections,
+            "notes": timed,
             "evaluation": {
                 "overall": round(evaluation.overall(), 3),
                 "scores": {k: round(v, 3) for k, v in evaluation.scores.items()},
@@ -492,20 +692,31 @@ class Producer:
             "plan_notes": list(melody.plan_notes),
             "guidance": melody.guidance_note,
         }
-        return data, f"tune:v{melody.version}"
+        return self._packet("tune", body), f"tune:v{melody.version}"
 
     def _evidence_lyrics(self) -> Tuple[Dict[str, Any], str]:
         app = self.app
         lyrics, melody = app.project.lyrics_version(), app.project.melody()
         names = {s.id: s.name for s in melody.sections} if melody else {}
-        lines = [{"section": names.get(line.section_id, line.section_id),
-                  "text": line.text, "syllables": len(line.syllables),
-                  "notes": len(line.note_indices)} for line in lyrics.lines[:40]]
-        data = {"stage": "lyrics", "by": "lyrics", "language": lyrics.language,
+        lines = []
+        for line in lyrics.lines[:48]:
+            lines.append({"section": names.get(line.section_id, line.section_id),
+                          "text": line.text, "syllables": list(line.syllables),
+                          "syllable_count": len(line.syllables),
+                          "note_indices": list(line.note_indices),
+                          "note_count": len(line.note_indices),
+                          "start": round(line.start, 2), "end": round(line.end, 2)})
+        written_by = ("a language model" if getattr(app.providers, "llm", None)
+                      and getattr(app.providers.llm, "available", False)
+                      else "the built-in lyric engine (transliterated syllables; "
+                           "no translation exists)")
+        body = {"by": "lyrics", "language": lyrics.language, "written_by": written_by,
                 "for_tune": f"tune:v{lyrics.melody_version}",
                 "line_count": len(lyrics.lines), "lines": lines,
+                "note": "a syllable may span several notes (melisma); note_indices "
+                        "lists every note the line sings, in order",
                 "alignment": app.lyric_alignment()}
-        return data, f"lyrics:v{lyrics.version}"
+        return self._packet("lyrics", body), f"lyrics:v{lyrics.version}"
 
     def _evidence_voice(self) -> Tuple[Dict[str, Any], str]:
         app = self.app
@@ -515,16 +726,19 @@ class Producer:
         audio = rendered.audio if rendered is not None else None
         sr = app.sample_rate
         sung = [s for s in melody.sections if not s.kind.instrumental] if melody else []
-        data = {"stage": "voice", "by": "singer-1",
-                "voice": app.current_voice().name, "take": take.id,
+        body = {"by": "singer-1", "voice": app.current_voice().name, "take": take.id,
                 "kind": take.kind, "duration": round(take.duration, 2),
                 "for_tune": f"tune:v{take.melody_version}",
                 "for_lyrics": f"lyrics:v{take.lyrics_version}",
-                "sections": [{"name": s.name,
-                              "rms_db": _rms_db(audio, sr, s.start, s.end)}
-                             for s in sung],
+                "sung_sections": [{"name": s.name, "start": round(s.start, 2),
+                                   "end": round(s.end, 2),
+                                   "rms_db": _rms_db(audio, sr, s.start, s.end)}
+                                  for s in sung],
+                "instrumental_sections_silent": [s.name for s in (melody.sections if melody else [])
+                                                 if s.kind.instrumental],
+                "measurement": "RMS in dB FS over the vocal-only master, per section",
                 "report": mastering.report(audio, sr) if audio is not None else ""}
-        return data, f"voice:{take.id}"
+        return self._packet("voice", body), f"voice:{take.id}"
 
     def _evidence_beat(self) -> Tuple[Dict[str, Any], str]:
         app = self.app
@@ -533,29 +747,64 @@ class Producer:
         in_song = bool(arrangement and any(
             r.meta.get("beat_version") == str(beat.version)
             for t in arrangement.tracks for r in t.regions))
-        data = {"stage": "beat", "by": "percussion-1", "tala": beat.tala,
+        tala = app.current_tala()
+        aksharas = int(getattr(tala, "aksharas", 8) or 8)
+        cycle_seconds = aksharas * 60.0 / max(1, beat.tempo_bpm)
+        # Two cycles written out; the rest as counts per section.  The full
+        # stroke list is what pushed a review past its time limit, and a
+        # steady pattern says everything in its first two cycles.
+        first_two = [{"t": round(n.start, 3), "d": round(n.duration, 3),
+                      "stroke": n.swara, "velocity": n.velocity}
+                     for n in beat.notes if n.start < 2 * cycle_seconds]
+        melody = app.project.melody()
+        per_section = []
+        for section in (melody.sections if melody else []):
+            inside = [n for n in beat.notes if section.start <= n.start < section.end]
+            per_section.append({"name": section.name, "strokes": len(inside),
+                                "strokes_per_cycle": round(
+                                    len(inside) / max(0.01, (section.end - section.start)
+                                                      / cycle_seconds), 1)})
+        body = {"by": "percussion-1", "tala": beat.tala, "aksharas_per_cycle": aksharas,
+                "cycle_seconds": round(cycle_seconds, 2),
                 "tempo_bpm": beat.tempo_bpm, "density": beat.density,
-                "duration": round(beat.duration, 2), "note_count": len(beat.notes),
-                "summary": beat.summary(), "in_the_song": in_song}
-        return data, f"beat:v{beat.version}"
+                "duration": round(beat.duration, 2), "stroke_count": len(beat.notes),
+                "first_two_cycles": first_two, "per_section": per_section,
+                "summary": beat.summary(), "in_the_arrangement": in_song}
+        return self._packet("beat", body), f"beat:v{beat.version}"
 
     def _evidence_arrangement(self) -> Tuple[Dict[str, Any], str]:
         app = self.app
         arrangement = app.project.arrangement()
+        melody = app.project.melody()
         lead = app.cast_lead()
         self._bind_instruments(arrangement)
         assigned = {a.profile.description: a.id for a in self.team
                     if a.profile is not None}
-        tracks = [{"label": t.label, "instrument": t.instrument, "role": t.role,
-                   "regions": len(t.regions), "gain": round(t.gain, 2),
-                   "pan": round(t.pan, 2),
-                   "played_by": assigned.get(t.id, "")} for t in arrangement.tracks]
-        data = {"stage": "arrangement", "by": "producer (casting)",
-                "lead": lead.describe(), "tracks": tracks,
+        sections = melody.sections if melody else []
+        tracks = []
+        for track in arrangement.tracks:
+            regions = []
+            for region in track.regions:
+                covers = [s.name for s in sections
+                          if region.start < s.end and region.end > s.start]
+                regions.append({"start": round(region.start, 2),
+                                "end": round(region.end, 2), "role": region.role,
+                                "notes": len(region.notes), "covers": covers,
+                                "generated_by": region.generated_by})
+            tracks.append({"label": track.label, "instrument": track.instrument,
+                           "role": track.role, "gain": round(track.gain, 2),
+                           "pan": round(track.pan, 2), "mute": track.mute,
+                           "played_by": assigned.get(track.id, ""),
+                           "regions": regions})
+        body = {"by": "producer (casting)", "lead": lead.describe(),
+                "vocal": "mixed from the vocal master take; not a track here",
+                "tracks": tracks,
                 "team": [{"id": a.id, "role": a.role.value,
-                          "instrument": a.profile.instrument if a.profile else ""}
+                          "instrument": a.profile.instrument if a.profile else "",
+                          "has_track": bool(a.profile and a.profile.description in
+                                            {t.id for t in arrangement.tracks})}
                          for a in self.team]}
-        return data, f"arrangement:v{arrangement.version}"
+        return self._packet("arrangement", body), f"arrangement:v{arrangement.version}"
 
     def _evidence_mix(self) -> Tuple[Dict[str, Any], str]:
         app = self.app
@@ -565,15 +814,24 @@ class Producer:
         audio = rendered.audio if rendered is not None else None
         sr = app.sample_rate
         settings = app.project.mix_settings
-        data = {"stage": "mix", "by": "producer", "version": mix.version,
+        body = {"by": "producer", "version": mix.version,
                 "duration": round(mix.duration, 2),
-                "loudness_db": round(mix.loudness_db, 1), "path": mix.audio_path,
+                "loudness_db": round(mix.loudness_db, 1),
+                "loudness_method": "K-weighted, whole file, dB",
+                "peak_dbfs": (round(float(dsp.peak_db(audio)), 1)
+                              if audio is not None else None),
+                "true_peak": "not measured",
+                "path": mix.audio_path,
                 "for_arrangement": f"arrangement:v{mix.arrangement_version}",
-                "sections": [{"name": s.name,
+                "for_vocal": f"voice:{app.project.vocal_master.id}"
+                             if app.project.vocal_master else "",
+                "sections": [{"name": s.name, "start": round(s.start, 2),
+                              "end": round(s.end, 2),
                               "rms_db": _rms_db(audio, sr, s.start, s.end)}
                              for s in (melody.sections if melody else [])],
+                "measurement": "RMS in dB FS over the full mix, per section",
                 "settings": {"vocal_gain": round(settings.vocal_gain, 2)}}
-        return data, f"mix:v{mix.version}"
+        return self._packet("mix", body), f"mix:v{mix.version}"
 
     def _bind_instruments(self, arrangement) -> None:
         """Give the team's instrumental roles the instruments actually cast.
@@ -626,10 +884,15 @@ class Producer:
         lines = [f"Whole song production - {app.project.title!r} in "
                  f"{app.project.raaga.selected or 'no raaga'}",
                  f"State: {self.phase}.  {self.summary()}.",
-                 f"Critic: {self.critic_status()}", ""]
+                 f"Critic: {self.critic_status()}",
+                 f"On a blocked review: {self.on_blocked}", ""]
         if self.state is not None:
+            lines.append(f"Journal revision {self.state.revision}; "
+                         f"{len(self.state.records)} record(s)")
             lines.append("Stage        Artifact               Verdict   By        Round  Reason")
             for record in self.state.records:
+                if record.revision != self.state.revision:
+                    continue
                 who = record.provider or record.role
                 lines.append(f"{record.stage:<12} {record.artifact_ref:<22} "
                              f"{record.verdict:<9} {who:<9} {record.round:<6} "

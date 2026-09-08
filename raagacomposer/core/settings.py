@@ -124,7 +124,10 @@ class Settings:
     # Blank = PATH, then the Codex desktop application's bundled CLI.  The
     # sign-in is the CLI's own; nothing here holds a credential.
     codex_executable: str = ""
-    critic_timeout_seconds: float = 120.0   # one stage review, bounded
+    # One stage review, bounded.  Measured on 2026-09-08: 16 s for a brief,
+    # 25 s for a tune, 72 s for a voice packet; the later stages ran past
+    # 120 s as the journal context grew, so the bound is generous.
+    critic_timeout_seconds: float = 300.0
     production_max_rounds: int = 2          # revisions before the Producer decides
     # When a stage cannot be reviewed: "proceed" makes the song and discloses
     # every unreviewed stage; "stop" halts there.
