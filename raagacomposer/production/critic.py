@@ -14,6 +14,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import time
 from typing import Any, Callable, Protocol
 
 from .state import PRODUCTION_STAGES, ProjectState, StageRecord, canonical_json
@@ -48,7 +49,32 @@ class Verdict:
 
 
 class Critic(Protocol):
-    def review(self, stage: str, state: ProjectState, artifact: Any) -> Verdict: ...
+    def review(self, stage: str, state: ProjectState, artifact: Any, *,
+               cancelled: Callable[[], bool] | None = None) -> Verdict: ...
+
+
+class CancelledReview(RuntimeError):
+    """The caller cancelled; this is not a model verdict or a spent review."""
+
+
+def _check_cancelled(cancelled: Callable[[], bool] | None) -> None:
+    if cancelled is not None and cancelled():
+        raise CancelledReview("Codex review cancelled")
+
+
+def _stop_process(process: Any) -> None:
+    """Stop and reap only the process this transport started."""
+    if process.poll() is not None:
+        return
+    try:
+        process.terminate()
+    except ProcessLookupError:
+        pass  # It exited between poll and terminate; still reap it.
+    try:
+        process.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=2)
 
 
 _LIST_FIELDS = ("revisions", "strengths", "lessons", "uncertainty", "evidence")
@@ -99,7 +125,7 @@ was found; the first request may still fail authentication or reach a limit.
 
     def __init__(self, work_root: str | Path, *, executable: str | Path = "codex",
                  model: str | None = None, timeout: float = 120,
-                 run: Callable[..., Any] = subprocess.run) -> None:
+                 popen: Callable[..., Any] = subprocess.Popen) -> None:
         if not 1 <= timeout <= 600:
             raise ValueError("Critic timeout must be between 1 and 600 seconds")
         self.work_root = Path(work_root)
@@ -109,7 +135,7 @@ was found; the first request may still fail authentication or reach a limit.
         self.model = model or "configured Codex model (identity not reported)"
         self._model_argument = model
         self.timeout = timeout
-        self._run = run
+        self._popen = popen
 
     @property
     def resolved_executable(self) -> str | None:
@@ -131,7 +157,9 @@ was found; the first request may still fail authentication or reach a limit.
     def available(self) -> bool:
         return self.resolved_executable is not None
 
-    def __call__(self, prompt: str, schema: dict[str, Any]) -> dict[str, Any]:
+    def __call__(self, prompt: str, schema: dict[str, Any], *,
+                 cancelled: Callable[[], bool] | None = None) -> dict[str, Any]:
+        _check_cancelled(cancelled)
         executable = self.resolved_executable
         if executable is None:
             raise RuntimeError("Codex CLI unavailable; configure an accessible executable path or PATH entry")
@@ -147,13 +175,34 @@ was found; the first request may still fail authentication or reach a limit.
             if self._model_argument:
                 command += ["--model", self._model_argument]
             command.append("-")
-            result = self._run(command, input=prompt, text=True, encoding="utf-8",
-                               errors="replace", stdout=subprocess.DEVNULL,
-                               stderr=subprocess.PIPE, cwd=working, shell=False,
-                               timeout=self.timeout,
-                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-            # Do not expose the raw CLI stderr; it can include private runtime context.
-            if result.returncode != 0:
+            # A file supplies stdin without a potentially blocking pipe write
+            # on Windows. It stays inside this disposable review directory.
+            prompt_file = working / "prompt.txt"
+            prompt_file.write_text(prompt, encoding="utf-8")
+            with prompt_file.open("r", encoding="utf-8") as input_stream:
+                _check_cancelled(cancelled)
+                process = self._popen(command, stdin=input_stream, text=True, encoding="utf-8",
+                    errors="replace", stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    cwd=working, shell=False,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                deadline = time.monotonic() + self.timeout
+                try:
+                    while True:
+                        _check_cancelled(cancelled)
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise subprocess.TimeoutExpired(command, self.timeout)
+                        try:
+                            process.wait(timeout=min(0.1, remaining))
+                            break
+                        except subprocess.TimeoutExpired:
+                            continue
+                    _check_cancelled(cancelled)
+                except BaseException:
+                    _stop_process(process)
+                    raise
+            # Discard CLI output; raw stderr can contain private runtime context.
+            if process.returncode != 0:
                 raise RuntimeError("Codex review did not complete; check executable, supported flags, sign-in, limits and permissions")
             if not answer.is_file() or answer.stat().st_size > 128_000:
                 raise ValueError("Codex returned no bounded review response")
@@ -179,7 +228,9 @@ class CodexCritic:
             return "Codex reviewer unavailable: configure the Codex CLI connection"
         return "Codex reviewer configured; sign-in and model access are checked on review"
 
-    def review(self, stage: str, state: ProjectState, artifact: Any) -> Verdict:
+    def review(self, stage: str, state: ProjectState, artifact: Any, *,
+               cancelled: Callable[[], bool] | None = None) -> Verdict:
+        _check_cancelled(cancelled)
         if stage not in PRODUCTION_STAGES:
             raise ValueError("Unknown production stage")
         context = state.to_dict()
@@ -206,8 +257,10 @@ class CodexCritic:
             raise ValueError("Provide a bounded stage evidence packet")
         request_id = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
         packet["request_id"] = request_id
+        options = {"cancelled": cancelled} if cancelled is not None else {}
         response = self.transport(_GUIDANCE + "\nEvidence packet:\n" + canonical_json(packet),
-                                  json.loads(canonical_json(_SCHEMA)))
+                                  json.loads(canonical_json(_SCHEMA)), **options)
+        _check_cancelled(cancelled)
         if not isinstance(response, dict) or set(response) != set(_SCHEMA["required"]):
             raise ValueError("Incomplete or unexpected review fields")
         if response["request_id"] != request_id or response["stage"] != stage:
@@ -218,12 +271,15 @@ class CodexCritic:
 
 
 def review_stage(critic: Critic, stage: str, state: ProjectState, artifact: Any, *,
-                 artifact_ref: str, round_number: int = 1, max_rounds: int = 3) -> Verdict:
+                 artifact_ref: str, round_number: int = 1, max_rounds: int = 3,
+                 cancelled: Callable[[], bool] | None = None) -> Verdict:
     """One review attempt; caller applies advice and chooses whether to try again.
 
     A wrong round is a caller error: it neither calls the model nor records or
     spends a review. Artifact evidence must be JSON-serialisable before calling.
+    Cancellation propagates as CancelledReview and adds no journal record.
     """
+    _check_cancelled(cancelled)
     if stage not in PRODUCTION_STAGES or not artifact_ref.strip():
         raise ValueError("Review needs a known stage and artifact reference")
     if type(max_rounds) is not int or not 1 <= max_rounds <= 10:
@@ -244,7 +300,9 @@ def review_stage(critic: Critic, stage: str, state: ProjectState, artifact: Any,
         artifact_before = canonical_json(artifact)
         snapshot = ProjectState.from_dict(state.to_dict())
         try:
-            verdict = critic.review(stage, snapshot, json.loads(artifact_before))
+            options = {"cancelled": cancelled} if cancelled is not None else {}
+            verdict = critic.review(stage, snapshot, json.loads(artifact_before), **options)
+            _check_cancelled(cancelled)
             if not isinstance(verdict, Verdict):
                 raise ValueError("Invalid critic response")
             # Revalidate mutable list fields on a returned dataclass.
@@ -252,6 +310,8 @@ def review_stage(critic: Critic, stage: str, state: ProjectState, artifact: Any,
             if verdict.provider != "codex":
                 verdict = Verdict(False, "The requested Codex review is unavailable; local checks are evidence only",
                                   blocked=True, provider=verdict.provider)
+        except CancelledReview:
+            raise
         except Exception as exc:
             # Exceptions can contain secrets or model text; expose the type, not the payload.
             verdict = Verdict(False, f"Critic review failed ({type(exc).__name__}); the stage remains unaccepted",
@@ -259,6 +319,7 @@ def review_stage(critic: Critic, stage: str, state: ProjectState, artifact: Any,
         if state.fingerprint() != before or canonical_json(artifact) != artifact_before:
             verdict = Verdict(False, "The production changed during review; discard this stale response",
                               blocked=True)
+    _check_cancelled(cancelled)
     state.add_record(StageRecord(stage=stage, role="critic", artifact_ref=artifact_ref,
         rationale=verdict.reason,
         verdict="blocked" if verdict.blocked else ("accept" if verdict.accept else "revise"),

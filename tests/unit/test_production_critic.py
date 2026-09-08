@@ -1,11 +1,13 @@
 import json
 from pathlib import Path
 import subprocess
-from types import SimpleNamespace
+import sys
+import threading
 
 import pytest
 
-from raagacomposer.production.critic import CodexCliTransport, CodexCritic, Verdict, review_stage
+from raagacomposer.production.critic import (CancelledReview, CodexCliTransport,
+                                           CodexCritic, Verdict, review_stage)
 from raagacomposer.production.state import ProjectState
 
 
@@ -18,7 +20,7 @@ class FakeCodex:
         self.change = change
         self.calls = []
 
-    def __call__(self, prompt, schema):
+    def __call__(self, prompt, schema, *, cancelled=None):
         packet = json.loads(prompt.split("Evidence packet:\n", 1)[1])
         self.calls.append(packet)
         response = dict(request_id=packet["request_id"], stage=packet["stage"],
@@ -29,6 +31,47 @@ class FakeCodex:
         if self.change:
             self.change(response)
         return response
+
+
+class DoneProcess:
+    def __init__(self, returncode=0):
+        self.returncode = returncode
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+    def poll(self):
+        return self.returncode
+
+
+class WaitingProcess:
+    """A child that can exit on terminate or require kill, without real waiting."""
+    def __init__(self, ignore_terminate=False, on_wait=lambda: None):
+        self.returncode = None
+        self.ignore_terminate = ignore_terminate
+        self.on_wait = on_wait
+        self.terminated = False
+        self.killed = False
+        self.reaped = False
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self, timeout=None):
+        if self.returncode is None:
+            self.on_wait()
+            raise subprocess.TimeoutExpired("fake-child", timeout)
+        self.reaped = True
+        return self.returncode
+
+    def terminate(self):
+        self.terminated = True
+        if not self.ignore_terminate:
+            self.returncode = -1
+
+    def kill(self):
+        self.killed = True
+        self.returncode = -9
 
 
 def test_guiding_review_retains_strengths_lessons_uncertainty_and_source():
@@ -137,7 +180,7 @@ def test_startup_availability_does_not_call_a_model(tmp_path, monkeypatch):
     from raagacomposer.production import critic as module
     monkeypatch.setattr(module.shutil, "which", lambda executable: None)
     called = []
-    reviewer = CodexCritic(CodexCliTransport(tmp_path, run=lambda *a, **k: called.append(1)))
+    reviewer = CodexCritic(CodexCliTransport(tmp_path, popen=lambda *a, **k: called.append(1)))
     assert not reviewer.available
     assert "unavailable" in reviewer.status()
     assert called == [] and not list(tmp_path.iterdir())
@@ -147,16 +190,18 @@ def test_cli_adapter_uses_stdin_read_only_and_ephemeral_workspace(tmp_path, monk
     from raagacomposer.production import critic as module
     monkeypatch.setattr(module.shutil, "which", lambda executable: executable)
     observed = []
-    def fake_run(command, **kwargs):
+    def fake_popen(command, **kwargs):
+        prompt = kwargs["stdin"].read()
+        kwargs["observed_prompt"] = prompt
         observed.append((command, kwargs))
         answer = Path(command[command.index("--output-last-message") + 1])
         assert Path(command[command.index("--output-schema") + 1]).is_file()
-        packet = json.loads(kwargs["input"].split("Evidence packet:\n", 1)[1])
-        response = FakeCodex()(kwargs["input"], {})
+        packet = json.loads(prompt.split("Evidence packet:\n", 1)[1])
+        response = FakeCodex()(prompt, {})
         assert response["request_id"] == packet["request_id"]
         answer.write_text(json.dumps(response), encoding="utf-8")
-        return SimpleNamespace(returncode=0)
-    backend = CodexCliTransport(tmp_path, executable="codex.exe", run=fake_run)
+        return DoneProcess()
+    backend = CodexCliTransport(tmp_path, executable="codex.exe", popen=fake_popen)
     assert not observed  # Startup never generates a hidden model request.
     result = CodexCritic(backend).review("tune", ProjectState(project_id="song"),
                                        {"words": "quotes and $() stay data"})
@@ -165,8 +210,9 @@ def test_cli_adapter_uses_stdin_read_only_and_ephemeral_workspace(tmp_path, monk
     assert command[command.index("--sandbox") + 1] == "read-only"
     assert "--ephemeral" in command and command[-1] == "-"
     assert not any("bypass" in arg or "ignore-rules" in arg for arg in command)
-    assert kwargs["shell"] is False and kwargs["timeout"] == 120
-    assert "quotes and $()" in kwargs["input"] and "quotes and $()" not in " ".join(command)
+    assert kwargs["shell"] is False and kwargs["stderr"] == subprocess.DEVNULL
+    assert "quotes and $()" in kwargs["observed_prompt"] and "quotes and $()" not in " ".join(command)
+    assert kwargs["stdin"].closed
     assert not list(tmp_path.iterdir())
 
 
@@ -178,12 +224,12 @@ def test_explicit_executable_outside_path_is_used_without_installing(tmp_path, m
     binary.chmod(0o700)
     monkeypatch.setattr(module.shutil, "which", lambda executable: None)
     observed = []
-    def fake_run(command, **kwargs):
+    def fake_popen(command, **kwargs):
         observed.append(command)
         Path(command[command.index("--output-last-message") + 1]).write_text(
-            json.dumps(FakeCodex()(kwargs["input"], {})))
-        return SimpleNamespace(returncode=0)
-    transport = CodexCliTransport(tmp_path / "work", executable=binary, run=fake_run)
+            json.dumps(FakeCodex()(kwargs["stdin"].read(), {})))
+        return DoneProcess()
+    transport = CodexCliTransport(tmp_path / "work", executable=binary, popen=fake_popen)
     assert transport.available and not observed
     assert CodexCritic(transport).review("brief", ProjectState(project_id="song"), {}).accept
     assert observed[0][0] == str(binary.resolve())
@@ -195,7 +241,7 @@ def test_missing_explicit_executable_never_falls_back_to_path(tmp_path, monkeypa
     monkeypatch.setattr(module.shutil, "which", lambda executable: "a-different-codex.exe")
     calls = []
     transport = CodexCliTransport(tmp_path, executable=tmp_path / "missing.exe",
-                                 run=lambda *a, **k: calls.append(1))
+                                 popen=lambda *a, **k: calls.append(1))
     assert not transport.available
     song = ProjectState(project_id="song")
     verdict = review_stage(CodexCritic(transport), "brief", song, {}, artifact_ref="brief-v1")
@@ -262,18 +308,114 @@ def test_oversized_current_evidence_still_blocks_before_model_request():
     assert result.blocked and not backend.calls and not state.is_accepted("tune", "v1")
 
 
-@pytest.mark.parametrize("mode", ["timeout", "nonzero", "missing", "malformed"])
+@pytest.mark.parametrize("mode", ["nonzero", "missing", "malformed", "spawn_error"])
 def test_cli_failures_block_without_fallback(tmp_path, monkeypatch, mode):
     from raagacomposer.production import critic as module
     monkeypatch.setattr(module.shutil, "which", lambda executable: executable)
-    def fake_run(command, **kwargs):
-        if mode == "timeout":
-            raise subprocess.TimeoutExpired(command, 120)
+    def fake_popen(command, **kwargs):
+        if mode == "spawn_error":
+            raise OSError("private-child-detail")
         if mode == "malformed":
             Path(command[command.index("--output-last-message") + 1]).write_text("not-json")
-        return SimpleNamespace(returncode=1 if mode == "nonzero" else 0)
+        return DoneProcess(returncode=1 if mode == "nonzero" else 0)
     state = ProjectState(project_id="song")
-    result = review_stage(CodexCritic(CodexCliTransport(tmp_path, run=fake_run)),
+    result = review_stage(CodexCritic(CodexCliTransport(tmp_path, popen=fake_popen)),
                           "tune", state, {}, artifact_ref="v1")
     assert result.blocked and not state.is_accepted("tune", "v1")
     assert not list(tmp_path.iterdir())
+
+
+def test_precancelled_review_never_spawns_or_spends_budget(tmp_path):
+    called = []
+    state = ProjectState(project_id="song")
+    critic = CodexCritic(CodexCliTransport(tmp_path, popen=lambda *a, **k: called.append(1)))
+    with pytest.raises(CancelledReview):
+        review_stage(critic, "brief", state, {}, artifact_ref="brief-v1", cancelled=lambda: True)
+    assert not called and not state.records and not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("ignore_terminate", [False, True])
+def test_inflight_cancel_terminates_and_reaps_child_without_record(tmp_path, monkeypatch, ignore_terminate):
+    from raagacomposer.production import critic as module
+    monkeypatch.setattr(module.shutil, "which", lambda executable: executable)
+    event = threading.Event()
+    child = WaitingProcess(ignore_terminate=ignore_terminate, on_wait=event.set)
+    critic = CodexCritic(CodexCliTransport(tmp_path, popen=lambda *a, **k: child))
+    state = ProjectState(project_id="song")
+    with pytest.raises(CancelledReview):
+        review_stage(critic, "brief", state, {}, artifact_ref="brief-v1", cancelled=event.is_set)
+    assert child.terminated and child.reaped and child.killed == ignore_terminate
+    assert not state.records and not list(tmp_path.iterdir())
+
+
+def test_timeout_reaps_child_and_blocks_without_private_output(tmp_path, monkeypatch):
+    from raagacomposer.production import critic as module
+    monkeypatch.setattr(module.shutil, "which", lambda executable: executable)
+    clock = [0.0]
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+    def advance():
+        clock[0] += 0.5
+    child = WaitingProcess(ignore_terminate=True, on_wait=advance)
+    state = ProjectState(project_id="song")
+    verdict = review_stage(CodexCritic(CodexCliTransport(tmp_path, timeout=1,
+        popen=lambda *a, **k: child)), "brief", state, {}, artifact_ref="brief-v1")
+    assert verdict.blocked and "TimeoutExpired" in verdict.reason
+    assert child.terminated and child.killed and child.reaped
+    assert len(state.records) == 1 and not state.is_accepted("brief", "brief-v1")
+    assert not list(tmp_path.iterdir())
+
+
+def test_cancel_on_return_discards_valid_verdict_and_allows_round_one_again():
+    event = threading.Event()
+    backend = FakeCodex(lambda response: event.set())
+    state = ProjectState(project_id="song")
+    with pytest.raises(CancelledReview):
+        review_stage(CodexCritic(backend), "brief", state, {}, artifact_ref="v1", cancelled=event.is_set)
+    assert len(backend.calls) == 1 and not state.records
+    verdict = review_stage(CodexCritic(FakeCodex()), "brief", state, {}, artifact_ref="v1")
+    assert verdict.accept and state.records[-1].round == 1
+
+
+def test_cancellation_callback_failure_still_stops_owned_child(tmp_path, monkeypatch):
+    from raagacomposer.production import critic as module
+    monkeypatch.setattr(module.shutil, "which", lambda executable: executable)
+    spawned = []
+    child = WaitingProcess()
+    def spawn(*args, **kwargs):
+        spawned.append(child)
+        return child
+    def cancelled():
+        if spawned:
+            raise RuntimeError("private-callback-error")
+        return False
+    state = ProjectState(project_id="song")
+    # Transport owns cleanup even if a badly behaved caller's callback raises.
+    with pytest.raises(RuntimeError, match="private-callback-error"):
+        CodexCliTransport(tmp_path, popen=spawn)("test prompt", {}, cancelled=cancelled)
+    assert child.terminated and child.reaped and not list(tmp_path.iterdir())
+    assert not state.records
+
+
+def test_real_harmless_child_is_cancelled_and_reaped_with_large_stdin(tmp_path):
+    """No model: exercise Windows process/stdin/cleanup using only a sleeping Python child."""
+    children = []
+    event = threading.Event()
+    timer = threading.Timer(0.25, event.set)
+    def spawn(command, **kwargs):
+        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], **kwargs)
+        children.append(process)
+        timer.start()
+        return process
+    try:
+        with pytest.raises(CancelledReview):
+            CodexCliTransport(tmp_path, executable=sys.executable, popen=spawn)(
+                "அ" * 100_000, {}, cancelled=event.is_set)
+        # Observe cleanup before the test's own emergency cleanup can mask it.
+        assert len(children) == 1 and children[0].poll() is not None
+        assert not list(tmp_path.iterdir())
+    finally:
+        timer.cancel()
+        for child in children:
+            if child.poll() is None:
+                child.kill()
+                child.wait(timeout=2)
