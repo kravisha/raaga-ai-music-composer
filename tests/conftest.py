@@ -40,12 +40,18 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 # stale projects_dir left in it once made a regression test depend on which
 # of last week's temporary folders still existed.
 os.environ.pop("ANTHROPIC_API_KEY", None)
-(_TEST_HOME / "settings.json").write_text(json.dumps({
+#: What every test starts from.  Written to the shared home once per
+#: session for the module-scoped fixtures that load before a test begins,
+#: and copied into each test's own settings file by ``own_settings_file``
+#: below, so nothing a test saves can reach another test.
+_SETTINGS_TEMPLATE = {
     "llm_provider": "off",
     "llm_routing": "off",
     "projects_dir": str(_TEST_HOME / "projects"),
     "recent_projects": [],
-}, indent=2), encoding="utf-8")
+}
+(_TEST_HOME / "settings.json").write_text(json.dumps(_SETTINGS_TEMPLATE, indent=2),
+                                          encoding="utf-8")
 
 from raagacomposer.core.models import CreativeBrief          # noqa: E402
 from raagacomposer.core.settings import Settings             # noqa: E402
@@ -218,6 +224,42 @@ def lesson_recording():
 # --------------------------------------------------------------------------
 # environment fixtures
 # --------------------------------------------------------------------------
+@pytest.fixture(autouse=True)
+def own_settings_file(tmp_path_factory: pytest.TempPathFactory,
+                      monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Every test reads and writes its own settings.json.
+
+    Settings.save is called by more than the settings dialog: registering
+    a project (``remember_project``) and switching the workspace both
+    write the whole Settings object to disk.  With one settings.json in
+    the shared test home, a value one test set in memory - a "stop"
+    policy, a LEARN workspace - was written there by such a save and read
+    by every test that loaded settings afterwards (2026-09-08, two suite
+    failures).  Pointing ``Settings.path`` at a per-test copy of the
+    template ends that: a save persists for the rest of *this* test and
+    no further.  Module-scoped fixtures that load settings before a test
+    begins still read the shared template, which is never written after
+    the session starts.
+    """
+    from raagacomposer.core import settings as settings_module
+
+    # Its own directory, not the test's tmp_path: tests that assert their
+    # tmp_path stayed empty must not find a settings file in it.
+    path = tmp_path_factory.mktemp("settings") / "settings.json"
+    path.write_text(json.dumps(_SETTINGS_TEMPLATE, indent=2), encoding="utf-8")
+    original = Settings.path.__func__
+
+    def path_for_this_test(cls) -> Path:
+        # A test that relocates the home on purpose - to check what a fresh
+        # installation gets - keeps the settings file that home implies.
+        if settings_module.config_dir() != _TEST_HOME:
+            return original(cls)
+        return path
+
+    monkeypatch.setattr(Settings, "path", classmethod(path_for_this_test))
+    return path
+
+
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
     s = Settings.load()
