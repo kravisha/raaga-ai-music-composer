@@ -198,3 +198,68 @@ def test_a_long_learned_phrase_passes_the_originality_checker_too(keeravani):
         swaras = [n.swara for n in melody.notes]
         report = check_originality(swaras, index)
         assert report.longest_match <= MAX_QUOTE_NOTES, (seed, report.summary())
+
+
+def test_a_coincidental_run_matching_a_learned_phrase_is_broken_past_the_bound(keeravani):
+    """Quoting is bounded; a free walk that happens to climb the scale was
+    not, and an 8-note ascent matched the 8-note phrase in the bank as
+    surely as a quote would.  The bound now holds on the finished line."""
+    from raagacomposer.core.models import Note
+    from raagacomposer.music.melody import break_long_quotes, token_midi
+    long_phrase = ["S", "R2", "G2", "M1", "P", "D1", "N3", "S+"]
+    learned = replace(keeravani, prayogas=[long_phrase] + keeravani.prayogas)
+    tokens = ["P-", "D1-"] + long_phrase + ["N3", "P"]
+    notes = [Note(swara=tok, midi=token_midi(learned, tok, 60), start=i * 0.5,
+                  duration=0.5, velocity=80, section_id="sec_x")
+             for i, tok in enumerate(tokens)]
+    changed = break_long_quotes(learned, notes, 60, provenance=[])
+    assert changed >= 1
+    assert len(notes) == len(tokens)
+    bases = [parse_swara(n.swara)[0] for n in notes]
+    long_bases = [parse_swara(t)[0] for t in long_phrase]
+    assert _longest_shared_run(bases, long_bases) <= MAX_QUOTE_NOTES, bases
+    # Every note is still the raaga's, and the changed note repeats its
+    # predecessor rather than inventing a step.
+    for prev, note in zip(notes, notes[1:]):
+        assert parse_swara(note.swara)[0] in learned.allowed
+    assert all(n.midi == token_midi(learned, n.swara, 60) for n in notes)
+    # A line already inside the bound is left exactly as it was.
+    short = [Note(swara=tok, midi=token_midi(learned, tok, 60), start=i * 0.5,
+                  duration=0.5, velocity=80, section_id="sec_x")
+             for i, tok in enumerate(long_phrase[:MAX_QUOTE_NOTES] + ["P"])]
+    before = [(n.swara, n.midi) for n in short]
+    assert break_long_quotes(learned, short, 60, provenance=[]) == 0
+    assert [(n.swara, n.midi) for n in short] == before
+
+
+def test_the_bound_holds_and_ends_with_repeated_notes_and_overlapping_phrases(keeravani):
+    """Arya's two termination cases: a bank phrase that repeats a note (a
+    repeat of the predecessor cannot break the match there) and phrases
+    that overlap each other; the pass must still end, keep every duration
+    and lock, and leave the quote record true to the notes."""
+    from raagacomposer.core.models import Note
+    from raagacomposer.music.melody import break_long_quotes, token_midi
+    repeated = ["S", "S", "R2", "R2", "G2", "G2", "M1", "M1", "P", "P"]
+    climb = ["S", "R2", "G2", "M1", "P", "D1", "N3", "S+"]
+    tail = ["G2", "M1", "P", "D1", "N3", "S+", "R2+", "G2+"]
+    learned = replace(keeravani, prayogas=[repeated, climb, tail] + keeravani.prayogas)
+    tokens = repeated + ["D1"] + climb + ["R2+", "G2+"] + ["P", "S"]
+    notes = [Note(swara=tok, midi=token_midi(learned, tok, 60), start=i * 0.5,
+                  duration=0.25 + 0.05 * (i % 3), velocity=80, section_id="sec_x")
+             for i, tok in enumerate(tokens)]
+    # Locks live on sections, and a rewrite runs the pass on the new
+    # section's notes alone (regenerate_section), so a locked section's
+    # notes never reach it; what is checked here is the pass itself.
+    durations = [n.duration for n in notes]
+    # A quote window over part of the climb, as the generator records one.
+    lo = len(repeated) + 1
+    provenance = [{"start": lo, "end": lo + 2, "swaras": "S R2 G2", "section_id": "sec_x"}]
+    changed = break_long_quotes(learned, notes, 60, provenance=provenance)
+    assert changed >= 1
+    bases = [parse_swara(n.swara)[0] for n in notes]
+    for phrase in (repeated, climb, tail):
+        assert _longest_shared_run(bases, [parse_swara(t)[0] for t in phrase]) \
+            <= MAX_QUOTE_NOTES, (phrase, bases)
+    assert [n.duration for n in notes] == durations
+    assert provenance[0]["swaras"] == " ".join(n.swara for n in notes[lo:lo + 3])
+    assert all(parse_swara(n.swara)[0] in learned.allowed for n in notes)

@@ -478,6 +478,80 @@ def generate_section_notes(raaga: Raaga, section: Section, opts: MelodyOptions,
     return notes
 
 
+def break_long_quotes(raaga: Raaga, notes: List[Note], tonic: int,
+                      provenance: Optional[List[dict]] = None) -> int:
+    """Hold the quoting bound on the finished line.
+
+    Quoting is bounded by construction - a fragment of QUOTE_FRAGMENT_NOTES
+    from anything longer than MAX_QUOTE_NOTES - but a free walk that
+    happens to climb the scale, or a walk that chains onto a fragment, is
+    not, and an eight-note ascent matches an eight-note phrase in the bank
+    as surely as a quote would (seed 3 of the idiom tests, 2026-09-08).
+    For every bank phrase, a run of consecutive matching notes longer than
+    MAX_QUOTE_NOTES has one note past the bound changed to a repeat of its
+    predecessor - always the raaga's, direction-neutral - choosing a note
+    outside any recorded quote window when there is one.  Returns how many
+    notes were changed.
+    """
+    if not raaga.prayogas or len(notes) <= MAX_QUOTE_NOTES:
+        return 0
+    quoted = set()
+    for entry in provenance or []:
+        quoted.update(range(int(entry.get("start", -1)), int(entry.get("end", -2)) + 1))
+    phrases = []
+    for phrase in raaga.prayogas:
+        bases = [parse_swara(t)[0] for t in phrase]
+        if len(bases) > MAX_QUOTE_NOTES:
+            phrases.append(bases)
+    if not phrases:
+        return 0
+    def longest_run_at(bases: List[str]):
+        # Any stretch of any bank phrase, not only its opening.
+        for phrase in phrases:
+            for j in range(len(phrase) - MAX_QUOTE_NOTES):
+                for i in range(len(bases) - MAX_QUOTE_NOTES):
+                    run = 0
+                    while (i + run < len(bases) and j + run < len(phrase)
+                           and bases[i + run] == phrase[j + run]):
+                        run += 1
+                    if run > MAX_QUOTE_NOTES:
+                        return i, run, phrase[j:j + run]
+        return None
+
+    changed = 0
+    tried = set()
+    for _ in range(len(notes)):
+        bases = [parse_swara(n.swara)[0] for n in notes]
+        found = longest_run_at(bases)
+        if found is None:
+            break
+        start, run, stretch = found
+        # A note past the bound whose repeat of its predecessor breaks the
+        # match (the phrase does not repeat there), outside a quote window
+        # when possible.
+        candidates = [start + k for k in range(MAX_QUOTE_NOTES, run)
+                      if stretch[k] != stretch[k - 1]]
+        if not candidates:
+            candidates = [start + k for k in range(MAX_QUOTE_NOTES, run)]
+        at = next((k for k in candidates if k not in quoted), candidates[0])
+        if (start, at) in tried:
+            break
+        tried.add((start, at))
+        prev = notes[at - 1]
+        notes[at].swara = prev.swara
+        notes[at].midi = prev.midi
+        notes[at].gamaka = ""
+        changed += 1
+        if at in quoted:
+            # The only place left to break the run was inside a quote
+            # window: the record of what was quoted says what is there now.
+            for entry in provenance or []:
+                lo, hi = int(entry.get("start", -1)), int(entry.get("end", -2))
+                if lo <= at <= hi:
+                    entry["swaras"] = " ".join(n.swara for n in notes[lo:hi + 1])
+    return changed
+
+
 # --------------------------------------------------------------------------
 # public API
 # --------------------------------------------------------------------------
@@ -508,6 +582,8 @@ def generate(raaga: Raaga, opts: MelodyOptions,
     # once octaves are placed and the sections are joined, and it is the
     # direction that decides whether a note is allowed (see enforce_direction).
     enforce_direction(raaga, melody.notes, opts.tonic_midi)
+    # And the quoting bound, which a free walk can cross by coincidence.
+    break_long_quotes(raaga, melody.notes, opts.tonic_midi, melody.provenance)
     return melody
 
 
@@ -551,6 +627,9 @@ def regenerate_section(melody: MelodyVersion, raaga: Raaga, section_id: str,
     local_provenance: List[dict] = []
     new_notes = generate_section_notes(raaga, fresh.sections[index], opts,
                                        seed, entry, provenance=local_provenance)
+    # The quoting bound on the new section alone: kept sections are the
+    # creator's and are not touched, so a run across the join is left.
+    break_long_quotes(raaga, new_notes, opts.tonic_midi, local_provenance)
 
     # Rebuilt section by section, in time order (sections never overlap), so
     # this reproduces exactly what "carry every other note, sort by start"

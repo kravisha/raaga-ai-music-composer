@@ -404,3 +404,29 @@ def test_mix_reports_progress_and_honours_cancellation(melody, kambhoji):
     stopped = mixer.mix(_simple_arrangement(melody, kambhoji), None, SR, 5.0,
                         kind="instrumental", cancelled=lambda: True)
     assert stopped.audio is not None
+
+
+def test_the_bass_stays_below_a_voice_that_reaches_the_bass_register(kambhoji):
+    """The bass register was tonic-24..tonic-5 whatever the voice did; a tune
+    whose lowest sung note is tonic-5 met the bass on that note (the planner
+    change of 2026-09-08 gave the Kambhoji fixture such a tune)."""
+    from raagacomposer.core.models import MelodyVersion, Section, SectionKind
+    tonic = 60
+    melody = MelodyVersion(version=1, raaga="Kambhoji", tonic_midi=tonic, tempo_bpm=76,
+                           sections=[Section(name="Pallavi", kind=SectionKind.PALLAVI,
+                                             start=0.0, end=60.0)])
+    section = melody.sections[0]
+    t = 0.0
+    for midi, swara in ((tonic - 5, "P-"), (tonic - 3, "D2-"), (tonic, "S"),
+                        (tonic + 4, "G3"), (tonic - 5, "P-"), (tonic + 2, "R2")):
+        melody.notes.append(Note(swara=swara, midi=midi, start=t, duration=2.0,
+                                 velocity=80, section_id=section.id))
+        t += 2.0
+    v_low, _ = arranger.vocal_register(melody)
+    assert v_low == tonic - 5
+    inst = catalog.get("bass")
+    low, high = arranger.choose_register(inst, "bass", melody, tonic)
+    assert high < v_low, (low, high)
+    bass = generate_part(melody, kambhoji,
+                         PartRequest(instrument="bass", role="bass", start=0.0, end=12.0))
+    assert bass and max(n.midi for n in bass) < v_low

@@ -78,7 +78,9 @@ def choose_register(inst: Instrument, role: str, melody: MelodyVersion,
     v_low, v_high = vocal_register(melody)
     lo, hi = inst.midi_low, inst.midi_high
     if role == "bass":
-        target_low, target_high = tonic - 24, tonic - 5
+        # Below the voice, whatever the voice does: a tune that reaches
+        # down to tonic-5 met the bass on that very note.
+        target_low, target_high = tonic - 24, min(tonic - 5, v_low - 1)
     elif role == "pad":
         target_low, target_high = tonic - 12, v_low + 2
     elif role == "drone":
