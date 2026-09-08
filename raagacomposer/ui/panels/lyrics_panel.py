@@ -140,18 +140,23 @@ class LyricsPanel(QWidget):
         chosen = self.app.project.lyrics_version(int(version))
         if chosen is None:
             return
-        if chosen.unfitted:
-            # Looking at a draft is not choosing it.  The approved words
-            # stay in use until the missing lines are written and the
-            # draft is accepted.
-            self._viewing = chosen.version
+        # Looking at a version is not choosing it - not a draft, and not a
+        # draft whose missing lines have since been written either.  The
+        # approved words stay in use until Accept says otherwise.
+        approved = self.app.project.approved_lyrics
+        self._viewing = None if chosen.version == approved else chosen.version
+        if chosen.version == approved:
+            self.app.status(f"Lyrics v{chosen.version} is the approved version.")
+        elif chosen.unfitted:
             self.app.status(f"Viewing lyrics v{chosen.version}, a draft with "
-                            f"{chosen.unfitted} missing line(s); v"
-                            f"{self.app.project.approved_lyrics} stays approved.")
+                            f"{chosen.unfitted} missing line(s); v{approved} "
+                            f"stays approved.")
+        elif approved is None:
+            self.app.status(f"Viewing lyrics v{chosen.version}; no version is "
+                            f"approved yet. Accept lyrics to use it.")
         else:
-            self._viewing = None
-            self.app.project.approved_lyrics = chosen.version
-            self.app._changed("lyrics.select", f"Switched to lyrics v{chosen.version}")
+            self.app.status(f"Viewing lyrics v{chosen.version}; v{approved} stays "
+                            f"approved. Accept lyrics to use v{chosen.version}.")
         self.refresh()
         self.changed.emit()
 
@@ -168,7 +173,7 @@ class LyricsPanel(QWidget):
             QMessageBox.information(self, "Lyrics", "Select a line first.")
             return
         try:
-            warnings = self.app.regenerate_lyric_line(line.id)
+            warnings = self.app.regenerate_lyric_line(line.id, version=self.shown().version)
         except Exception as exc:  # noqa: BLE001
             QMessageBox.warning(self, "Lyrics", str(exc))
             return
@@ -181,7 +186,8 @@ class LyricsPanel(QWidget):
         line = self._current_line()
         if line is None:
             return
-        self.app.set_lyric_line_lock(line.id, not line.locked)
+        self.app.set_lyric_line_lock(line.id, not line.locked,
+                                     version=self.shown().version)
         self.refresh()
 
     def _play_line(self) -> None:
@@ -198,7 +204,8 @@ class LyricsPanel(QWidget):
             return
         line = lyrics.lines[item.row()]
         try:
-            warnings = self.app.edit_lyric_line(line.id, item.text())
+            warnings = self.app.edit_lyric_line(line.id, item.text(),
+                                                version=lyrics.version)
         except Exception as exc:  # noqa: BLE001
             QMessageBox.warning(self, "Lyrics", str(exc))
             self.refresh()

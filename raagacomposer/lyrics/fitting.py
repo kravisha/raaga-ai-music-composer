@@ -10,6 +10,7 @@ stressed (long or downbeat) notes.
 """
 from __future__ import annotations
 
+import copy
 import re
 import unicodedata
 from dataclasses import dataclass, field
@@ -308,7 +309,10 @@ def fit_lines(lines: Sequence[str], melody: MelodyVersion, language: str,
     warnings: List[str] = []
     for i, slot in enumerate(slots):
         if i in locked_by_slot:
-            lv.lines.append(locked_by_slot[i])
+            # The same line, id and all, so that a lock placed on it is
+            # found again - but its own object, so that unlocking or
+            # editing it in one version cannot reach into another.
+            lv.lines.append(copy.deepcopy(locked_by_slot[i]))
             continue
         text = lines[i] if i < len(lines) else ""
         syllables, indices, warn = fit_line(text, slot)

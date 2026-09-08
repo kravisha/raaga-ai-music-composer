@@ -2683,17 +2683,28 @@ class AppController:
             return None
         return singable
 
-    def _lyrics_holding(self, line_id: str):
-        """The version a line belongs to.  A draft's lines can be edited,
-        rewritten and locked while the approved version stays in use; the
-        line id says which version is meant, so the panel does not have to."""
+    def _lyrics_holding(self, line_id: str, version: Optional[int] = None):
+        """The version a line action is meant for.
+
+        A locked line keeps its id into the next draft, so an id alone can
+        name a line in two versions; the panel says which version is on
+        its table, and that one is meant.  Without a version, the newest
+        holder of the id answers - the draft most recently written, which
+        is where a line is edited when nobody is looking at an older one.
+        """
+        if version is not None:
+            lyrics = self.project.lyrics_version(version)
+            if lyrics is not None and lyrics.line_by_id(line_id) is not None:
+                return lyrics
+            return None
         for lyrics in reversed(self.project.lyrics):
             if lyrics.line_by_id(line_id) is not None:
                 return lyrics
         return None
 
-    def edit_lyric_line(self, line_id: str, text: str) -> List[str]:
-        lyrics = self._lyrics_holding(line_id)
+    def edit_lyric_line(self, line_id: str, text: str,
+                        version: Optional[int] = None) -> List[str]:
+        lyrics = self._lyrics_holding(line_id, version)
         melody = self.project.melody()
         if lyrics is None or melody is None:
             return []
@@ -2706,8 +2717,9 @@ class AppController:
         self._changed("lyrics.edit", "Edited a lyric line")
         return warnings
 
-    def regenerate_lyric_line(self, line_id: str) -> List[str]:
-        lyrics = self._lyrics_holding(line_id)
+    def regenerate_lyric_line(self, line_id: str,
+                              version: Optional[int] = None) -> List[str]:
+        lyrics = self._lyrics_holding(line_id, version)
         melody = self.project.melody()
         if lyrics is None or melody is None:
             return []
@@ -2716,8 +2728,9 @@ class AppController:
         self._changed("lyrics.line", "Rewrote a lyric line")
         return warnings
 
-    def set_lyric_line_lock(self, line_id: str, locked: bool) -> None:
-        lyrics = self._lyrics_holding(line_id)
+    def set_lyric_line_lock(self, line_id: str, locked: bool,
+                            version: Optional[int] = None) -> None:
+        lyrics = self._lyrics_holding(line_id, version)
         if lyrics is None:
             return
         line = lyrics.line_by_id(line_id)

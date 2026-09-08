@@ -115,3 +115,27 @@ def test_a_partial_answer_keeps_the_approved_words_and_says_what_is_missing(app,
     assert "draft" in app.status_text and str(len(slots) - 1) in app.status_text, app.status_text
     for slot in slots[1:]:
         assert slot.section_name in draft.notes
+
+
+def test_a_line_action_reaches_the_version_it_names_not_the_newest(app, settle):
+    """A locked line keeps its id into the next draft; an action on the older
+    version's line must land there, not on the newest draft that also holds
+    that id."""
+    _a_tune(app, "Line actions by version")
+    from raagacomposer.lyrics.fitting import build_slots
+    count = len(build_slots(app.project.melody()))
+    first = _write(app, settle, _Writer([TAMIL_FIRST_LINE] * count))
+    app.set_lyric_line_lock(first.lines[0].id, True)
+    second = _write(app, settle, _Writer(["மலர்ந்தேன் நானே"] * count))
+    line_id = first.lines[0].id
+    assert second.lines[0].id == line_id and second.lines[0].locked
+    assert second.lines[0] is not first.lines[0]
+
+    app.set_lyric_line_lock(line_id, False, version=first.version)
+    assert not first.lines[0].locked and second.lines[0].locked
+    app.edit_lyric_line(line_id, "வா வா அன்பே", version=first.version)
+    assert first.lines[0].text == "வா வா அன்பே"
+    assert second.lines[0].text == TAMIL_FIRST_LINE
+    # Without a version the newest holder answers, as before.
+    app.set_lyric_line_lock(line_id, False)
+    assert not second.lines[0].locked
