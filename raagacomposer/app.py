@@ -1943,6 +1943,56 @@ class AppController:
                          on_error=lambda e: self.error("tune", f"Variation failed: {e}"),
                          description="Tune variation")
 
+    def _rewrite_the_section_asked(self, cmd: Command) -> bool:
+        """A spoken or typed request to change one section, resolved the way
+        the Producer resolves the Critic's: the sentence is placed on the
+        tune by clause, so "keep the Pallavi unchanged; make the Charanam
+        softer" softens the Charanam and keeps the Pallavi, whichever came
+        first.  A sentence that names only a kept or locked section, or
+        more than one section to change, or asks only for what is not a
+        control, is refused before anything moves, and the reason is said.
+        Returns True when a rewrite was submitted."""
+        from .music.direction import read_direction
+        from .production.targets import place_revisions
+        melody = self.project.melody()
+        if melody is None:
+            self.status("There is no tune to rewrite yet.")
+            return False
+        placement = place_revisions([cmd.text], melody)
+        targets = placement.targets
+        if not targets and not placement.placed_anything:
+            # The sentence named no section the reader could see; the
+            # parser's section (or the last one spoken of) stands in.
+            section_id = cmd.section_id or self.context.last_section_id
+            section = melody.section_by_id(section_id) if section_id else None
+            if section is not None and not section.locked:
+                targets = [section]
+        if not targets:
+            if placement.skipped_locked:
+                self.status(f"{', '.join(placement.skipped_locked)} is locked. "
+                            f"Unlock it first.")
+            elif placement.preserved:
+                self.status(f"{', '.join(placement.preserved)} is kept, as you asked; "
+                            f"there is nothing to rewrite.")
+            else:
+                self.status("Which section should I rewrite?")
+            return False
+        if len(targets) > 1:
+            self.status(f"One section at a time: {', '.join(s.name for s in targets)} "
+                        f"were named. Say which.")
+            return False
+        section = targets[0]
+        clauses = placement.clauses.get(section.id) or [cmd.text]
+        direction = read_direction(" ".join(clauses))
+        if direction.is_empty() and (direction.unsupported or direction.declined
+                                     or direction.contradictions):
+            # Nothing asked for can be done: a rewrite now would be a
+            # change nobody asked for, dressed as the one they did.
+            self.status(f"{section.name} left as it is. {direction.describe()}.")
+            return False
+        self.regenerate_tune_section(section.id, direction)
+        return True
+
     def regenerate_tune_section(self, section_id: str, direction=None) -> None:
         """Rewrite one section, every other note kept.
 
@@ -4183,20 +4233,14 @@ class AppController:
             # every other note kept - the section rewrite, not a whole-tune
             # variation that happens to spare the locked ones.
             if cmd.section_id:
-                from .music.direction import read_direction
-                self.regenerate_tune_section(cmd.section_id, read_direction(cmd.text))
+                self._rewrite_the_section_asked(cmd)
             else:
                 self.make_variation()
         elif intent == "tune.accept":
             self.accept_tune()
         elif intent == "tune.regenerate_section":
-            section_id = cmd.section_id or self.context.last_section_id
-            if section_id:
-                # "Make the Charanam softer and plainer": the property asked
-                # of the section rides with the rewrite as controls, and
-                # the reply names them - and the words that were none.
-                from .music.direction import read_direction
-                self.regenerate_tune_section(section_id, read_direction(cmd.text))
+            if cmd.section_id or self.context.last_section_id:
+                self._rewrite_the_section_asked(cmd)
             else:
                 self.status("Which section should I rewrite?")
         elif intent == "tune.tempo":

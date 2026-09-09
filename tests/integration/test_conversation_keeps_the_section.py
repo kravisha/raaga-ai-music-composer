@@ -196,27 +196,103 @@ def test_make_the_section_softer_softens_that_section_only(app):
     assert _mean_velocity(_section_notes(v3, SectionKind.CHARANAM)) > _mean_velocity(after)
 
 
-def test_a_word_that_is_not_a_control_is_said_and_the_asked_rewrite_still_happens(app):
-    _a_tune(app, "Faster is not a control")
-    v1 = app.project.melody()
-    cmd = app.handle_utterance("rewrite the Charanam faster")
+def _frozen(app):
+    """Everything a refused request must leave alone."""
+    m = app.project.melody()
+    return (len(app.project.melodies), m.version,
+            [(n.swara, n.midi, n.start) for n in m.notes],
+            len(app.project.history), len(app.project.lyrics))
+
+
+@pytest.mark.parametrize("text,said", [
+    ("make the Charanam faster", "not a control I have: faster"),
+    ("rewrite the Charanam faster", "not a control I have: faster"),
+    ("make the Charanam not softer", "not applied, as asked: softer"),
+    ("make the Charanam softer and stronger", "asked both ways, so neither: softer and stronger"),
+])
+def test_a_direction_with_nothing_to_do_rewrites_nothing_and_says_why(app, text, said):
+    """Arya's review of fae3ae8: each of these added a version and changed
+    the Charanam while saying the one thing asked was not done.  Now the
+    tune, its version, its notes and the history stay, and the reason is
+    the reply."""
+    _a_tune(app, "Nothing to do")
+    before = _frozen(app)
+    cmd = app.handle_utterance(text)
     assert cmd.intent == "tune.regenerate_section", cmd
     _settle(app)
-    assert app.project.melody().version == v1.version + 1
-    landed = [h.description for h in app.project.history if h.action == "tune.version"][-1]
-    assert "not a control I have: faster" in landed, landed
-    assert "not a control I have: faster" in app.project.melody().guidance_note
+    assert _frozen(app)[:3] == before[:3], text
+    assert "Charanam 1 left as it is" in app.status_text and said in app.status_text, app.status_text
+    # the conversation records the turn, and nothing else was written
+    assert len(app.project.history) == before[3]
 
 
-def test_a_contradictory_direction_applies_neither_and_says_so(app):
-    _a_tune(app, "Softer and stronger")
+def test_a_plain_rewrite_and_an_explicit_variation_still_make_a_version(app):
+    _a_tune(app, "Plain rewrite still works")
     v1 = app.project.melody()
-    app.handle_utterance("make the Charanam softer and stronger")
+    app.handle_utterance("rewrite the Charanam")
+    _settle(app)
+    assert app.project.melody().version == v1.version + 1
+    app.handle_utterance("give me a variation of the Charanam")
+    _settle(app)
+    assert app.project.melody().version == v1.version + 2
+
+
+@pytest.mark.parametrize("text", [
+    "keep the Pallavi unchanged; make the Charanam softer",
+    "make the Charanam softer; keep the Pallavi unchanged",
+    "leave the Pallavi alone and make the Charanam softer",
+])
+def test_a_kept_section_is_kept_and_the_change_lands_on_the_other(app, text):
+    """Arya's review of fae3ae8: the first-named section was rewritten -
+    the Pallavi, the one asked to be kept - and the Charanam left alone.
+    The sentence is now placed by clause, whichever order it comes in."""
+    _a_tune(app, "Keep one, change the other")
+    v1 = app.project.melody()
+    pallavi = _section(app, SectionKind.PALLAVI)
+    charanam = _section(app, SectionKind.CHARANAM)
+    app.handle_utterance(text)
     _settle(app)
     v2 = app.project.melody()
-    assert v2.version == v1.version + 1
-    assert "asked both ways" in v2.guidance_note and "softer and stronger" in v2.guidance_note
-    assert "(velocity" not in v2.guidance_note
+    assert v2.version == v1.version + 1, app.status_text
+    changed = [s.name for s in v2.sections
+               if _notes_of(v2, s.id) != _notes_of(v1, next(
+                   o for o in v1.sections if o.name == s.name).id)]
+    assert changed == ["Charanam 1"], (text, changed)
+    assert _notes_of(v2, pallavi.id) == _notes_of(v1, pallavi.id)
+    assert not pallavi.locked
+    assert _mean_velocity(_section_notes(v2, SectionKind.CHARANAM)) < \
+        _mean_velocity(_section_notes(v1, SectionKind.CHARANAM))
+    assert "softer" in v2.guidance_note and charanam.name in [s.name for s in v2.sections]
+
+
+def test_a_sentence_that_only_keeps_or_locks_rewrites_nothing(app):
+    _a_tune(app, "Only kept")
+    before = _frozen(app)
+    app.handle_utterance("keep the Pallavi unchanged")
+    _settle(app)
+    assert _frozen(app)[:3] == before[:3]
+    # "keep ..." is not a rewrite verb, so it may not even be a section
+    # command; when it is, nothing moves.  The explicit form is refused
+    # with the reason.
+    app.handle_utterance("rewrite the Pallavi but keep the Pallavi unchanged")
+    _settle(app)
+    assert _frozen(app)[:3] == before[:3]
+    assert "kept, as you asked" in app.status_text, app.status_text
+    charanam = _section(app, SectionKind.CHARANAM)
+    app.set_section_lock(charanam.id, True)
+    app.handle_utterance("make the Charanam softer")
+    _settle(app)
+    assert _frozen(app)[:3] == before[:3]
+    assert "locked" in app.status_text.lower(), app.status_text
+
+
+def test_two_sections_to_change_in_one_breath_are_refused_before_anything_moves(app):
+    _a_tune(app, "Two at once")
+    before = _frozen(app)
+    app.handle_utterance("make the Pallavi softer and make the Charanam plainer")
+    _settle(app)
+    assert _frozen(app)[:3] == before[:3]
+    assert "One section at a time" in app.status_text, app.status_text
 
 
 def test_a_direction_on_a_locked_section_is_refused(app):
