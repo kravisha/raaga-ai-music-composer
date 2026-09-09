@@ -63,6 +63,14 @@ class TunePanel(QWidget):
         self.tala_note.setObjectName("hint")
         self.tala_note.setWordWrap(True)
         self.beat_label.setObjectName("hint")
+        #: What a directed rewrite did to the version on show, and what it
+        #: could not do - the version's own guidance_note.  The landing
+        #: status says it once and is overwritten when the render lands;
+        #: this stays with the version, and follows the version picked.
+        self.direction_note = QLabel("")
+        self.direction_note.setObjectName("hint")
+        self.direction_note.setWordWrap(True)
+        self.direction_note.setVisible(False)
 
         self.versions = QComboBox()
         self.versions.activated.connect(self._version_chosen)
@@ -114,6 +122,7 @@ class TunePanel(QWidget):
         second.addWidget(self.versions, 1)
         second.addWidget(self.tempo)
         second.addWidget(tempo_btn)
+        second.addWidget(self.direction_note, 2)
 
         beat_row = QHBoxLayout()
         beat_row.addWidget(QLabel("Tala:"))
@@ -230,6 +239,12 @@ class TunePanel(QWidget):
             if idx >= 0:
                 self.versions.setCurrentIndex(idx)
         self.versions.blockSignals(False)
+
+        # The version on show says what a direction did to it, and what it
+        # could not do; an ordinary version says nothing here.
+        told = (melody.guidance_note or "").strip() if melody is not None else ""
+        self.direction_note.setText(f"v{melody.version}: {told}" if told else "")
+        self.direction_note.setVisible(bool(told))
 
         has_tune = melody is not None
         self.variation_btn.setEnabled(has_tune)

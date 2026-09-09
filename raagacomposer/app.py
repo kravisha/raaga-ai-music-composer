@@ -2045,10 +2045,11 @@ class AppController:
             fresh = melody_engine.regenerate_section(melody, raaga, section_id, opts,
                                                     version)
             fresh.validation = validate(fresh, raaga).issues
-            if direction is not None:
-                # What was asked, what was done, and what could not be:
-                # on the version, where the creator and the Critic read it.
-                fresh.guidance_note = direction.describe()
+            # What was asked, what was done, and what could not be: on the
+            # version, where the creator and the Critic read it - and a
+            # version made with no direction says nothing, rather than
+            # carrying the note of the version it was copied from.
+            fresh.guidance_note = direction.describe() if direction is not None else ""
             return fresh
 
         def landed(m: MelodyVersion) -> None:
