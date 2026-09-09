@@ -4164,9 +4164,17 @@ class AppController:
             # one that was refused reads as refused, not as a rewrite.
             action = describe(cmd) or cmd.intent
             refused = cmd.raw_slots.get("outcome") == "refused"
+            # What was understood is what was done: the turn's
+            # interpretation was captured before the deed and stayed on
+            # the parser's first guess ("Rewrite the section the Pallavi")
+            # while the action said the Charanam.  Both now read the same.
+            if refused:
+                action = f"Nothing changed: {action}"
+            cmd.interpretation = action
+            turn.interpretation = action
             if refused:
                 self.context.update_status(
-                    turn.id, "declined", action=f"Nothing changed: {action}",
+                    turn.id, "declined", action=action,
                     reason=cmd.raw_slots.get("reason") or self.status_text)
             else:
                 self.context.update_status(turn.id, "applied", action=action,

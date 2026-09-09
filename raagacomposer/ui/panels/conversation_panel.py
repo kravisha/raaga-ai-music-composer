@@ -157,7 +157,7 @@ class ConversationPanel(QWidget):
         self.action_label.setText(turn.action or "-")
 
         outcome = {"applied": "Completed", "failed": "Failed",
-                   "ignored": "Not understood",
+                   "ignored": "Not understood", "declined": "Declined",
                    "received": "Working"}.get(turn.status, turn.status)
         if turn.reason:
             outcome = f"{outcome} - {turn.reason}"

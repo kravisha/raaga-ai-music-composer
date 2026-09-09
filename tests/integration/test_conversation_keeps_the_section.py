@@ -285,6 +285,12 @@ def test_the_command_and_the_turn_describe_the_section_actually_rewritten(app):
     assert turn.status == "applied"
     assert "Charanam" in turn.action and "Pallavi" not in turn.action, turn.action
     assert turn.action.startswith("Rewrite the section"), turn.action
+    # What was understood reads the same as what was done - on the turn,
+    # on the command, and on the Conversation panel's "Understood" line.
+    assert turn.interpretation == turn.action, (turn.interpretation, turn.action)
+    assert cmd.interpretation == turn.action
+    assert "Pallavi" not in turn.interpretation
+    _panel_says(app, understood=turn.action, result="Completed")
     # ("that section" / "this part" are the playhead's or the selection's
     # section in the time parser, not the remembered one; what is checked
     # here is that the remembered one is the Charanam, as asserted above.)
@@ -299,6 +305,27 @@ def test_the_command_and_the_turn_describe_the_section_actually_rewritten(app):
     assert turn.action.startswith("Nothing changed"), turn.action
     assert "kept, as you asked" in turn.reason
     assert app.context.last_section_id == before_last != pallavi.id
+    assert turn.interpretation == turn.action and "Pallavi" not in turn.interpretation
+    _panel_says(app, understood=turn.action, result="Declined")
+
+
+def _panel_says(app, understood: str, result: str) -> None:
+    """The offscreen Conversation panel's Understood and Result lines for
+    the last turn."""
+    pytest.importorskip("PySide6")
+    from PySide6.QtWidgets import QApplication
+    from raagacomposer.ui.panels.conversation_panel import ConversationPanel
+    qt_app = QApplication.instance() or QApplication([])
+    panel = ConversationPanel(app)
+    try:
+        panel.refresh()
+        qt_app.processEvents()
+        assert panel.understood_label.text() == understood, panel.understood_label.text()
+        assert panel.result_label.text().startswith(result), panel.result_label.text()
+    finally:
+        panel.close()
+        panel.deleteLater()
+        qt_app.processEvents()
 
 
 def test_a_sentence_that_only_keeps_or_locks_rewrites_nothing(app):
