@@ -409,6 +409,29 @@ def test_the_take_verbs_and_what_they_are_not(text, intent):
     assert cmd.intent == intent, f"{text!r} -> {cmd.intent}"
 
 
+@pytest.mark.parametrize("text,intent", [
+    ("do not record a take", "record.declined"),
+    ("don't start recording", "record.declined"),
+    ("never record me", "record.declined"),
+    ("don't cancel the recording", "record.declined"),
+    ("don't stop recording", "record.declined"),
+    ("how do I record a take?", "record.help"),
+    ("can I record here?", "record.help"),
+    ("what does stop recording do?", "record.help"),
+    # still commands
+    ("record a take", "record.start"),
+    ("stop recording", "record.stop"),
+    ("cancel the recording", "record.cancel"),
+])
+def test_a_negated_or_asked_about_recorder_verb_is_not_a_command(text, intent):
+    cmd = interpret(text, ctx())
+    assert cmd.intent == intent, f"{text!r} -> {cmd.intent}"
+    if intent == "record.declined":
+        assert describe(cmd) == "Leave the recorder as it is, as asked"
+    if intent == "record.help":
+        assert describe(cmd) == "Explain how recording a take works"
+
+
 def test_record_the_section_carries_the_section():
     from raagacomposer.speech.timeline_parser import TimeContext
     sections = [Section(name="Pallavi", kind=SectionKind.PALLAVI, start=10.0, end=30.0)]

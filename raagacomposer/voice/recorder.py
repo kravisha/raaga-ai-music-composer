@@ -104,10 +104,19 @@ class TakeRecorder:
             return False
         with self._lock:
             self._blocks = []
+        # Each take is its own session, and its callback carries the
+        # session's number: a block from a stream that was stopped,
+        # cancelled or abandoned - one a driver delivers late - is refused
+        # by number, not by whether some stream happens to be open now.
+        session = self.session + 1
+
+        def callback(indata, frames, time_info, status):  # noqa: ANN001
+            self._on_block(session, indata, status)
+        stream = None
         try:
             stream = self._open_stream(samplerate=self.sample_rate, channels=1,
                                        blocksize=self.block, device=device,
-                                       callback=self._callback)
+                                       callback=callback)
             stream.start()
         except Exception as exc:  # noqa: BLE001 - a device problem is a state, not a crash
             self.state.phase = "error"
@@ -116,9 +125,17 @@ class TakeRecorder:
                                 f"not in use by another application, or choose "
                                 f"another input in Settings.")
             log.error(self.state.error)
+            if stream is not None:
+                # Constructed but never started: release it, whatever its
+                # stop and close make of that, and keep the error above.
+                for step in ("stop", "close"):
+                    try:
+                        getattr(stream, step)()
+                    except Exception as cleanup:  # noqa: BLE001
+                        log.warning("%s of an input that failed to start: %s", step, cleanup)
             return False
         self._stream = stream
-        self.session += 1
+        self.session = session
         self.state.phase = "recording"
         self.state.error = ""
         self.state.device = str(device or "default")
@@ -166,13 +183,13 @@ class TakeRecorder:
                 log.warning("%s of the input stream failed: %s", step, exc)
 
     # -- audio thread ----------------------------------------------------
-    def _callback(self, indata, frames, time_info, status) -> None:  # noqa: ANN001
+    def _on_block(self, session: int, indata, status) -> None:  # noqa: ANN001
         if status:
             log.debug("recording status: %s", status)
         chunk = np.array(np.asarray(indata)[:, 0], dtype=np.float32)
         with self._lock:
-            if self._stream is None:
-                return   # a block that arrived after Stop or Cancel
+            if self._stream is None or session != self.session:
+                return   # after Stop or Cancel, or from an earlier take's stream
             self._blocks.append(chunk)
         if len(chunk):
             self.state.level = float(np.sqrt(np.mean(chunk ** 2)))

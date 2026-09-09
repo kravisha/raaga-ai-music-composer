@@ -319,6 +319,89 @@ def test_the_take_can_be_driven_from_the_conversation(app):
     app.cancel_take()
 
 
+# ----------------------------------------------------------------------
+# Arya's independent review of fae3ae8: three findings
+# ----------------------------------------------------------------------
+@pytest.mark.parametrize("text", ["do not record a take", "don't start recording",
+                                  "how do I record a take?", "can I record here?"])
+def test_non_command_record_mentions_never_open_input(app, text):
+    _a_tune(app, "Not a command")
+    mic = _fake_input(app)
+    cmd = app.handle_utterance(text)
+    assert cmd.intent in ("record.declined", "record.help"), (text, cmd.intent)
+    assert not mic.streams and not app.recorder.recording, repr(text) + " opened input"
+    assert "record" in app.status_text.lower()
+
+
+def test_negated_cancel_does_not_discard_active_take(app):
+    _a_tune(app, "Negated cancel")
+    mic = _fake_input(app)
+    assert app.start_take()
+    mic.last.feed(0.3)
+    cmd = app.handle_utterance("don't cancel the recording")
+    assert cmd.intent == "record.declined", cmd
+    assert app.recorder.recording, "a negated cancel discarded a live take"
+    assert "keeps going" in app.status_text
+    cmd = app.handle_utterance("don't stop recording")
+    assert cmd.intent == "record.declined" and app.recorder.recording
+    take = app.stop_take()
+    assert take is not None and take.duration == pytest.approx(0.3, abs=0.01)
+
+
+@pytest.mark.parametrize("transition", ["cancel", "stop", "project"])
+def test_old_stream_callback_cannot_contaminate_new_take(app, transition):
+    """A block from an earlier take's stream, delivered late, is refused by
+    its session number - after a cancel, a stop, or a change of song."""
+    _a_tune(app, "Late block")
+    mic = _fake_input(app)
+    assert app.start_take()
+    old = mic.last
+    old.feed(0.1)
+    if transition == "cancel":
+        app.cancel_take()
+    elif transition == "stop":
+        assert app.stop_take() is not None
+    else:
+        app.new_project("Another song", write=False)
+    assert app.start_take()
+    current = mic.last
+    assert current is not old
+    current.callback(np.full((441, 1), 0.25, np.float32), 441, None, None)   # B's own block
+    old.callback(np.full((882, 1), 0.9, np.float32), 882, None, None)       # A's late block
+    take = app.stop_take()
+    assert take is not None
+    audio, sr = sf.read(take.audio_path, dtype="float32")
+    assert len(audio) == 441, "an earlier take's stream was accepted into the new take"
+    assert np.allclose(audio, 0.25, atol=1e-3)
+
+
+def test_failed_stream_start_releases_constructed_input(app):
+    """The stream is built, then start() raises: the error is kept and the
+    built stream is released - even when its stop raises too."""
+    _a_tune(app, "Start fails")
+
+    class StartFails(FakeStream):
+        def start(self):
+            raise OSError("Error starting InputStream: device busy")
+
+        def stop(self):
+            self.stopped = True
+            raise RuntimeError("stop on an unstarted stream")
+
+    class Factory(FakeInput):
+        def __call__(self, **kwargs):
+            stream = StartFails(**kwargs)
+            self.streams.append(stream)
+            return stream
+    factory = Factory()
+    app.recorder = TakeRecorder(open_stream=factory, sample_rate=app.sample_rate)
+    assert app.start_take() is False
+    assert app.recorder.state.phase == "error" and "device busy" in app.recorder.state.error
+    assert not app.recorder.recording and not app.project.recordings
+    assert factory.streams and factory.last.closed, "a constructed input leaked when start raised"
+    assert factory.last.stopped
+
+
 def test_the_recorder_alone_holds_the_input_only_between_start_and_stop():
     factory = FakeInput()
     recorder = TakeRecorder(open_stream=factory, sample_rate=8000, block=100)

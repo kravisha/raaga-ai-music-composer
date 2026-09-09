@@ -4329,6 +4329,17 @@ class AppController:
             self.stop_take()
         elif intent == "record.cancel":
             self.cancel_take()
+        elif intent == "record.declined":
+            # "Don't record", "don't cancel the recording": the recorder is
+            # left exactly as it is, and that is said.
+            self.status("Left as it is: " + ("the take keeps going." if self.recorder.recording
+                                              else "not recording."))
+        elif intent == "record.help":
+            self.status("To record a take, say 'record a take' (or 'record the "
+                        "Pallavi'), or press Record on the Voice panel. 'Stop "
+                        "recording' keeps it with the section it was made for; "
+                        "'cancel the recording' keeps nothing. Nothing is recorded "
+                        "until you say so.")
         elif intent == "project.cancel":
             self.jobs.cancel_all("cancelled by the creator")
             self.status("Cancelled the current operation")

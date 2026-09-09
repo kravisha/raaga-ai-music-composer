@@ -37,8 +37,21 @@ INTENTS = (
     "project.save", "project.undo", "project.redo", "project.cancel",
     "agent.learn", "agent.explain", "agent.feedback", "agent.status",
     "record.start", "record.stop", "record.cancel",
+    # A recorder verb that was negated ("don't record"), or asked about
+    # ("how do I record a take?"): neither opens nor discards anything.
+    "record.declined", "record.help",
     "unknown",
 )
+
+#: "do not record", "don't start recording", "never cancel the take",
+#: "no recording" - the verb is there and the creator said not to.
+_RECORD_NEGATED = re.compile(
+    r"\b(?:do not|don'?t|never|no need to|please don'?t|without|not)\s+"
+    r"(?:\w+\s+){0,2}(?:record|recording|take)\b")
+#: "how do I record a take?", "can I record here?", "what does record do"
+_RECORD_ASKED = re.compile(
+    r"^\s*(?:how|what|when|where|why|can|could|should|would|will|is|are|does|do)\b"
+    r".*\b(?:record|recording|take)\b")
 
 STOP_WORDS = ("stop", "halt", "cancel that", "never mind", "quiet")
 
@@ -206,6 +219,15 @@ def interpret(text: str, ctx: TimeContext, llm=None,
             cmd.confidence = 0.8
             break
 
+    # A recorder verb the creator negated or asked about is neither a
+    # command to open the input nor one to discard a take - and nothing
+    # below (a feel word, a fallback) may turn it back into one.
+    if cmd.intent.startswith("record."):
+        if _RECORD_NEGATED.search(t):
+            cmd.intent = "record.declined"
+        elif _RECORD_ASKED.search(t) or t.rstrip().endswith("?"):
+            cmd.intent = "record.help"
+
     cmd.time = parse_time(text, ctx)
     if cmd.time and cmd.time.section_id:
         cmd.section_id = cmd.time.section_id
@@ -358,6 +380,10 @@ def describe(cmd: Command) -> str:
         return "Stop recording and keep the take"
     if cmd.intent == "record.cancel":
         return "Cancel the recording and keep nothing"
+    if cmd.intent == "record.declined":
+        return "Leave the recorder as it is, as asked"
+    if cmd.intent == "record.help":
+        return "Explain how recording a take works"
     if cmd.intent == "transport.play":
         return f"Play {when}" if when else "Play"
     if cmd.intent == "transport.seek" and cmd.time:
