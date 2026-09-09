@@ -160,6 +160,7 @@ it. Each is governed by CANONICAL_SPEC_v0.3 and cites the sections it builds on.
 | Document | Topic | Relates to v0.3 section(s) |
 |---|---|---|
 | [SPB_VOICE_TRAINING_WORKFLOW.md](SPB_VOICE_TRAINING_WORKFLOW.md) | End-to-end workflow for turning new lyrics into naturally sung audio in a target singing voice: source admission, clip splits, training, held-out evaluation, score-to-performance and integration | 2 (product vision), 41 (providers), 63 (acceptance tests) |
+| [VOICE_PROTOTYPE_CONTRACT.md](VOICE_PROTOTYPE_CONTRACT.md) | Implementation contract for the authorized isolated prototype: target sample + Tamil lyrics + tune to a real sung audio file, using existing inference and no training; input/output/feedback rules and the invariants that keep rests silent, lyrics intact and renders attributable | 2 (product vision), 63 (acceptance tests) |
 
 ## Summary
 
