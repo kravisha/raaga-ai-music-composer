@@ -63,6 +63,11 @@ class MelodyOptions:
     # With ``None`` (or an empty ``Guidance``) the draw sequence is
     # byte-identical to a build with no guidance support at all.
     guidance: Optional[Any] = None
+    # A direction for one rewrite of one section (music/direction.py's
+    # ``SectionDirection``): register, energy and ornament are read here;
+    # motion, cadence and variety travel through ``guidance``.  None for
+    # every ordinary composition, which is then byte-identical to before.
+    direction: Optional[Any] = None
 
 
 # --------------------------------------------------------------------------
@@ -355,6 +360,22 @@ def _phrase_tokens(raaga: Raaga, rng: random.Random, start: str, count: int,
         i += 1
 
     if cadence and tokens:
+        # A cadence is a move like any other: a lesson that forbids the
+        # step onto it is kept, and the nearest resting note the lesson
+        # allows is used instead.  Before, the cadence overwrote the last
+        # token unchecked, and a forbidden move slipped in at every
+        # phrase end (1 in 5 seeds, 2026-09-08).
+        if g is not None and len(tokens) > 1 and \
+                not g.allows_transition(tokens[-2], cadence):
+            _, octave = parse_swara(cadence)
+            allowed = [_with_octave(parse_swara(n)[0], octave) for n in raaga.nyasa
+                       if g.allows_transition(tokens[-2], parse_swara(n)[0])
+                       and g.allows_ending(parse_swara(n)[0])]
+            if allowed:
+                deg = raaga.degree(cadence)
+                cadence = min(allowed, key=lambda n: abs(raaga.degree(n) - deg))
+            elif g.allows_transition(tokens[-2], tokens[-1]):
+                cadence = tokens[-1]
         # The cadence overwrites the phrase's last token even when that
         # token came from a quote; shrink (or drop) the recorded quote so
         # provenance never claims a swara the cadence just replaced.
@@ -366,6 +387,37 @@ def _phrase_tokens(raaga: Raaga, rng: random.Random, start: str, count: int,
                     quotes.pop()
         tokens[-1] = cadence
     return tokens
+
+
+def _pull_into_window(raaga: Raaga, notes: List[Note], tonic: int,
+                      lo: int, hi: int) -> int:
+    """Bring every note of a section inside ``lo``-``hi`` by step, not by
+    octave: a note above the window becomes the highest of the raaga's
+    swaras at or below ``hi``, one below it the lowest at or above ``lo``.
+    clamp_token folds by an octave, which widens a line as often as it
+    narrows it, so a register direction is applied here instead, on the
+    finished section.  Returns the number of notes moved."""
+    if hi - lo < 5 or not notes:
+        return 0
+    inside: List[Tuple[int, str]] = []
+    for swara in sorted(set(raaga.ascending) | set(raaga.descending)):
+        for octave in range(-3, 4):
+            token = _with_octave(swara, octave)
+            midi = token_midi(raaga, token, tonic)
+            if lo <= midi <= hi:
+                inside.append((midi, token))
+    if not inside:
+        return 0
+    inside.sort()
+    moved = 0
+    for note in notes:
+        if note.midi > hi:
+            note.midi, note.swara = inside[-1]
+            moved += 1
+        elif note.midi < lo:
+            note.midi, note.swara = inside[0]
+            moved += 1
+    return moved
 
 
 def _section_register(raaga: Raaga, kind: SectionKind, tonic: int,
@@ -399,6 +451,25 @@ def generate_section_notes(raaga: Raaga, section: Section, opts: MelodyOptions,
     intensity = section.intensity
     ornament = opts.ornament + (0.2 if section.kind.instrumental else 0.0)
     guidance = _guidance_or_none(getattr(opts, "guidance", None))
+    direction = getattr(opts, "direction", None)
+    if direction is not None and not direction.is_empty():
+        # One rewrite's direction: the window, the energy and the ornament
+        # are set here, explicitly and within bounds; nothing else moves.
+        from .direction import directed_register
+        lo, hi, _ = directed_register(lo, hi, opts.voice_low, opts.voice_high,
+                                      direction.register)
+        if direction.register == "closer":
+            # The window bounds only fold notes back by an octave; the
+            # reach of each phrase is what makes a line close or wide.
+            span = span * 0.5
+        if direction.energy == "softer":
+            intensity = min(intensity, 0.35)
+        elif direction.energy == "stronger":
+            intensity = max(intensity, 0.85)
+        if direction.ornament == "less":
+            ornament = 0.05
+        elif direction.ornament == "more":
+            ornament = max(ornament, 0.9)
 
     n_phrases = max(1, int(round(section.duration / cyc)))
     cur = entry_token or (rng.choice(raaga.graha) if raaga.graha else "S")
@@ -475,6 +546,12 @@ def generate_section_notes(raaga: Raaga, section: Section, opts: MelodyOptions,
                     "phrase_id": phrase_id, "origin": origin,
                     "section_id": section.id,
                 })
+    if direction is not None and direction.register:
+        # The register direction, applied to the finished section: pulled
+        # inside the directed window by step, then every move made legal
+        # in the direction it now travels.
+        _pull_into_window(raaga, notes, opts.tonic_midi, lo, hi)
+        enforce_direction(raaga, notes, opts.tonic_midi)
     return notes
 
 
