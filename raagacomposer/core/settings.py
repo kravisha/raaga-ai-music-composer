@@ -120,6 +120,18 @@ class Settings:
     #: failing signal and the paid output, so the thresholds above can be
     #: tuned against real cases instead of guesses.
     routing_log: str = ""                  # blank = <config>/routing_attempts.jsonl
+    # The production team's Critic is Codex, reached through its own CLI.
+    # Blank = PATH, then the Codex desktop application's bundled CLI.  The
+    # sign-in is the CLI's own; nothing here holds a credential.
+    codex_executable: str = ""
+    # One stage review, bounded.  Measured on 2026-09-08: 16 s for a brief,
+    # 25 s for a tune, 72 s for a voice packet; the later stages ran past
+    # 120 s as the journal context grew, so the bound is generous.
+    critic_timeout_seconds: float = 300.0
+    production_max_rounds: int = 2          # revisions before the Producer decides
+    # When a stage cannot be reviewed: "proceed" makes the song and discloses
+    # every unreviewed stage; "stop" halts there.
+    production_on_blocked: str = "proceed"
     # A small model on a CPU is slow: writing a full lyric takes far longer
     # than any remote call. Too low a ceiling here does not fail the request,
     # it silently routes the work away from the local model.

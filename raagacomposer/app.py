@@ -39,7 +39,7 @@ from .core.models import (ApprovalState, ArrangementVersion, BeatVersion,
                           MixVersion, Project, Section, Stage, VocalDirection,
                           VocalRender, VoiceProfile)
 from .core.persistence import ProjectStore
-from .core.settings import Settings
+from .core.settings import Settings, config_dir
 from .core.versioning import (LockedContentError, UndoManager,
                               assert_melody_editable)
 from .lyrics import fitting as lyric_fitting
@@ -147,6 +147,14 @@ class AppController:
             except Exception as exc:  # noqa: BLE001
                 log.error("the Knowledge Base migration did not run: %s. "
                           "Nothing has been deleted.", exc)
+
+        # The production team's Critic, present from startup.  Constructing
+        # it sends nothing anywhere: it finds the Codex CLI, or says it
+        # could not, and the first review is where sign-in and limits show.
+        self.critic = self._build_critic()
+        log.info("critic: %s", self.critic.status())
+        #: The whole-song production in progress, if any (see production/).
+        self.producer = None
 
         # The Training tab: search for material, approve it, learn from it.
         # It shares the agent's memory so what it learns reaches the composer,
@@ -398,10 +406,68 @@ class AppController:
         # time ``on_action`` sees it.
         self._drain_actions()
         self._drain_utterances()
+        # After the results, because the Producer reads what they landed.
+        if self.producer is not None:
+            self.producer.advance()
         self._sync_context()
         if events and self.on_project_changed:
             self.on_project_changed()
         self.maybe_autosave()
+
+    # ==================================================================
+    # the production team (production/): a whole song, every stage reviewed
+    # ==================================================================
+    def _build_critic(self):
+        from .production.contracts import CodexCliTransport, CodexCritic
+        from .production.producer import locate_codex
+
+        executable = locate_codex(getattr(self.settings, "codex_executable", ""))
+        timeout = float(getattr(self.settings, "critic_timeout_seconds", 120.0))
+        transport = CodexCliTransport(config_dir() / "critic",
+                                      executable=executable or "codex",
+                                      timeout=max(1.0, min(600.0, timeout)))
+        return CodexCritic(transport)
+
+    def production_status(self) -> str:
+        """One line for the window: who the reviewer is and what is running."""
+        line = self.critic.status()
+        if self.producer is not None and not self.producer.finished:
+            line += f"; producing - at the {self.producer.stage}"
+        return line
+
+    def produce_song(self, seed: Optional[int] = None,
+                     max_rounds: Optional[int] = None):
+        """Make a whole rough song from the brief, every stage reviewed.
+
+        One at a time: a second request while one runs returns the one
+        running rather than starting a rival that would supersede its jobs
+        halfway through.
+        """
+        from .production.producer import Producer
+
+        if self.producer is not None and not self.producer.finished:
+            self.status(f"Already producing - at the {self.producer.stage}.")
+            return self.producer
+        rounds = int(max_rounds if max_rounds is not None
+                     else getattr(self.settings, "production_max_rounds", 2))
+        policy = getattr(self.settings, "production_on_blocked", "proceed")
+        self.producer = Producer(self, self.critic, max_rounds=rounds, seed=seed,
+                                 on_blocked=policy if policy in ("proceed", "stop")
+                                 else "proceed")
+        self.producer.start()
+        return self.producer
+
+    def cancel_production(self) -> bool:
+        if self.producer is None or self.producer.finished:
+            return False
+        self.producer.cancel()
+        return True
+
+    def production_report(self) -> str:
+        if self.producer is None:
+            return ("No whole-song production yet.  Compose > Produce a whole "
+                    f"song starts one.\n\nCritic: {self.critic.status()}")
+        return self.producer.report()
 
     # ==================================================================
     # project lifecycle
@@ -1574,8 +1640,17 @@ class AppController:
             return best
 
         # Composing replaces the tune, so the tune's own version is not a
-        # precondition; which song is.
-        ticket = {"generation": self._project_generation, "sections": ()}
+        # precondition; which song is.  Every section that is *not* locked
+        # now rides on the ticket, so a lock the creator places while the
+        # composer is working comes back as "<section> was locked while I
+        # was working" and the result is not kept.  A section already
+        # locked at this moment is the creator's standing choice about the
+        # old tune, and Generate Tune replacing it is what it has always
+        # done; the production team refuses that case before it gets here.
+        existing = self.project.melody()
+        ticket = {"generation": self._project_generation,
+                  "sections": tuple(s.id for s in existing.sections if not s.locked)
+                  if existing else ()}
         self.jobs.submit("tune.generate", "melody:all", work,
                          on_done=lambda m: self._tune_ready(m, "Generated",
                                                             ticket),

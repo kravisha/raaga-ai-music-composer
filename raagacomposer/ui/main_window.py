@@ -13,12 +13,13 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence
-from PySide6.QtWidgets import (QApplication, QButtonGroup, QDockWidget,
-                               QFileDialog, QHBoxLayout, QLabel, QMainWindow,
-                               QMessageBox, QProgressBar, QPushButton,
-                               QScrollArea, QSizePolicy, QSlider, QSplitter,
-                               QStackedWidget, QStatusBar, QTabWidget, QToolBar,
-                               QToolButton, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QApplication, QButtonGroup, QDialog,
+                               QDockWidget, QFileDialog, QHBoxLayout, QLabel,
+                               QMainWindow, QMessageBox, QPlainTextEdit,
+                               QProgressBar, QPushButton, QScrollArea,
+                               QSizePolicy, QSlider, QSplitter, QStackedWidget,
+                               QStatusBar, QTabWidget, QToolBar, QToolButton,
+                               QVBoxLayout, QWidget)
 
 from ..app import AppController
 from ..core.logging_setup import get_logger
@@ -331,6 +332,15 @@ class MainWindow(QMainWindow):
                      lambda: self.app.auto_arrange())
         self._action(make_menu, "Render full mix", "Ctrl+M",
                      lambda: self.app.render("full"))
+        make_menu.addSeparator()
+        # The production team: the whole song in one go, every stage put to
+        # the Critic before the next begins (production/).
+        self._action(make_menu, "Produce a whole song", "Ctrl+Shift+P",
+                     lambda: self.app.produce_song())
+        self._action(make_menu, "Stop the production", None,
+                     lambda: self.app.cancel_production())
+        self._action(make_menu, "Production report...", None,
+                     self._show_production_report)
 
         # LEARN's own menu.  It replaces File / Edit / Compose rather than
         # sitting beside them, so the agent's workspace never offers to save
@@ -419,7 +429,9 @@ class MainWindow(QMainWindow):
         self.job_progress.setRange(0, 100)
         self.job_progress.setTextVisible(True)
         self.statusBar().addPermanentWidget(self.job_progress)
-        self.statusBar().showMessage("Ready")
+        # The Critic is part of the team from the first moment, so its
+        # standing is the first thing the window says.
+        self.statusBar().showMessage(f"Ready - {self.app.production_status()}")
 
     # ==================================================================
     # workspaces (spec section 4) and settings (spec 41, 42)
@@ -632,6 +644,21 @@ class MainWindow(QMainWindow):
 
     def _show_help(self) -> None:
         QMessageBox.information(self, "Voice commands", HELP_TEXT)
+
+    def _show_production_report(self) -> None:
+        """The production journal as the creator reads it: which stages
+        Codex accepted, which the Producer decided, and why."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Production report")
+        dialog.resize(860, 620)
+        layout = QVBoxLayout(dialog)
+        text = QPlainTextEdit(dialog)
+        text.setReadOnly(True)
+        text.setLineWrapMode(QPlainTextEdit.NoWrap)
+        text.setPlainText(self.app.production_report())
+        layout.addWidget(text)
+        self._production_report_dialog = dialog
+        dialog.show()
 
     def _about(self) -> None:
         QMessageBox.about(
