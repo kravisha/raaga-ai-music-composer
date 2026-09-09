@@ -762,6 +762,60 @@ def test_the_whole_tune_asked_for_outright_is_rewritten(app):
 
 
 # ----------------------------------------------------------------------
+# The property the Critic asks of a section rides with that section
+# ----------------------------------------------------------------------
+def _revise_tune_once_with_packets(app, revision_text, seed=104, max_rounds=2):
+    packets = []
+
+    def policy(stage, packet, calls):
+        if stage == "tune":
+            packets.append(packet)
+            if calls.count("tune") == 1:
+                return {"accept": False, "revisions": [revision_text]}
+        return None
+    codex = FakeCodex(policy)
+    app.critic = CodexCritic(codex)
+    producer = app.produce_song(seed=seed, max_rounds=max_rounds)
+    drive(app, producer)
+    return producer, codex, packets
+
+
+def _mean_velocity(melody, name):
+    section = next(s for s in melody.sections if s.name == name)
+    notes = [n for n in melody.notes if n.section_id == section.id]
+    return sum(n.velocity for n in notes) / max(1, len(notes))
+
+
+def test_the_critics_property_rides_with_its_target_and_the_kept_section_stays(app):
+    a_whole_song_brief(app, "Directed revision")
+    producer, codex, packets = _revise_tune_once_with_packets(
+        app, "Keep the Pallavi unchanged; make the Charanam softer and plainer")
+    assert producer.phase == "done", producer.report()
+    v1, v2 = app.project.melodies[0], app.project.melody()
+    assert _changed_sections(v1, v2) == ["Charanam 1"], _changed_sections(v1, v2)
+    assert _mean_velocity(v2, "Charanam 1") < _mean_velocity(v1, "Charanam 1")
+    assert "softer" in v2.guidance_note and "less gamaka" in v2.guidance_note
+    events = "\n".join(producer.events)
+    assert "Charanam 1 - softer" in events and "Pallavi kept" in events, events
+    record = packets[1]["artifact"]["rewritten_this_round"]
+    assert record["preserved"] == ["Pallavi"] and record["targets"] == ["Charanam 1"]
+    assert "softer" in record["applies"]["Charanam 1"] and "less gamaka" in record["applies"]["Charanam 1"]
+    assert record["not_acted_on"] == []
+
+
+def test_a_revision_asking_only_for_what_is_not_a_control_rewrites_nothing(app):
+    a_whole_song_brief(app, "Faster is not a control")
+    producer, codex, packets = _revise_tune_once_with_packets(app, "make the Charanam faster")
+    assert producer.phase == "done", producer.report()
+    assert len(app.project.melodies) == 1, "a property with no control must not become a rewrite"
+    assert codex.calls.count("tune") == 2
+    events = "\n".join(producer.events)
+    assert "not rewritten - Charanam 1: not a control I have: faster" in events, events
+    record = packets[1]["artifact"]["rewritten_this_round"]
+    assert record["targets"] == [] and record["not_acted_on"] == ["Charanam 1: not a control I have: faster"]
+
+
+# ----------------------------------------------------------------------
 # A locked arrangement region is the creator's through the whole production
 # ----------------------------------------------------------------------
 def test_a_locked_arrangement_region_survives_the_production_and_is_named(app):

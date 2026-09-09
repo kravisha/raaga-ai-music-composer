@@ -61,6 +61,7 @@ from .contracts import (PRODUCTION_STAGES, Critic, InstrumentProfile,
 from .critic import CancelledReview
 from .state import canonical_json
 from .targets import place_revisions
+from ..music.direction import read_direction
 
 #: Below this a section of the vocal-only master is silent in fact, not
 #: merely expected to be: a rest at -60 dB FS is thirty times quieter than
@@ -199,6 +200,7 @@ class Producer:
         #: Sections the Critic's last revision named, still to be rewritten
         #: one at a time, and what was placed, for the next packet.
         self._targets: List[str] = []
+        self._directions: Dict[str, Any] = {}
         self._rewrite: Dict[str, Any] = {}
 
     # ------------------------------------------------------------------
@@ -348,10 +350,12 @@ class Producer:
                 self._submit() if self._targets else self._review_current_again()
                 return
             self._marker = len(project.melodies)
+            direction = getattr(self, "_directions", {}).get(section_id)
+            told = direction.describe() if direction is not None else ""
             self._note(f"tune: rewriting {section.name} as the Critic asked; every "
-                       f"other section is kept")
+                       f"other section is kept" + (f" ({told})" if told else ""))
             try:
-                app.regenerate_tune_section(section_id)
+                app.regenerate_tune_section(section_id, direction)
             except Exception as exc:  # noqa: BLE001 - a lock arrived, or the like
                 self._note(f"tune: {section.name} could not be rewritten "
                            f"({type(exc).__name__}: {exc}); left as it is")
@@ -629,20 +633,42 @@ class Producer:
         if self.stage != "tune":
             return "whole"
         placement = place_revisions(verdict.revisions, app.project.melody())
-        self._targets = [s.id for s in placement.targets]
-        self._rewrite = {"targets": [s.name for s in placement.targets],
+        # The property asked of each target rides with that target, read
+        # from the clause(s) that named it - so "keep the Pallavi; make the
+        # Charanam softer" softens the Charanam and nothing else.  A target
+        # whose clause asks only for something that is not a control
+        # ("faster") is not rewritten: a rewrite nobody asked for would
+        # masquerade as the change they did ask for.
+        self._directions = {}
+        not_acted_on = []
+        targets = []
+        for section in placement.targets:
+            direction = read_direction(" ".join(placement.clauses.get(section.id, [])))
+            if direction.is_empty() and (direction.unsupported or direction.contradictions
+                                         or direction.declined):
+                not_acted_on.append(f"{section.name}: {direction.describe()}")
+                continue
+            self._directions[section.id] = direction
+            targets.append(section)
+        self._targets = [s.id for s in targets]
+        applies = {s.name: (self._directions[s.id].describe() or "rewritten afresh")
+                   for s in targets}
+        self._rewrite = {"targets": [s.name for s in targets],
+                         "applies": applies,
+                         "not_acted_on": not_acted_on,
                          "preserved": list(placement.preserved),
                          "skipped_locked": list(placement.skipped_locked),
                          "out_of_range": list(placement.out_of_range),
                          "unresolved": [text[:160] for text in placement.unplaced],
                          "whole_tune": placement.whole,
-                         "notes": list(placement.notes),
-                         "applies": "the named passages are rewritten afresh; the "
-                                    "musical property asked for is not itself a "
-                                    "lever the engine has"}
+                         "notes": list(placement.notes)}
         if placement.notes:
             self._note(f"{self.stage}: {'; '.join(placement.notes)}")
-        if placement.targets:
+        for name, told in applies.items():
+            self._note(f"{self.stage}: {name} - {told}")
+        for line in not_acted_on:
+            self._note(f"{self.stage}: not rewritten - {line}")
+        if targets:
             mode = "targets"
         elif placement.whole:
             # The Critic meant the whole tune, or made a remark about it

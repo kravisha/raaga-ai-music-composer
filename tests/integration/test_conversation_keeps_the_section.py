@@ -154,6 +154,92 @@ def test_a_variation_of_a_locked_section_is_refused_and_nothing_moves(app):
     assert "locked" in app.status_text.lower(), app.status_text
 
 
+# ----------------------------------------------------------------------
+# The property asked of a section rides with the rewrite (section direction)
+# ----------------------------------------------------------------------
+def _section_notes(melody, kind):
+    section = next(s for s in melody.sections if s.kind is kind)
+    return [n for n in melody.notes if n.section_id == section.id]
+
+
+def _mean_velocity(notes):
+    return sum(n.velocity for n in notes) / max(1, len(notes))
+
+
+def test_make_the_section_softer_softens_that_section_only(app):
+    _a_tune(app, "Softer Charanam")
+    v1 = app.project.melody()
+    charanam = _section(app, SectionKind.CHARANAM)
+    cmd = app.handle_utterance("make the Charanam softer and plainer")
+    assert cmd.intent == "tune.regenerate_section" and cmd.section_id == charanam.id, cmd
+    _settle(app)
+    v2 = app.project.melody()
+    assert v2.version == v1.version + 1, app.status_text
+    changed = [s.name for s in v2.sections
+               if _notes_of(v2, s.id) != _notes_of(v1, next(
+                   o for o in v1.sections if o.name == s.name).id)]
+    assert changed == ["Charanam 1"], changed
+    before = _section_notes(v1, SectionKind.CHARANAM)
+    after = _section_notes(v2, SectionKind.CHARANAM)
+    assert _mean_velocity(after) < _mean_velocity(before)
+    assert sum(1 for n in after if n.gamaka) <= sum(1 for n in before if n.gamaka)
+    # The landing line names the controls (the status moves on when the
+    # tune render lands, so it is read from the history it was filed in).
+    landed = [h.description for h in app.project.history if h.action == "tune.version"][-1]
+    assert "softer" in landed and "less gamaka" in landed, landed
+    assert "softer" in v2.guidance_note and "less gamaka" in v2.guidance_note
+    # No leakage: the next plain rewrite of the same section starts plain.
+    app.handle_utterance("rewrite the Charanam")
+    _settle(app)
+    v3 = app.project.melody()
+    assert v3.version == v2.version + 1 and v3.guidance_note == ""
+    assert _mean_velocity(_section_notes(v3, SectionKind.CHARANAM)) > _mean_velocity(after)
+
+
+def test_a_word_that_is_not_a_control_is_said_and_the_asked_rewrite_still_happens(app):
+    _a_tune(app, "Faster is not a control")
+    v1 = app.project.melody()
+    cmd = app.handle_utterance("rewrite the Charanam faster")
+    assert cmd.intent == "tune.regenerate_section", cmd
+    _settle(app)
+    assert app.project.melody().version == v1.version + 1
+    landed = [h.description for h in app.project.history if h.action == "tune.version"][-1]
+    assert "not a control I have: faster" in landed, landed
+    assert "not a control I have: faster" in app.project.melody().guidance_note
+
+
+def test_a_contradictory_direction_applies_neither_and_says_so(app):
+    _a_tune(app, "Softer and stronger")
+    v1 = app.project.melody()
+    app.handle_utterance("make the Charanam softer and stronger")
+    _settle(app)
+    v2 = app.project.melody()
+    assert v2.version == v1.version + 1
+    assert "asked both ways" in v2.guidance_note and "softer and stronger" in v2.guidance_note
+    assert "(velocity" not in v2.guidance_note
+
+
+def test_a_direction_on_a_locked_section_is_refused(app):
+    _a_tune(app, "Locked and softer")
+    v1 = app.project.melody()
+    charanam = _section(app, SectionKind.CHARANAM)
+    app.set_section_lock(charanam.id, True)
+    app.handle_utterance("make the Charanam softer")
+    _settle(app)
+    assert app.project.melody() is v1
+    assert "locked" in app.status_text.lower(), app.status_text
+
+
+def test_a_fader_request_naming_a_section_is_still_a_fader_request(app):
+    from raagacomposer.speech.intent import interpret
+    _a_tune(app, "Fader in the Pallavi")
+    app._sync_context()
+    ctx = app.context.time_context()
+    assert interpret("turn the violin down in the Pallavi", ctx).intent == "arrange.level"
+    assert interpret("make the Pallavi softer", ctx).intent == "tune.regenerate_section"
+    assert interpret("change the violin to veena in the Pallavi", ctx).intent == "arrange.replace"
+
+
 def test_a_variation_with_no_section_named_is_of_the_whole_tune(app):
     _a_tune(app, "Vary it all")
     v1 = app.project.melody()

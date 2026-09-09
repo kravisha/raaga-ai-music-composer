@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import List, Sequence, Tuple
+from typing import Dict, List, Sequence, Tuple
 
 from ..music.structure import SECTION_WORDS
 
@@ -108,6 +108,10 @@ class Placement:
     unplaced: List[str] = field(default_factory=list)   # a place named, not found
     whole: bool = False                                 # the whole tune, meant
     notes: List[str] = field(default_factory=list)
+    #: The clause(s) that asked each target to change, by section id, so
+    #: that what was asked of the Charanam is applied to the Charanam and
+    #: not to another target named in the same breath.
+    clauses: Dict[str, List[str]] = field(default_factory=dict)
 
     @property
     def placed_anything(self) -> bool:
@@ -222,8 +226,10 @@ def place_revisions(revisions: Sequence[str], melody) -> Placement:
                 elif section.locked:
                     if section.name not in placement.skipped_locked:
                         placement.skipped_locked.append(section.name)
-                elif section not in chosen:
-                    chosen.append(section)
+                else:
+                    if section not in chosen:
+                        chosen.append(section)
+                    placement.clauses.setdefault(section.id, []).append(clause.strip())
             for start, end, (t0, t1) in spans:
                 found_place = True
                 if t0 > song_end + 0.01:
@@ -237,8 +243,10 @@ def place_revisions(revisions: Sequence[str], melody) -> Placement:
                     elif section.locked:
                         if section.name not in placement.skipped_locked:
                             placement.skipped_locked.append(section.name)
-                    elif section not in chosen:
-                        chosen.append(section)
+                    else:
+                        if section not in chosen:
+                            chosen.append(section)
+                        placement.clauses.setdefault(section.id, []).append(clause.strip())
             whole = _WHOLE.search(rest)
             if whole:
                 found_place = True
@@ -264,6 +272,8 @@ def place_revisions(revisions: Sequence[str], melody) -> Placement:
     if whole_asked and not chosen and not whole_kept:
         if kept:
             chosen = [s for s in sections if not s.locked and s not in kept]
+            for s in chosen:
+                placement.clauses.setdefault(s.id, []).extend(revisions)
             placement.notes.append("the whole tune was asked for; every section but "
                                    + ", ".join(kept_names) + " is rewritten")
         else:

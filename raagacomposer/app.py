@@ -1943,7 +1943,14 @@ class AppController:
                          on_error=lambda e: self.error("tune", f"Variation failed: {e}"),
                          description="Tune variation")
 
-    def regenerate_tune_section(self, section_id: str) -> None:
+    def regenerate_tune_section(self, section_id: str, direction=None) -> None:
+        """Rewrite one section, every other note kept.
+
+        ``direction`` is a ``music.direction.SectionDirection`` for this
+        one rewrite - the property asked of the section, as controls.  It
+        is laid over the lesson guidance for this call only and never
+        stored, so a later rewrite of the same section starts plain.
+        """
         self.take_the_floor("regenerate a section")
         melody = self.project.melody()
         if melody is None:
@@ -1954,22 +1961,44 @@ class AppController:
         assert_melody_editable(self.project, section.start, section.end)
         raaga = self.composing_raaga()
         opts = self.melody_options()
+        opts.guidance = build_guidance(self.agent.repo, raaga.name)
+        said = ""
+        if direction is not None:
+            from .music.direction import apply_direction
+            directed = apply_direction(direction, opts, opts.guidance, raaga=raaga)
+            opts = directed.opts
+            opts.guidance = directed.guidance
+            parts = [direction.describe()]
+            if directed.conflicts:
+                parts.append("could not be done: " + "; ".join(directed.conflicts))
+            said = ". ".join(p for p in parts if p)
         version = max(m.version for m in self.project.melodies) + 1
-        self.status(f"Rewriting {section.name}...")
+        self.status(f"Rewriting {section.name}..." + (f" ({said})" if said else ""))
 
         def work(ctx: JobContext) -> MelodyVersion:
             ctx.progress(0.5, f"Rewriting {section.name}")
             fresh = melody_engine.regenerate_section(melody, raaga, section_id, opts,
                                                     version)
             fresh.validation = validate(fresh, raaga).issues
+            if direction is not None:
+                # What was asked, what was done, and what could not be:
+                # on the version, where the creator and the Critic read it.
+                fresh.guidance_note = direction.describe()
             return fresh
+
+        def landed(m: MelodyVersion) -> None:
+            label = f"Rewrote {section.name}"
+            if direction is not None:
+                told = direction.describe()
+                if told:
+                    label += f": {told}"
+            self._tune_ready(m, label, section_ticket)
 
         # A rewrite of one section depends on the tune it is rewriting and
         # on that section still being unlocked when it lands.
         section_ticket = self.song_work_ticket([section_id])
         self.jobs.submit("tune.section", f"melody:{section_id}", work,
-                         on_done=lambda m: self._tune_ready(
-                             m, f"Rewrote {section.name}", section_ticket),
+                         on_done=landed,
                          on_error=lambda e: self.error("tune", f"Section rewrite failed: {e}"),
                          description=f"Rewrite {section.name}")
 
@@ -4154,7 +4183,8 @@ class AppController:
             # every other note kept - the section rewrite, not a whole-tune
             # variation that happens to spare the locked ones.
             if cmd.section_id:
-                self.regenerate_tune_section(cmd.section_id)
+                from .music.direction import read_direction
+                self.regenerate_tune_section(cmd.section_id, read_direction(cmd.text))
             else:
                 self.make_variation()
         elif intent == "tune.accept":
@@ -4162,7 +4192,11 @@ class AppController:
         elif intent == "tune.regenerate_section":
             section_id = cmd.section_id or self.context.last_section_id
             if section_id:
-                self.regenerate_tune_section(section_id)
+                # "Make the Charanam softer and plainer": the property asked
+                # of the section rides with the rewrite as controls, and
+                # the reply names them - and the words that were none.
+                from .music.direction import read_direction
+                self.regenerate_tune_section(section_id, read_direction(cmd.text))
             else:
                 self.status("Which section should I rewrite?")
         elif intent == "tune.tempo":

@@ -107,6 +107,11 @@ _RULES: List[Tuple[str, str]] = [
     (r"\b(loop|repeat that|again and again)\b", "transport.loop"),
     (r"\b(play|listen to|hear|let me hear|start playback|playback)\b", "transport.play"),
     (r"\b(go back|rewind|skip (forward|ahead)|jump to|seek)\b", "transport.seek"),
+    # A section asked to change by name, before the arrangement rules:
+    # "make the Charanam softer" is the Charanam's tune, not a fader.
+    (r"\b(make|rewrite|regenerate|redo|recompose)\s+(?:the\s+|this\s+|that\s+)?"
+     r"(pallavi|anupallavi|anu pallavi|charanam|verse|chorus|prelude|interlude|"
+     r"outro|bridge)\b", "tune.regenerate_section"),
     # arrangement
     (r"\b(replace|swap|change)\b.*\b(with|for|to)\b", "arrange.replace"),
     (r"\b(add|bring in|bring|put|include|layer|introduce|use)\b", "arrange.add"),
