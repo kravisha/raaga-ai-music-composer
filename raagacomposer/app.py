@@ -119,6 +119,10 @@ class AppController:
         # tests so no microphone is touched.
         self.recorder = TakeRecorder(sample_rate=self.sample_rate)
         self._take_ticket: Dict[str, Any] = {}
+        #: The command listener a take paused, to be resumed when the take
+        #: ends - only that one, only in the same song, only if nobody
+        #: stopped listening on purpose meanwhile.
+        self._resume_listening: Optional[Dict[str, Any]] = None
         self.providers = provider_registry.build(
             self.settings, stt_name=self.voice_input.adapter.status())
         # The Knowledge Base: the permanent learned memory.  Opened, never
@@ -735,6 +739,8 @@ class AppController:
                 self.store.save(self.project, self.project_dir)
         except Exception as exc:  # noqa: BLE001
             log.error("final save failed: %s", exc)
+        # Closing: a take that paused the listener must not restart it.
+        self._resume_listening = None
         self.voice_input.close()
         self.recorder.close()
         self.playback.close()
@@ -3572,24 +3578,41 @@ class AppController:
         if not self.recorder.available:
             self.error("recording", self.recorder.state.error)
             return False
+        paused = False
         if self.voice_input.state.listening:
-            # Both would open the input; the take has it while it runs.
+            # Both would open the input; the take has it while it runs,
+            # and the listener comes back when the take ends - this song,
+            # this listener, unless someone stops listening on purpose.
             self.voice_input.stop()
-            self.status("Voice commands paused while recording.")
+            self.context.listening = False
+            self._resume_listening = {"project": self.project.project_id}
+            self._notify_conversation()
+            paused = True
         context = self._take_context(section_id)
         device = self.settings.mic_device or None
         if not self.recorder.start(device=device):
             self.error("recording", self.recorder.state.error)
+            self._restore_listening("the take could not start")
             return False
         context["session"] = self.recorder.session
         self._take_ticket = context
         where = context["section_name"] or "the whole song"
         self.status(f"Recording {where}. Press Stop when you are done, or "
-                    f"Cancel to keep nothing.")
+                    f"Cancel to keep nothing."
+                    + (" Voice commands are paused until then." if paused else ""))
         return True
 
     def stop_take(self) -> Optional[RecordedTake]:
-        """Release the input and keep the take, with where it was made."""
+        """Release the input and keep the take, with where it was made; then
+        give the command listener back, if the take had paused it."""
+        was = self.recorder.recording
+        try:
+            return self._stop_take_kept()
+        finally:
+            if was:
+                self._restore_listening("the take ended")
+
+    def _stop_take_kept(self) -> Optional[RecordedTake]:
         ticket, self._take_ticket = self._take_ticket, {}
         audio = self.recorder.stop()
         if audio is None:
@@ -3628,14 +3651,41 @@ class AppController:
         self._take_ticket = {}
         if was:
             self.status("Recording cancelled; nothing was kept.")
+            self._restore_listening("the take was cancelled")
 
     def _abandon_recording(self, why: str) -> None:
         """Leaving a song releases the input and keeps nothing: a take
-        finished after the switch would land in the wrong song."""
+        finished after the switch would land in the wrong song.  A listener
+        the take paused is not started again either - the song it was
+        listening for is gone."""
         if self.recorder.recording:
             self.recorder.cancel()
             log.info("recording abandoned: %s", why)
         self._take_ticket = {}
+        self._resume_listening = None
+
+    def _restore_listening(self, why: str) -> bool:
+        """Give the command listener back after a take released the input -
+        only if the take paused it, the same song is open, nobody stopped
+        listening on purpose meanwhile, and no take is recording.  Never
+        two owners of the input at once."""
+        intent, self._resume_listening = self._resume_listening, None
+        if not intent:
+            return False
+        if intent.get("project") != self.project.project_id:
+            return False
+        if self.recorder.recording or self.voice_input.state.listening:
+            return False
+        ok = self.voice_input.start()
+        self.context.listening = self.voice_input.state.listening
+        if ok:
+            self.status(f"{self.status_text} Voice commands resumed.")
+        else:
+            self.status(f"{self.status_text} Voice commands could not resume: "
+                        f"{self.voice_input.state.error}")
+        self._notify_conversation()
+        log.info("listener %s after %s", "resumed" if ok else "not resumed", why)
+        return ok
 
     def takes_for_reuse(self, take_ids: Sequence[str]) -> List[RecordedTake]:
         """The current project's saved takes with these ids, checked before
@@ -3973,6 +4023,9 @@ class AppController:
         """
         self.voice_input.stop()
         self.context.listening = False
+        # Stopped on purpose: a take that paused the listener must not
+        # bring it back when it ends.
+        self._resume_listening = None
         dropped = self._clear_utterances()
         self.jobs.cancel_target("voice")
         # Only what was heard.  A typed instruction interpreting right now

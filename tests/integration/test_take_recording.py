@@ -446,6 +446,158 @@ def test_failed_start_callback_cannot_contaminate_successful_retry(app):
     assert np.allclose(audio, 0.25, atol=1e-3)
 
 
+# ----------------------------------------------------------------------
+# The command listener comes back after a take, when the take paused it
+# ----------------------------------------------------------------------
+class FakeListener:
+    """What the controller sees of VoiceInputManager: a state with
+    ``listening`` and ``error``, start/stop/close.  No capture."""
+
+    def __init__(self, listening=False, fail_start=False):
+        from raagacomposer.speech.capture import CaptureState
+        self.state = CaptureState(listening=listening, phase="listening" if listening else "ready")
+        self.starts = 0
+        self.stops = 0
+        self.closed = False
+        self.fail_start = fail_start
+        self.on_partial = self.on_final = self.on_barge_in = self.on_state = None
+        self.adapter = type("A", (), {"name": "fake", "status": lambda self: "fake"})()
+
+    def start(self):
+        self.starts += 1
+        if self.fail_start:
+            self.state.error = "Microphone error: fake device gone"
+            self.state.phase = "error"
+            return False
+        self.state.listening = True
+        self.state.error = ""
+        return True
+
+    def stop(self):
+        self.stops += 1
+        self.state.listening = False
+
+    def close(self):
+        self.stop()
+        self.closed = True
+
+
+def _listening_app(app, listening=True, fail_start=False):
+    listener = FakeListener(listening=listening, fail_start=fail_start)
+    app.voice_input = listener
+    app.context.listening = listening
+    return listener
+
+
+@pytest.mark.parametrize("ending", ["stop", "cancel", "empty"])
+def test_a_take_pauses_the_listener_and_gives_it_back_when_it_ends(app, ending):
+    _a_tune(app, "Listener back")
+    mic = _fake_input(app)
+    listener = _listening_app(app)
+    assert app.start_take()
+    assert not listener.state.listening and listener.stops == 1, "the take did not pause the listener"
+    assert not app.context.listening
+    assert "paused" in app.status_text.lower()
+    if ending != "empty":
+        mic.last.feed(0.3)
+    if ending == "cancel":
+        app.cancel_take()
+    else:
+        app.stop_take()
+    assert not app.recorder.recording and mic.last.released
+    assert listener.state.listening and listener.starts == 1, ending
+    assert app.context.listening
+    assert "resumed" in app.status_text.lower(), app.status_text
+    # A second stop is not a second resume.
+    assert app.stop_take() is None
+    assert listener.starts == 1
+
+
+def test_a_listener_that_was_off_stays_off(app):
+    _a_tune(app, "Listener off")
+    mic = _fake_input(app)
+    listener = _listening_app(app, listening=False)
+    assert app.start_take()
+    mic.last.feed(0.2)
+    app.stop_take()
+    assert listener.starts == 0 and not listener.state.listening and not app.context.listening
+    assert "resumed" not in app.status_text.lower()
+
+
+def test_a_take_that_fails_to_start_gives_the_listener_straight_back(app):
+    _a_tune(app, "Start fails, listener back")
+    _fake_input(app, fail_with=OSError("device unavailable"))
+    listener = _listening_app(app)
+    assert app.start_take() is False
+    assert listener.stops == 1 and listener.starts == 1 and listener.state.listening
+    assert app.context.listening
+
+
+def test_an_explicit_stop_listening_during_a_take_wins(app):
+    _a_tune(app, "Stopped on purpose")
+    mic = _fake_input(app)
+    listener = _listening_app(app)
+    assert app.start_take()
+    app.stop_listening()
+    mic.last.feed(0.2)
+    app.stop_take()
+    assert listener.starts == 0 and not listener.state.listening and not app.context.listening
+
+
+def test_a_new_song_or_the_app_closing_does_not_bring_the_listener_back(app, settings):
+    _a_tune(app, "Song changes under the take")
+    mic = _fake_input(app)
+    listener = _listening_app(app)
+    assert app.start_take()
+    app.new_project("Another song", write=False)
+    assert not app.recorder.recording and mic.last.released
+    assert listener.starts == 0 and not listener.state.listening
+    assert app.stop_take() is None and listener.starts == 0
+
+    from raagacomposer.app import AppController
+    other = AppController(settings)
+    try:
+        other.new_project("Closing under a take", write=False)
+        mic2 = _fake_input(other)
+        listener2 = _listening_app(other)
+        assert other.start_take()
+        mic2.last.feed(0.1)
+    finally:
+        other.close()
+    assert listener2.closed and listener2.starts == 0 and not listener2.state.listening
+    assert not other.recorder.recording
+
+
+def test_never_two_owners_of_the_input(app):
+    """The listener is resumed only once the recorder has released the
+    input, and never while another take is recording."""
+    _a_tune(app, "One owner")
+    mic = _fake_input(app)
+    listener = _listening_app(app)
+    assert app.start_take()
+    mic.last.feed(0.2)
+    # While the take holds the input, nothing may start the listener.
+    assert not listener.state.listening
+    app.stop_take()
+    assert mic.last.released and listener.state.listening
+    # Starting a new take pauses it again; only one of them is ever open.
+    assert app.start_take()
+    assert not listener.state.listening and listener.stops == 2
+    app.cancel_take()
+    assert listener.state.listening and listener.starts == 2
+
+
+def test_a_listener_that_cannot_resume_is_said(app):
+    _a_tune(app, "Listener cannot resume")
+    mic = _fake_input(app)
+    listener = _listening_app(app, fail_start=True)
+    assert app.start_take()
+    mic.last.feed(0.2)
+    app.stop_take()
+    assert listener.starts == 1 and not listener.state.listening and not app.context.listening
+    assert "could not resume" in app.status_text and "fake device gone" in app.status_text
+
+
 def test_the_recorder_alone_holds_the_input_only_between_start_and_stop():
     factory = FakeInput()
     recorder = TakeRecorder(open_stream=factory, sample_rate=8000, block=100)
