@@ -224,6 +224,21 @@ def lesson_recording():
 # --------------------------------------------------------------------------
 # environment fixtures
 # --------------------------------------------------------------------------
+def _write_scope_settings(path: Path) -> None:
+    """Keep default stores local even when a fixture uses Settings.load directly.
+
+    A separate settings file does not isolate unset database paths: the
+    controller then falls back to the shared session home. Module-scoped
+    UI fixtures bypass the settings fixture below, so both copies of the
+    template need explicit store locations beside their own settings file.
+    """
+    template = dict(_SETTINGS_TEMPLATE)
+    template["projects_dir"] = str(path.parent / "projects")
+    for field in ("knowledge_db", "factory_db", "training_db", "knowledge_base_db"):
+        template[field] = str(path.parent / f"{field.removesuffix('_db')}.db")
+    path.write_text(json.dumps(template, indent=2), encoding="utf-8")
+
+
 @pytest.fixture(autouse=True)
 def own_settings_file(tmp_path_factory: pytest.TempPathFactory,
                       monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -237,14 +252,14 @@ def own_settings_file(tmp_path_factory: pytest.TempPathFactory,
     by every test that loaded settings afterwards (2026-09-08, two suite
     failures).  Pointing ``Settings.path`` at a per-test copy of the
     template ends that: a save persists for the rest of *this* test and
-    no further.  Module-scoped fixtures that load settings before a test
-    begins still read the shared template, which is never written after
-    the session starts.
+    no further. Module-scoped fixtures get their own settings and default
+    stores from ``own_settings_file_for_module`` before a test begins;
+    neither scope writes the shared session template.
     """
     # Its own directory, not the test's tmp_path: tests that assert their
     # tmp_path stayed empty must not find a settings file in it.
     path = tmp_path_factory.mktemp("settings") / "settings.json"
-    path.write_text(json.dumps(_SETTINGS_TEMPLATE, indent=2), encoding="utf-8")
+    _write_scope_settings(path)
     monkeypatch.setattr(Settings, "path", classmethod(_settings_path_at(path)))
     return path
 
@@ -260,7 +275,7 @@ def own_settings_file_for_module(tmp_path_factory):
     the tests in between still start from the template.
     """
     path = tmp_path_factory.mktemp("settings-module") / "settings.json"
-    path.write_text(json.dumps(_SETTINGS_TEMPLATE, indent=2), encoding="utf-8")
+    _write_scope_settings(path)
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(Settings, "path", classmethod(_settings_path_at(path)))
         yield path
@@ -290,6 +305,8 @@ def settings(tmp_path: Path) -> Settings:
     # Each test gets its own memory: learning must never leak between tests.
     s.knowledge_db = str(tmp_path / "knowledge.db")
     s.factory_db = str(tmp_path / "factory.db")
+    s.training_db = str(tmp_path / "training.db")
+    s.knowledge_base_db = str(tmp_path / "knowledge_base.db")
     s.learning_corpus_dir = ""
     s.learning_allow_web = False
     s.learning_autostart = False
