@@ -571,6 +571,16 @@ class TrainingPanel(QWidget):
             keyword=self.knowledge_query.text().strip())
         self._knowledge = entries
         table = self.knowledge_table
+        # A new search is a new table: whatever row was selected belonged
+        # to the last one, and so did the provenance beside it.  A search
+        # for Beta used to keep Alpha's source under Beta's row, and an
+        # empty search kept it beside an empty table.
+        table.blockSignals(True)
+        table.clearSelection()
+        table.setCurrentCell(-1, -1)
+        table.setRowCount(0)
+        table.blockSignals(False)
+        self.provenance_view.setPlainText("")
         table.setRowCount(len(entries))
         for row, entry in enumerate(entries):
             values = (entry.normalized_statement, entry.category, entry.raga,
@@ -590,6 +600,9 @@ class TrainingPanel(QWidget):
     def _show_provenance(self) -> None:
         entry = self._selected_knowledge()
         if entry is None or self.training is None:
+            # No selection means no source to show: what was there
+            # belonged to a row that is no longer selected.
+            self.provenance_view.setPlainText("")
             return
         record = self.training.provenance(entry.knowledge_id)
         lines = [f"{key.replace('_', ' ')}: {value}"
