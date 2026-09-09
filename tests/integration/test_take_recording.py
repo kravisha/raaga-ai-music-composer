@@ -284,6 +284,41 @@ def test_a_kept_take_survives_saving_and_reopening_the_song(app):
         ("Pallavi", take.audio_path, take.duration, take.melody_version)
 
 
+def test_the_take_can_be_driven_from_the_conversation(app):
+    """"Record the Pallavi", "stop recording", "cancel the recording": the
+    same controller doors, through the words, with the fake stream."""
+    _a_tune(app, "Spoken take")
+    mic = _fake_input(app)
+    pallavi = _pallavi(app)
+    cmd = app.handle_utterance("record the Pallavi")
+    assert cmd.intent == "record.start" and cmd.section_id == pallavi.id, cmd
+    assert app.recorder.recording and mic.last.started
+    assert app._take_ticket["section_name"] == "Pallavi"
+    mic.last.feed(0.6)
+    cmd = app.handle_utterance("stop recording")
+    assert cmd.intent == "record.stop", cmd
+    assert not app.recorder.recording and mic.last.released
+    assert len(app.project.recordings) == 1
+    assert app.project.recordings[0].section_name == "Pallavi"
+    # A cancelled spoken take keeps nothing; a stop with nothing running is said.
+    app.handle_utterance("record a take")
+    assert app.recorder.recording
+    mic.last.feed(0.2)
+    cmd = app.handle_utterance("cancel the recording")
+    assert cmd.intent == "record.cancel", cmd
+    assert not app.recorder.recording and mic.last.released
+    assert len(app.project.recordings) == 1
+    assert "cancelled" in app.status_text.lower()
+    app.handle_utterance("stop recording")
+    assert "Not recording" in app.status_text
+    # Plain "stop" is still the transport, not the take.
+    app.handle_utterance("record a take")
+    assert app.recorder.recording
+    cmd = app.handle_utterance("stop")
+    assert cmd.intent == "transport.stop" and app.recorder.recording
+    app.cancel_take()
+
+
 def test_the_recorder_alone_holds_the_input_only_between_start_and_stop():
     factory = FakeInput()
     recorder = TakeRecorder(open_stream=factory, sample_rate=8000, block=100)

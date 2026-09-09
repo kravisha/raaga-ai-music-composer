@@ -386,6 +386,41 @@ def test_transcript_dataclass_defaults():
 # --------------------------------------------------------------------------
 # what the microphone is doing, visibly
 # --------------------------------------------------------------------------
+@pytest.mark.parametrize("text,intent", [
+    ("record a take", "record.start"),
+    ("Record the Pallavi", "record.start"),
+    ("start recording", "record.start"),
+    ("stop recording", "record.stop"),
+    ("stop the take", "record.stop"),
+    ("that's the take", "record.stop"),
+    ("cancel the recording", "record.cancel"),
+    ("scrap that take", "record.cancel"),
+    ("throw the take away", "record.cancel"),
+    # the guards: what these verbs are not
+    ("Stop.", "transport.stop"),
+    ("cancel", "project.cancel"),
+    ("never mind", "project.cancel"),
+    ("learn from my recordings", "agent.learn"),
+    ("what have you learned from the recordings", "agent.explain"),
+    ("play the recording", "transport.play"),
+])
+def test_the_take_verbs_and_what_they_are_not(text, intent):
+    cmd = interpret(text, ctx())
+    assert cmd.intent == intent, f"{text!r} -> {cmd.intent}"
+
+
+def test_record_the_section_carries_the_section():
+    from raagacomposer.speech.timeline_parser import TimeContext
+    sections = [Section(name="Pallavi", kind=SectionKind.PALLAVI, start=10.0, end=30.0)]
+    context = TimeContext(duration=60.0, playhead=0.0, selection=None, sections=sections)
+    cmd = interpret("record the Pallavi", context)
+    assert cmd.intent == "record.start" and cmd.section_id == sections[0].id
+    assert describe(cmd).startswith("Record a take")
+    assert describe(interpret("stop recording", context)) == "Stop recording and keep the take"
+    assert describe(interpret("cancel the recording", context)) == \
+        "Cancel the recording and keep nothing"
+
+
 def test_the_microphone_says_what_it_is_doing():
     """Voice gave no sign of its state: you spoke, and either something
     happened or nothing did.  Section 15 asks for the phases to be visible."""

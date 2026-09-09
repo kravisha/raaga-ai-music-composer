@@ -4277,6 +4277,14 @@ class AppController:
             self.undo_action()
         elif intent == "project.redo":
             self.redo_action()
+        elif intent == "record.start":
+            # "Record the Pallavi": the take is made against the section
+            # named, else the selection, else the whole song (start_take).
+            self.start_take(cmd.section_id or None)
+        elif intent == "record.stop":
+            self.stop_take()
+        elif intent == "record.cancel":
+            self.cancel_take()
         elif intent == "project.cancel":
             self.jobs.cancel_all("cancelled by the creator")
             self.status("Cancelled the current operation")

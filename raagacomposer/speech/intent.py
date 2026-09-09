@@ -36,6 +36,7 @@ INTENTS = (
     "region.lock", "region.unlock",
     "project.save", "project.undo", "project.redo", "project.cancel",
     "agent.learn", "agent.explain", "agent.feedback", "agent.status",
+    "record.start", "record.stop", "record.cancel",
     "unknown",
 )
 
@@ -100,6 +101,16 @@ _RULES: List[Tuple[str, str]] = [
      r"where did you learn|what have you learned)\b", "agent.explain"),
     (r"\b(how is your learning|learning progress|what are you learning|"
      r"how much have you learned|what are you studying)\b", "agent.status"),
+    # The creator's own take, before transport: "stop recording" is not
+    # "stop", and "cancel the recording" is not "cancel everything".  The
+    # verb is "record"/"recording"/"take"; "the recordings" the agent
+    # learned from are a noun and never reach these.
+    (r"\b(stop|end|finish)\b\s+(?:the\s+|this\s+|that\s+)?(?:recording|take)\b|"
+     r"\bthat'?s the take\b|\bthat is the take\b", "record.stop"),
+    (r"\b(cancel|scrap|discard|abort|throw away|drop)\b\s+(?:the\s+|this\s+|that\s+)?"
+     r"(?:recording|take)\b|\bthrow (?:the|this|that) take away\b", "record.cancel"),
+    (r"\b(record|start recording|begin recording)\b(?!ings?\b)(?!.*\b(?:learn|study|from)\b)",
+     "record.start"),
     # transport
     (r"\b(pause|hold on|wait)\b", "transport.pause"),
     (r"\b(stop|halt)\b(?!.*\b(drum|instrument|violin|adding)\b)", "transport.stop"),
@@ -341,6 +352,12 @@ def describe(cmd: Command) -> str:
     name = inst.name if inst else cmd.instrument
     target_name = target.name if target else cmd.target_instrument
 
+    if cmd.intent == "record.start":
+        return f"Record a take{' of ' + when if when else ''}"
+    if cmd.intent == "record.stop":
+        return "Stop recording and keep the take"
+    if cmd.intent == "record.cancel":
+        return "Cancel the recording and keep nothing"
     if cmd.intent == "transport.play":
         return f"Play {when}" if when else "Play"
     if cmd.intent == "transport.seek" and cmd.time:
