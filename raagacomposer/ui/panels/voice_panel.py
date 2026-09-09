@@ -5,9 +5,11 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtWidgets import (QComboBox, QFileDialog, QFormLayout, QHBoxLayout,
-                               QInputDialog, QLabel, QMessageBox, QPushButton,
-                               QSlider, QTextEdit, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QFileDialog,
+                               QFormLayout, QHBoxLayout, QInputDialog, QLabel,
+                               QListWidget, QListWidgetItem, QMessageBox,
+                               QPushButton, QSlider, QTextEdit, QVBoxLayout,
+                               QWidget)
 
 from ...voice.renderer import STYLE_PRESETS
 
@@ -57,8 +59,17 @@ class VoicePanel(QWidget):
         self.stop_take_btn.clicked.connect(self._stop_take)
         self.cancel_take_btn = QPushButton("Cancel")
         self.cancel_take_btn.clicked.connect(self._cancel_take)
-        self.play_take_btn = QPushButton("Play last take")
-        self.play_take_btn.clicked.connect(self._play_last_take)
+        # -- saved takes: a list you choose from, by id.  Choosing plays
+        # nothing and makes nothing; the two buttons below do, and say so.
+        self.takes_list = QListWidget()
+        self.takes_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.takes_list.setMaximumHeight(96)
+        self.takes_list.itemSelectionChanged.connect(self._show_recording_state)
+        self.play_take_btn = QPushButton("Play selected take")
+        self.play_take_btn.clicked.connect(self._play_selected_take)
+        self.profile_from_takes_btn = QPushButton("New voice from selected takes...")
+        self.profile_from_takes_btn.clicked.connect(self._create_profile_from_takes)
+        self._project_id = ""
         self.recording_state = QLabel("Not recording")
         self.recording_state.setObjectName("recordingState")
         self._clock = QTimer(self)
@@ -88,7 +99,10 @@ class VoicePanel(QWidget):
         layout.addWidget(self.profile_btn)
         layout.addLayout(take_buttons)
         layout.addWidget(self.recording_state)
-        layout.addWidget(QLabel("Takes:"))
+        layout.addWidget(QLabel("Your saved takes (choose one or more):"))
+        layout.addWidget(self.takes_list)
+        layout.addWidget(self.profile_from_takes_btn)
+        layout.addWidget(QLabel("Rendered vocal takes:"))
         layout.addWidget(self.info, 1)
         self.setMinimumWidth(480)
         self.setMinimumHeight(300)
@@ -149,12 +163,47 @@ class VoicePanel(QWidget):
         self.app.cancel_take()
         self.refresh()
 
-    def _play_last_take(self) -> None:
-        takes = self.app.project.recordings
-        if not takes:
-            self.app.status("You have not recorded a take yet.")
+    def _selected_take_ids(self) -> list:
+        """The ids of the takes chosen in the list, in list order."""
+        return [item.data(Qt.UserRole) for item in self.takes_list.selectedItems()
+                if item.data(Qt.UserRole)]
+
+    def _play_selected_take(self) -> None:
+        chosen = self._selected_take_ids()
+        if not chosen:
+            self.app.status("Choose a saved take in the list first.")
             return
-        self.app.play_take(takes[-1].id)
+        if len(chosen) > 1:
+            self.app.status("Choose one take to play.")
+            return
+        # By id, never "the latest": the one chosen is the one played.
+        self.app.play_take(chosen[0])
+
+    def _create_profile_from_takes(self) -> None:
+        chosen = self._selected_take_ids()
+        try:
+            takes = self.app.takes_for_reuse(chosen)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Voice profile", str(exc))
+            return
+        name, ok = QInputDialog.getText(
+            self, "Voice profile",
+            f"Name a new voice profile measured from {len(takes)} saved take(s).\n"
+            f"The takes are references for pitch range, brightness and noise; "
+            f"this is not training and does not promise your voice back.")
+        if not ok or not name.strip():
+            return
+        try:
+            profile = self.app.create_voice_from_takes(chosen, name.strip())
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, "Voice profile", str(exc))
+            return
+        QMessageBox.information(
+            self, "Voice profile",
+            f"Created {profile.name} from {len(takes)} saved take(s); it is now the "
+            f"singer for this song.\n{profile.notes}")
+        self.refresh()
+        self.changed.emit()
 
     def _tick(self) -> None:
         if not self.app.recorder.recording:
@@ -174,7 +223,10 @@ class VoicePanel(QWidget):
             "" if self.app.recorder.available else self.app.recorder.state.error)
         self.stop_take_btn.setEnabled(recording)
         self.cancel_take_btn.setEnabled(recording)
-        self.play_take_btn.setEnabled(not recording and bool(self.app.project.recordings))
+        chosen = self._selected_take_ids()
+        self.play_take_btn.setEnabled(not recording and len(chosen) == 1)
+        self.profile_from_takes_btn.setEnabled(not recording and bool(chosen))
+        self.play_take_btn.setToolTip("Choose one saved take to play." if len(chosen) != 1 else "")
 
     # -- refresh -----------------------------------------------------------
     def refresh(self) -> None:
@@ -212,8 +264,22 @@ class VoicePanel(QWidget):
             rows.append(f"v{take.version} {take.kind:<8} "
                         f"{profile.name if profile else '?':<18} "
                         f"{take.duration:.0f}s  {take.direction.style}{marker}")
-        for take in project.recordings[-12:]:
+        self.info.setPlainText("\n".join(rows) or "No rendered vocal takes yet.")
+
+        # The saved takes, every one, keyed by id.  A selection survives an
+        # ordinary refresh by id; a new song starts with none, so a take of
+        # the last song is never the one chosen in this one.
+        keep = set(self._selected_take_ids()) if project.project_id == self._project_id else set()
+        self._project_id = project.project_id
+        self.takes_list.blockSignals(True)
+        self.takes_list.clear()
+        for take in project.recordings:
             when = time.strftime("%H:%M", time.localtime(take.created_at))
-            rows.append(f"{take.label:<24} recorded by you  {take.duration:.1f}s  "
-                        f"{when}")
-        self.info.setPlainText("\n".join(rows) or "No vocal takes yet.")
+            where = take.section_name or "whole song"
+            item = QListWidgetItem(f"{take.label}  -  {where}  -  {take.duration:.1f}s  -  "
+                                   f"recorded by you at {when}")
+            item.setData(Qt.UserRole, take.id)
+            self.takes_list.addItem(item)
+            item.setSelected(take.id in keep)
+        self.takes_list.blockSignals(False)
+        self._show_recording_state()

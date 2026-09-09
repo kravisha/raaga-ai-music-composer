@@ -3637,6 +3637,49 @@ class AppController:
             log.info("recording abandoned: %s", why)
         self._take_ticket = {}
 
+    def takes_for_reuse(self, take_ids: Sequence[str]) -> List[RecordedTake]:
+        """The current project's saved takes with these ids, checked before
+        anything is made from them: every id must be one of this project's
+        takes (a stale or foreign id is refused by name), every file must be
+        readable, and no take may be recording.  Raises ValueError with the
+        reason, so nothing is half-created."""
+        if self.recorder.recording:
+            raise ValueError("A take is recording. Stop or cancel it first.")
+        wanted = [t for t in take_ids if t]
+        if not wanted:
+            raise ValueError("Choose at least one saved take.")
+        by_id = {t.id: t for t in self.project.recordings}
+        missing = [t for t in wanted if t not in by_id]
+        if missing:
+            raise ValueError(f"{len(missing)} take(s) are not in this song any more: "
+                             f"{', '.join(missing)}.")
+        chosen = [by_id[t] for t in wanted]
+        import soundfile as sf
+        unreadable = []
+        for take in chosen:
+            try:
+                info = sf.info(take.audio_path)
+                if info.frames <= 0:
+                    raise ValueError("empty")
+            except Exception as exc:  # noqa: BLE001
+                unreadable.append(f"{take.label} ({take.audio_path}: {exc})")
+        if unreadable:
+            raise ValueError("These takes cannot be read: " + "; ".join(unreadable))
+        return chosen
+
+    def create_voice_from_takes(self, take_ids: Sequence[str], name: str,
+                                gender: str = "") -> VoiceProfile:
+        """A new profile from saved takes of this song, by the same door as
+        recordings chosen from disk.  The takes are references the profile
+        is measured from - pitch range, brightness, noise - not training,
+        and not a promise of a faithful voice; the profile's own note says
+        what was derived."""
+        takes = self.takes_for_reuse(take_ids)
+        if not name.strip():
+            raise ValueError("Name the voice profile.")
+        return self.create_voice_from_recordings([t.audio_path for t in takes],
+                                                 name.strip(), gender)
+
     def play_take(self, take_id: str) -> bool:
         """Play one recorded take, and only that: nothing rendered changes."""
         take = next((t for t in self.project.recordings if t.id == take_id), None)

@@ -57,8 +57,12 @@ def test_the_panel_shows_recording_and_lists_the_take(app, qt_app):
         assert not app.recorder.recording and mic.last.released
         assert len(app.project.recordings) == 1
         assert panel.recording_state.text() == "Not recording"
-        assert "Take 1 - Pallavi" in panel.info.toPlainText()
-        assert "recorded by you" in panel.info.toPlainText()
+        rows = [panel.takes_list.item(i).text() for i in range(panel.takes_list.count())]
+        assert rows and "Take 1 - Pallavi" in rows[0] and "recorded by you" in rows[0], rows
+        # Playing is by choice, not "the latest": nothing chosen, nothing to play.
+        assert not panel.play_take_btn.isEnabled()
+        panel.takes_list.item(0).setSelected(True)
+        qt_app.processEvents()
         assert panel.play_take_btn.isEnabled()
 
         # Cancel keeps nothing, and says so on the list.
