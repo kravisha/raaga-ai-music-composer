@@ -104,11 +104,15 @@ class TakeRecorder:
             return False
         with self._lock:
             self._blocks = []
-        # Each take is its own session, and its callback carries the
-        # session's number: a block from a stream that was stopped,
-        # cancelled or abandoned - one a driver delivers late - is refused
-        # by number, not by whether some stream happens to be open now.
-        session = self.session + 1
+        # Each capture attempt is its own session, numbered before the
+        # stream is opened, and its callback carries that number: a block
+        # from a stream that was stopped, cancelled or abandoned - one a
+        # driver delivers late - is refused by number, not by whether some
+        # stream happens to be open now.  A failed attempt keeps its
+        # number too, so a callback it retained can never match the
+        # successful retry that follows it.
+        self.session += 1
+        session = self.session
 
         def callback(indata, frames, time_info, status):  # noqa: ANN001
             self._on_block(session, indata, status)
@@ -135,7 +139,6 @@ class TakeRecorder:
                         log.warning("%s of an input that failed to start: %s", step, cleanup)
             return False
         self._stream = stream
-        self.session = session
         self.state.phase = "recording"
         self.state.error = ""
         self.state.device = str(device or "default")

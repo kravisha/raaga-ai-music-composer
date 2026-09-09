@@ -402,6 +402,50 @@ def test_failed_stream_start_releases_constructed_input(app):
     assert factory.last.stopped
 
 
+def test_failed_start_callback_cannot_contaminate_successful_retry(app):
+    """Arya's retry case: the first stream is built but its start raises;
+    the immediate retry succeeds.  The failed stream's retained callback,
+    invoked after the retry, must not reach the retry's take - a failed
+    attempt keeps its own session number."""
+    _a_tune(app, "Failed start then retry")
+
+    class StartFailsOnce(FakeStream):
+        attempts = 0
+
+        def start(self):
+            StartFailsOnce.attempts += 1
+            if StartFailsOnce.attempts == 1:
+                raise OSError("Error starting InputStream: device busy")
+            self.started = True
+
+        def stop(self):
+            self.stopped = True
+            if not self.started:
+                raise RuntimeError("stop on an unstarted stream")
+
+    class Factory(FakeInput):
+        def __call__(self, **kwargs):
+            stream = StartFailsOnce(**kwargs)
+            self.streams.append(stream)
+            return stream
+    StartFailsOnce.attempts = 0
+    factory = Factory()
+    app.recorder = TakeRecorder(open_stream=factory, sample_rate=app.sample_rate)
+    assert app.start_take() is False
+    failed = factory.last
+    assert failed.closed and not app.recorder.recording
+    assert app.start_take() is True
+    retry = factory.last
+    assert retry is not failed and retry.started
+    retry.callback(np.full((441, 1), 0.25, np.float32), 441, None, None)
+    failed.callback(np.full((882, 1), 0.9, np.float32), 882, None, None)   # the failed attempt's
+    take = app.stop_take()
+    assert take is not None
+    audio, sr = sf.read(take.audio_path, dtype="float32")
+    assert len(audio) == 441, "the failed attempt's callback reached the retry's take"
+    assert np.allclose(audio, 0.25, atol=1e-3)
+
+
 def test_the_recorder_alone_holds_the_input_only_between_start_and_stop():
     factory = FakeInput()
     recorder = TakeRecorder(open_stream=factory, sample_rate=8000, block=100)
