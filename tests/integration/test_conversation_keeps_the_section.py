@@ -267,6 +267,40 @@ def test_a_kept_section_is_kept_and_the_change_lands_on_the_other(app, text):
     assert "softer" in v2.guidance_note and charanam.name in [s.name for s in v2.sections]
 
 
+def test_the_command_and_the_turn_describe_the_section_actually_rewritten(app):
+    """Arya's P2 on fe9fb3e: the Charanam was rewritten, but the command
+    still said Pallavi - section, time, remembered target and the turn's
+    action all read the first section spoken of.  A refused request must
+    not read as a rewrite either."""
+    _a_tune(app, "Metadata follows the deed")
+    pallavi = _section(app, SectionKind.PALLAVI)
+    charanam = _section(app, SectionKind.CHARANAM)
+    cmd = app.handle_utterance("keep the Pallavi unchanged; make the Charanam softer")
+    _settle(app)
+    assert cmd.section_id == charanam.id, cmd
+    assert cmd.time is not None and cmd.time.section_id == charanam.id
+    assert cmd.time.start == pytest.approx(charanam.start) and cmd.time.end == pytest.approx(charanam.end)
+    assert app.context.last_section_id == charanam.id
+    turn = app.project.conversation[-1]
+    assert turn.status == "applied"
+    assert "Charanam" in turn.action and "Pallavi" not in turn.action, turn.action
+    assert turn.action.startswith("Rewrite the section"), turn.action
+    # ("that section" / "this part" are the playhead's or the selection's
+    # section in the time parser, not the remembered one; what is checked
+    # here is that the remembered one is the Charanam, as asserted above.)
+
+    # A refused request: not a rewrite, not remembered.
+    before_last = app.context.last_section_id
+    cmd = app.handle_utterance("rewrite the Pallavi but keep the Pallavi unchanged")
+    _settle(app)
+    assert cmd.section_id == "" and cmd.time is None
+    turn = app.project.conversation[-1]
+    assert turn.status == "declined", turn.status
+    assert turn.action.startswith("Nothing changed"), turn.action
+    assert "kept, as you asked" in turn.reason
+    assert app.context.last_section_id == before_last != pallavi.id
+
+
 def test_a_sentence_that_only_keeps_or_locks_rewrites_nothing(app):
     _a_tune(app, "Only kept")
     before = _frozen(app)

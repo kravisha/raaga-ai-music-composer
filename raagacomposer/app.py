@@ -1967,20 +1967,27 @@ class AppController:
             section = melody.section_by_id(section_id) if section_id else None
             if section is not None and not section.locked:
                 targets = [section]
+        def refused(why: str) -> bool:
+            # The command's record says what was done: nothing, and why.
+            # The section the parser guessed is not remembered as the one
+            # spoken of, and the turn is not described as a rewrite.
+            self.status(why)
+            cmd.section_id = ""
+            cmd.time = None
+            cmd.raw_slots["outcome"] = "refused"
+            cmd.raw_slots["reason"] = why
+            return False
         if not targets:
             if placement.skipped_locked:
-                self.status(f"{', '.join(placement.skipped_locked)} is locked. "
-                            f"Unlock it first.")
-            elif placement.preserved:
-                self.status(f"{', '.join(placement.preserved)} is kept, as you asked; "
-                            f"there is nothing to rewrite.")
-            else:
-                self.status("Which section should I rewrite?")
-            return False
+                return refused(f"{', '.join(placement.skipped_locked)} is locked. "
+                               f"Unlock it first.")
+            if placement.preserved:
+                return refused(f"{', '.join(placement.preserved)} is kept, as you asked; "
+                               f"there is nothing to rewrite.")
+            return refused("Which section should I rewrite?")
         if len(targets) > 1:
-            self.status(f"One section at a time: {', '.join(s.name for s in targets)} "
-                        f"were named. Say which.")
-            return False
+            return refused(f"One section at a time: {', '.join(s.name for s in targets)} "
+                           f"were named. Say which.")
         section = targets[0]
         clauses = placement.clauses.get(section.id) or [cmd.text]
         direction = read_direction(" ".join(clauses))
@@ -1988,8 +1995,16 @@ class AppController:
                                      or direction.contradictions):
             # Nothing asked for can be done: a rewrite now would be a
             # change nobody asked for, dressed as the one they did.
-            self.status(f"{section.name} left as it is. {direction.describe()}.")
-            return False
+            return refused(f"{section.name} left as it is. {direction.describe()}.")
+        # The command now names what is actually rewritten, so the turn's
+        # description, and what the conversation remembers as "that
+        # section", follow the deed and not the first section spoken of.
+        cmd.section_id = section.id
+        cmd.time = TimeSpec(start=section.start, end=section.end,
+                            description=f"{section.start:.1f}s - {section.end:.1f}s "
+                                        f"({section.name})",
+                            source="section", section_id=section.id)
+        cmd.raw_slots["outcome"] = "rewriting " + section.name
         self.regenerate_tune_section(section.id, direction)
         return True
 
@@ -4139,10 +4154,22 @@ class AppController:
             return cmd
 
         action = describe(cmd) or cmd.intent
+        refused = False
         try:
             self.execute(cmd)
-            self.context.update_status(turn.id, "applied", action=action,
-                                       reason=self.status_text)
+            # Described after the deed, from the command as execute left
+            # it: a section request that resolved to another section than
+            # the parser's first guess reads as the section rewritten, and
+            # one that was refused reads as refused, not as a rewrite.
+            action = describe(cmd) or cmd.intent
+            refused = cmd.raw_slots.get("outcome") == "refused"
+            if refused:
+                self.context.update_status(
+                    turn.id, "declined", action=f"Nothing changed: {action}",
+                    reason=cmd.raw_slots.get("reason") or self.status_text)
+            else:
+                self.context.update_status(turn.id, "applied", action=action,
+                                           reason=self.status_text)
         except LockedContentError as exc:
             self.context.update_status(turn.id, "failed", action=action,
                                        reason=str(exc))
@@ -4151,7 +4178,10 @@ class AppController:
             self.context.update_status(turn.id, "failed", action=action,
                                        reason=f"{cmd.intent} failed: {exc}")
             self.error("command", f"{cmd.intent} failed: {exc}")
-        self.context.remember(cmd)
+        if not refused:
+            # A refused request leaves nothing to remember: the section the
+            # parser guessed at is not "that section" for the next request.
+            self.context.remember(cmd)
         self._notify_conversation()
         return cmd
 

@@ -374,6 +374,11 @@ def describe(cmd: Command) -> str:
     name = inst.name if inst else cmd.instrument
     target_name = target.name if target else cmd.target_instrument
 
+    if cmd.intent == "tune.regenerate_section":
+        # Named by the section actually rewritten when the controller has
+        # resolved one (its TimeSpec carries the name), else by the time.
+        where = (cmd.time.description if cmd.time and cmd.time.description else when)
+        return f"Rewrite the section {where}" if where else "Rewrite the section"
     if cmd.intent == "record.start":
         return f"Record a take{' of ' + when if when else ''}"
     if cmd.intent == "record.stop":
