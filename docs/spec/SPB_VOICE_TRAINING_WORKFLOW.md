@@ -43,19 +43,48 @@ integrated song audio** — not by test counts, validation loss, ASR agreement o
 pitch statistics. Those are diagnostics that can fail a candidate; none of them
 can pass one.
 
-### The capability gap, stated plainly
+### The capability gap, corrected
 
-The installed path is **voice conversion**. It requires a guide performance for
-every phrase and repaints its timbre. It has no component that turns lyrics and
-notes into a performance, and **no amount of fine-tuning it will produce one** —
-more training improves the repainting, never the ability to sing new words
-unaided. Closing that gap is stage **S6**, and it is a genuine addition to the
-system rather than a tuning exercise.
+An earlier revision of this document said the system has no score-to-performance
+component and that every conversion needs a **recorded** guide. **That was
+wrong**, and the correction matters because it changes what S6 is for.
 
-Until S6 delivers, every conversion depends on a recorded guide. **That
-dependence is interim and must be labelled as such wherever a result is
-reported** — an S1–S5 result is an identity and quality result, not evidence
-that new lyrics can be sung.
+What already exists, verified:
+
+- `raagacomposer/voice/renderer.py` — `plan_segments` (line 103) and
+  `render_melody` (line 346) render from melody plus lyrics with a
+  source-filter/formant synthesiser. Limited in quality; present.
+- `Raaga-Tamil-CVVC-Trial-20260908/` — `render_trial.py` and
+  `render_expressive_trial.py` rendered the authored Tamil phrase at explicit
+  notes through the installed Hanakoloid bank and Worldline renderer. Aliases
+  were supplied by hand, so this is not a complete automatic frontend. Version
+  one was rejected by Krish for mechanical sound and poor quality; version two
+  is not listening-accepted. Pitch coverage within 50 cents was measured at
+  100/86/100/100/98/100/100 per note — which supports the target pitches and
+  says nothing about naturalness.
+- `Raaga-Personal-Voice-Trial-20260908/prepare_local_trial.py:48` copies the
+  **synthetic** expressive CVVC output to `inputs/source-generic-v2.wav`, and
+  `run_conversion.py` converts from it. `output/run-status.json` records
+  `rendered_not_accepted`. **Lyrics → synthesised guide → conversion has already
+  been run end to end.** That historical run used a Krish identity reference and
+  is capability evidence only; it is not permission to substitute a personal
+  target now.
+
+**The actual gap** is therefore not the absence of synthesis. It is the absence
+of an **accepted, integrated, natural Tamil lyric-and-score-to-performance path**
+with automatic pronunciation and alignment and expressive delivery. The existing
+renders failed on delivery, not on existence, and the frontend is manual.
+
+**A guide is a performance waveform, human or synthesised**, distinct from the
+target and from the reference. Recorded-guide dependence is therefore not a
+property of the architecture; it is a property of whichever guide a given run
+used, and **each result records which kind it used**. A result driven by a
+recorded guide is an identity and quality result and is not evidence that new
+lyrics can be sung.
+
+A directly trained singer — lyrics and notes to SPB audio in one model — remains
+an option throughout. Choosing it would not require discarding the conversion
+baseline or the comparison infrastructure.
 
 ### Non-goals, and what is deliberately left open
 
@@ -107,12 +136,32 @@ the named reviewer, never by the implementer, and never by this document.
 | **S6** | Score-to-performance: lyrics + melody → sung guide | Claude | Codex, **Krish (verdict)** | G6 |
 | **S7** | End-to-end integration in Raaga | Claude | Codex, **Krish (verdict)** | G7 |
 
-Stages may be implemented in parallel where their claims do not overlap, but
-gates open in order: no S4 execution before G1, G2 and G3 are open.
-
 **Two tracks.** S1–S5 are the **identity** track: they make a converted voice
-sound like SPB and sound natural. S6 is the **performance** track: it removes
-the recorded-guide dependence. Neither track alone fulfils §1. They meet at S7.
+sound like SPB and sound natural. S6 is the **performance** track: it makes a
+sung guide from lyrics and notes. Neither track alone fulfils §1. They meet
+at S7.
+
+### Dependency edges, stated as edges rather than as an order
+
+An earlier revision said "gates open in order" while also requiring E1 before
+S1–S5 finished, and required application integration at G5 although integration
+is S7. Those were circular. The actual constraints:
+
+- **May run now**, needing no gate: original and control diagnostics; S6
+  inference experiments; conversion from the **pretrained base** identity path
+  for exploratory S6 comparison. A pretrained identity path does not wait for
+  new SPB fine-tuning.
+- **G1, G2 and G3 precede real S4 training.** Corrected runner, admitted
+  sources, verified splits.
+- **The pretrained-base audition baseline is captured before the first update.**
+- **Pilot evidence precedes the extended run** (G4).
+- **S5 selects and evaluates the trained candidate.** It does **not** require
+  application integration.
+- **S7 integrates the independently accepted identity and performance paths**
+  and owns actual-song acceptance.
+
+One execution owner per stage, non-overlapping claims. Parallel work is expected
+where claims do not overlap.
 
 ### S1 — Correct the runner
 
@@ -150,10 +199,21 @@ after it, not before. Originals are preserved untouched.
 Every raw file — existing or future video/audio — enters through one path and
 lands in an immutable store with a **quarantine** default of not admitted.
 
-**Three outcomes, kept distinct.** A source is `admitted`, `review_pending`
-(plausibly useful, something specific still unresolved — name it), or `unusable`
-(with the reason recorded). Collapsing the middle case into either neighbour is
-how good material gets discarded and unreviewed material gets used.
+**Three outcomes, kept distinct, and represented in the schema.** A source is
+`admitted`, `review_pending` (plausibly useful, with the specific unresolved
+items named in `pending_on`), or `unusable` (with the reason recorded).
+**Pending is not unusable**, and collapsing the middle case in either direction
+is how good material gets discarded and unreviewed material gets used.
+
+**Available input, already assessed by the corpus owner** and reused rather than
+rediscovered: `local-corpus-inventory-20260909/inventory.json` over the known
+roots — 599 MP4 and 307 WAV files, **36 filename-selected SPB-related media in
+33 candidate upload families, approximately 155 raw minutes** after grouping
+same upload IDs, all with readable audio metadata. Two are single-credit
+priority candidates; many are co-credited songs; two are tribute or cover
+candidates. **This is potential material with review work outstanding, not clean
+or admitted duration.** Same-ID variants and likely alternate uploads stay in
+one split family. The interview inventory remains separate. Originals unchanged.
 
 **`source_record` schema** (one per raw file):
 
@@ -173,7 +233,15 @@ how good material gets discarded and unreviewed material gets used.
   "source_use": { "status": "unresolved | approved | refused",
                   "basis": null, "evidence": null, "decided_by": null },
   "usable_intervals": [], "rejected_intervals": [{ "range": [], "reason": "" }],
-  "admitted": false
+
+  // The outcome is stated, not inferred from a boolean. Technical utility and
+  // source-use status are separate axes: material can be technically excellent
+  // and unusable on rights, or cleared and technically unusable.
+  "outcome": "admitted | review_pending | unusable",
+  "outcome_reason": "why, in words",
+  "pending_on": ["the specific unresolved items, when review_pending"],
+  "technical_utility": "usable | marginal | unusable | unassessed",
+  "decided_by": null, "decided_utc": null
 }
 ```
 
@@ -242,11 +310,22 @@ bound identities, and reports **exact** versus **approximate** restoration
 honestly — field presence is not proof of exact restore, since the installed
 optimizer wrappers can swallow failures.
 
-**Stop rules, fixed before the run:** user cancellation; the wall-clock budget,
-which includes checkpoint and evaluation overhead; a non-finite update; a failed
-checkpoint commitment; resource failure; or a predefined lack of improvement on
-validation auditions. Keep an evaluated best checkpoint and a recovery
-checkpoint. **Never publish the latest merely because loss fell.**
+**Stop rules, with their actual values fixed before the run and recorded in the
+`run_manifest`.** Declaring that a rule exists is not the same as declaring its
+value, and only the value is executable. Each run records:
+
+| Rule | Recorded value |
+| --- | --- |
+| Checkpoint cadence | every N steps, N stated |
+| Audition schedule | which checkpoints are auditioned, and when |
+| Lack-of-improvement rule | how many consecutive auditions without preference end the run |
+| Wall-clock budget | seconds, inclusive of checkpoint and evaluation overhead |
+| Resource ceiling | the memory fraction and what exceeding it does |
+
+These are per-run values, not universal constants. Also stopping the run: user
+cancellation, a non-finite update, a failed checkpoint commitment, and resource
+failure. Keep an evaluated best checkpoint and a recovery checkpoint. **Never
+publish the latest merely because loss fell.**
 
 **G4 evidence:** a short real-data pilot at the tested setting with measured
 memory and time, a verified save, reload and resume, finite updates throughout,
@@ -319,21 +398,36 @@ working conversion path.
 | --- | --- | --- |
 | Tamil phoneme coverage | The words are Tamil. Most available singing synthesisers target Japanese, Mandarin or English. | **Unresolved and the main risk** |
 | Note and duration input | Must sing Raaga's melody, not its own | Raaga supplies both today |
-| Stable, natural phrasing | Conversion inherits prosody: a stiff guide gives a stiff result, exactly as today's PSOLA guide does | Unknown until heard |
-| Deterministic and offline | Same constraints as every other stage | Required |
-| No lossy post-processing | Today's ring came from exactly that | Required |
+| Stable, natural phrasing | Conversion inherits prosody, so a stiff guide is expected to give a stiff result. Both existing CVVC renders were rejected for mechanical delivery | The standing failure to beat |
+| Declared processing, retained originals | Every processing step named, originals kept, settings fixed, repeatability measured | Required |
+| Local and offline by default | The present default, not a prohibition. A method that needs otherwise is proposed with its justification | Default |
 
 **Data requirements.** A voicebank or model that sings Tamil. Whether this is
-sourced, adapted from a multilingual model, or built from recordings is an open
-decision. If it is built, its training data is **guide-role** material and is
-governed by §2 and §4 like any other source — and it is still not SPB target
-data.
+sourced, adapted, or built from recordings is open. If it is built, its training
+data is **guide-role** material governed by the same admission rules — and still
+not SPB target data. A selected bank or model needs its **own applicable
+use basis**, which is a different question from SPB source clearance and is not
+satisfied by it.
 
-**G6 evidence:** unseen lyrics — words never sung in any training or tuning
-material — rendered to a guide and then converted, in a masked level-matched
-audition. Krish judges Tamil pronunciation, melody and timing, expression, and
-naturalness separately. A guide that is intelligible but wooden fails, because
-conversion cannot add expression that is not there.
+**No method is prohibited by an unproved cause.** The ring's origin is a
+hypothesis (U1), so it may not be used to forbid a processing category. What is
+required is that processing be declared, originals retained, settings fixed and
+repeatability measured.
+
+**G6 evidence:** an **unseen lyric sequence** rendered to a guide and then
+converted, in a masked level-matched audition. Krish judges Tamil pronunciation,
+melody and timing, expression, and naturalness separately. A guide that is
+intelligible but wooden fails, because conversion cannot add expression that is
+not there.
+
+**"Unseen" is defined relative to this project, because it cannot be defined
+relative to a pretrained model.** An unseen lyric sequence is one that appears in
+none of the project's adaptation data, tuning material, references, or the
+material used to select a checkpoint. Individual words and phonemes will
+certainly have been seen; the *sequence and performance* must not have been. Each
+audition records the check that was made, and states plainly that **overlap with
+a pretrained model's own corpus is unknown**. A final reserved source-family test
+stays separate from validation material used repeatedly.
 
 ### S7 — End to end in Raaga
 
@@ -375,35 +469,50 @@ only its successes cannot show whether anything helped.
 
 ### The next concrete experiments
 
-**E1 — Tamil singing-synthesis feasibility. Highest information, run first.**
+**E1 — Beat the existing Tamil render on novel phrase material.**
 
-- *Hypothesis:* a singing synthesiser exists, or can be adapted, that renders
-  Tamil lyrics at given notes well enough to drive conversion.
-- *Comparison:* survey available singing synthesisers for Tamil or adaptable
-  phoneme coverage; render **one** short Tamil phrase at fixed notes with the
-  most promising; Krish judges pronunciation and naturalness.
-- *Success:* recognisable, correctly pronounced Tamil at the intended pitches,
-  even if the timbre is wrong — timbre is conversion's job.
-- *Failure:* no obtainable model produces intelligible Tamil singing.
-- *Why first:* **the entire end-to-end objective in §1 depends on it.** It needs
-  no SPB data, no source clearance and no admitted clips, so it can run while
-  every other prerequisite is still open. If it fails, the plan changes shape,
-  and it is far better to learn that now than after S1–S5 are complete.
-- *On failure:* fall back to adapting a multilingual synthesiser with Tamil
-  phoneme mapping, or to building a Tamil voicebank from guide-role recordings —
-  both larger, both worth knowing about early.
+Not a rediscovery of whether Tamil synthesis is possible: two renders exist and
+the path to conversion has already been run. The question is whether delivery
+can be made acceptable.
 
-**E2 — Clean guide versus the processed guide. Runs in parallel; identity track.**
+- *Baseline:* the existing `tamil-cvvc-expressive-v2.wav` and its recorded
+  rejection, plus version one's, reused rather than re-derived.
+- *Hypothesis:* a bounded improvement to the existing renderer, or one new
+  candidate synthesiser, produces a materially less mechanical Tamil
+  performance on a **novel phrase** at explicit notes.
+- *Comparison:* the existing render and the new one, same phrase, matched level,
+  masked order. Krish judges pronunciation, melody and timing, expression and
+  naturalness separately.
+- *Success:* the new render is preferred on delivery while keeping pitch
+  agreement at least comparable to the measured baseline.
+- *Failure:* it is not preferred, or intelligibility drops.
+- *Reporting rule:* a result names **which candidate, which phrase, which
+  settings, and how wide the search was**. One render that disappoints is
+  **inconclusive about that candidate**, not evidence that no obtainable model
+  works. Two failures trigger a method review under §4; they do not establish
+  impossibility and do not justify discarding the evidence.
+- *Prerequisite:* a selected bank or model needs its own applicable use basis.
+  That is not SPB source clearance and is not a generic approval for routine
+  inspection.
+- *Why early:* it needs no SPB training admission and no admitted clips, so it
+  runs while those remain open.
 
-- *Hypothesis:* U1 and U3 — the ring originates in the Praat guide processing, so
-  a clean guide removes it from conversions.
-- *Comparison:* one conversion from a clean guide against preserved 04,
-  everything else identical, masked and level-matched.
-- *Success:* the ring is gone and SPB character is retained.
-- *Failure:* the ring persists, which returns the vocoder and reference
-  hypotheses (U7, U8) to scope.
-- *Cheapest refutation first:* the pitch-only versus duration-only pair, which is
-  signal processing alone and needs no model.
+**E2 — Guide comparison. Runs in parallel; identity track.**
+
+- *Hypothesis:* U1 and U3 — the ring originates in the guide processing.
+- *Honest framing:* an unprocessed guide and processed 04 differ in pitch contour
+  and durations as well as in processing. **This is a bundled-input comparison
+  and cannot isolate the cause**, unless the performed score and timing are held
+  within explicitly stated tolerances. It is labelled as such either way.
+- *The control that can isolate it:* a **pitch-only versus duration-only
+  factorial** from the same original — signal processing alone, no model. Even
+  so, a failure there does not rule out other causes and does not establish a
+  vocoder or reference cause.
+- *Success:* a preferred guide is identified, with the comparison's bundled or
+  factorial nature stated.
+- *No causal claim from phoneme boundaries.* The syllable-to-note mapping is a
+  reading of arrays (U2), not a measurement, and may not be used to attribute
+  cause.
 
 Both are proposed to the audio owner as the execution owner. Neither is started
 by this document.
@@ -456,7 +565,10 @@ recorded here rather than left in anyone's memory.
 | U10 | Clips longer than 2 s fit the GTX 1060 | Unmeasured. 2 s is the largest tested | Measured memory at increasing durations |
 | U11 | An hour of training is stable, and a large checkpoint saves | Unmeasured | The S4 pilot |
 | U12 | Raaga can compose in a chosen key or register | Unverified | Inspection of the composer path |
-| U13 | A singing synthesiser with adequate **Tamil** coverage is obtainable | Unresolved, and the main risk to S6 | Survey of available models and voicebanks; a rendered Tamil phrase judged for pronunciation |
+| U13 | Tamil singing synthesis at explicit notes is **possible** | **Settled: it is.** Two renders exist. What is unresolved is acceptable delivery and an automatic frontend | E1, against the existing rejected baselines |
+| U17 | A recorded guide is required for conversion | **Withdrawn.** A synthesised guide has already driven a completed conversion | — |
+| U18 | The syllable-to-note mapping identifies where the ring is added | My reading of arrays, not a measurement, and not usable as a causal claim | Spectral inspection |
+| U19 | Overlap between an unseen lyric sequence and a pretrained model's own corpus | Unknown and not verifiable for a pretrained model | Stated as unknown on every audition |
 | U14 | A synthetic guide can carry enough expression for conversion to inherit | Unknown | S6 audition: same lyrics from a synthetic guide and a recorded guide, converted identically |
 | U15 | Fine-tuning the conversion model improves pronunciation, pitch and timing, not only timbre | Krish's expectation; plausible for timbre and vowel quality, unestablished for the rest | Checkpoint auditions judged separately on words, melody, expression and naturalness |
 | U16 | The conversion step remains necessary once S6 exists | Assumed. If a synthesiser could sing in SPB's voice directly, it would not be | Compare S6-then-conversion against any direct path that becomes available |
@@ -473,15 +585,19 @@ recorded here rather than left in anyone's memory.
 | Recording session draft | `64a101f` | Delivered; guide-versus-target distinction stands |
 | Asset contract, pending plan | owner's | Ten assets verified; plan refuses on data |
 | Admitted SPB clips | — | **Zero.** Source use unresolved |
-| Score-to-performance component | — | **Does not exist.** S6; the installed path has no text or phoneme input |
+| Formant renderer | `raagacomposer/voice/renderer.py` | Exists; limited quality |
+| Tamil CVVC renders | `Raaga-Tamil-CVVC-Trial-20260908` | Two renders, **both rejected on delivery**; manual aliases, no automatic frontend |
+| Synthetic guide into conversion | `Raaga-Personal-Voice-Trial-20260908` | Completed end to end; `rendered_not_accepted` |
+| Accepted natural Tamil score-to-performance | — | **This is the gap.** S6 |
 | Lyrics, fitting, note and duration targets | in Raaga | Exist and are reused by S6 |
 
 **Open prerequisites, none of which this document resolves:** SBS source-use
 clearance; availability of clean solo SPB *singing* rather than interview speech;
 whether a clean guide removes the ring; the compute measurements in U10 and U11;
-and whether a Tamil-capable singing synthesiser is obtainable for S6.
+and whether the existing Tamil synthesis can be improved to an acceptable
+delivery, with an automatic pronunciation and alignment frontend.
 
-**Interim dependence, to be labelled on every report until S6 delivers:** every
-conversion result currently rests on a **recorded guide**. Such a result speaks
-to identity and audio quality. It is not evidence that new lyrics can be sung,
-and must not be reported as progress toward §1's end-to-end outcome.
+**Every result records which kind of guide drove it** - recorded or
+synthesised. A recorded-guide result speaks to identity and audio quality and is
+not evidence that new lyrics can be sung; it must not be reported as progress
+toward §1's end-to-end outcome.
