@@ -152,6 +152,15 @@ Code comments retain their original section numbers on purpose: rewriting every 
 
 ---
 
+## Linked Specifications
+
+Documents in this folder that extend the canonical specification without altering
+it. Each is governed by CANONICAL_SPEC_v0.3 and cites the sections it builds on.
+
+| Document | Topic | Relates to v0.3 section(s) |
+|---|---|---|
+| [SPB_VOICE_TRAINING_WORKFLOW.md](SPB_VOICE_TRAINING_WORKFLOW.md) | End-to-end workflow for turning new lyrics into naturally sung audio in a target singing voice: source admission, clip splits, training, held-out evaluation, score-to-performance and integration | 2 (product vision), 41 (providers), 63 (acceptance tests) |
+
 ## Summary
 
 - **Total distinct old references mapped:** 47
