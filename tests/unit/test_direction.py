@@ -115,3 +115,51 @@ def test_an_empty_direction_changes_nothing():
     out = apply_direction(SectionDirection(), opts, lessons)
     assert out.opts.direction is None and out.guidance.add_gamaka is True
     assert not out.controls and not out.conflicts
+
+
+# --------------------------------------------------------------------------
+# Arya's review of 95d89fe: negation, contradiction, correction, the window
+# --------------------------------------------------------------------------
+def test_a_negated_word_is_declined_not_applied():
+    for text in ("not softer", "never louder", "without more gamaka",
+                 "keep it as it is, no closer register"):
+        d = read_direction(text)
+        assert d.is_empty(), text
+        assert d.declined, text
+        assert "not applied" in d.describe(), text
+    d = read_direction("not softer, but plainer")
+    assert d.energy == "" and d.ornament == "less" and d.declined == ["softer"]
+
+
+def test_two_values_for_one_control_are_a_contradiction_and_neither_applies():
+    d = read_direction("softer and stronger")
+    assert d.energy == "" and d.contradictions == ["softer and stronger"]
+    assert "asked both ways" in d.describe()
+    d = read_direction("make it lower and higher, plainer")
+    assert d.register == "" and d.ornament == "less"
+    assert d.contradictions == ["lower and higher"]
+
+
+def test_an_explicit_correction_is_the_later_word():
+    for text in ("softer - no, stronger", "softer, actually stronger",
+                 "softer; I mean stronger", "closer, rather lower"):
+        d = read_direction(text)
+        assert not d.contradictions, text
+    assert read_direction("softer - no, stronger").energy == "stronger"
+    assert read_direction("closer, rather lower").register == "lower"
+
+
+def test_closer_never_narrows_below_a_fifth():
+    from raagacomposer.music.direction import MIN_WINDOW
+    assert MIN_WINDOW == 7
+    # eight semitones: one can come off, leaving a fifth... no - a trim of 1
+    # each side leaves six, under the fifth, so nothing is trimmed and it
+    # is said.
+    lo, hi, why = directed_register(60, 68, 52, 79, "closer")
+    assert (lo, hi) == (60, 68) and "under a fifth" in why
+    for width in (9, 10, 11, 12, 14, 20):
+        lo, hi, why = directed_register(60, 60 + width, 52, 90, "closer")
+        assert hi - lo >= MIN_WINDOW, (width, lo, hi)
+        assert why == "" and hi - lo < width, (width, lo, hi, why)
+    lo, hi, why = directed_register(60, 67, 52, 79, "closer")
+    assert (lo, hi) == (60, 67) and "within a fifth" in why

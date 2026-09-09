@@ -91,7 +91,8 @@ def clamp_token(raaga: Raaga, token: str, tonic: int, low: int, high: int) -> st
     return base + _oct_marks(octave)
 
 
-def enforce_direction(raaga: Raaga, notes: List[Note], tonic: int) -> int:
+def enforce_direction(raaga: Raaga, notes: List[Note], tonic: int,
+                      forbidden: Optional[set] = None) -> int:
     """Make every move legal in the direction it actually travels.
 
     The generator walks in scale-degree space, taking each next note from the
@@ -134,6 +135,8 @@ def enforce_direction(raaga: Raaga, notes: List[Note], tonic: int) -> int:
 
         best, best_gap = None, None
         for swara in sorted(allowed):
+            if forbidden and swara in forbidden:
+                continue   # a lesson's forbidden swara is no repair
             for octave in range(-3, 4):
                 token = _with_octave(swara, octave)
                 midi = token_midi(raaga, token, tonic)
@@ -224,7 +227,11 @@ def _cadence_with_guidance(raaga: Raaga, guidance: Any, cur: str,
     avoid = set(getattr(guidance, "avoid_endings", None) or ())
     if cadence is not None and parse_swara(cadence)[0] not in avoid:
         return cadence
-    pool = [n for n in raaga.nyasa if parse_swara(n)[0] not in avoid] or list(raaga.nyasa)
+    forbidden = set(getattr(guidance, "avoid_swaras", None) or ())
+    pool = [n for n in raaga.nyasa
+            if parse_swara(n)[0] not in avoid and parse_swara(n)[0] not in forbidden] \
+        or [n for n in raaga.nyasa if parse_swara(n)[0] not in forbidden] \
+        or list(raaga.nyasa)
     if not pool:
         return cadence
     if getattr(guidance, "prefer_jeeva", False):
@@ -311,7 +318,11 @@ def _phrase_tokens(raaga: Raaga, rng: random.Random, start: str, count: int,
             # avoid is dropped - but the draws above already happened, so a
             # guided attempt makes exactly the same rng calls as an
             # unguided one and just falls through to the walk below.
-            blocked = g is not None and g.replays(tokens + frag_tokens)
+            blocked = g is not None and (
+                g.replays(tokens + frag_tokens)
+                # A quote is not a way past a lesson's forbidden swara.
+                or any(parse_swara(t)[0] in (getattr(g, "avoid_swaras", None) or ())
+                       for t in frag_tokens))
             if not blocked:
                 if quotes is not None:
                     quotes.append((i, list(frag)))
@@ -390,34 +401,78 @@ def _phrase_tokens(raaga: Raaga, rng: random.Random, start: str, count: int,
 
 
 def _pull_into_window(raaga: Raaga, notes: List[Note], tonic: int,
-                      lo: int, hi: int) -> int:
+                      lo: int, hi: int, guidance: Optional[Any] = None
+                      ) -> Tuple[int, int]:
     """Bring every note of a section inside ``lo``-``hi`` by step, not by
-    octave: a note above the window becomes the highest of the raaga's
-    swaras at or below ``hi``, one below it the lowest at or above ``lo``.
+    octave, and under the lesson guidance: a note outside the window
+    becomes the nearest in-window swara of the raaga that the lessons
+    allow - not a forbidden swara, not a forbidden move from the note
+    before or onto the note after, not a forbidden ending on the last.
     clamp_token folds by an octave, which widens a line as often as it
     narrows it, so a register direction is applied here instead, on the
-    finished section.  Returns the number of notes moved."""
+    finished section.  Returns (moved, left): notes moved, and notes left
+    where they were because nothing allowed lay inside the window."""
     if hi - lo < 5 or not notes:
-        return 0
+        return 0, 0
+    g = _guidance_or_none(guidance)
+    forbidden = set(getattr(g, "avoid_swaras", None) or ()) if g is not None else set()
     inside: List[Tuple[int, str]] = []
     for swara in sorted(set(raaga.ascending) | set(raaga.descending)):
+        if swara in forbidden:
+            continue
         for octave in range(-3, 4):
             token = _with_octave(swara, octave)
             midi = token_midi(raaga, token, tonic)
             if lo <= midi <= hi:
                 inside.append((midi, token))
     if not inside:
-        return 0
+        return 0, sum(1 for n in notes if n.midi > hi or n.midi < lo)
     inside.sort()
-    moved = 0
-    for note in notes:
-        if note.midi > hi:
-            note.midi, note.swara = inside[-1]
-            moved += 1
-        elif note.midi < lo:
-            note.midi, note.swara = inside[0]
-            moved += 1
-    return moved
+    moved = left = 0
+    for i, note in enumerate(notes):
+        if lo <= note.midi <= hi:
+            continue
+        previous = notes[i - 1] if i > 0 else None
+        following = notes[i + 1] if i + 1 < len(notes) else None
+        last = i == len(notes) - 1
+
+        def allowed(token: str) -> bool:
+            if g is None:
+                return True
+            if previous is not None and not g.allows_transition(previous.swara, token):
+                return False
+            # The note after is checked only where it stays: one that is
+            # itself outside the window is about to move, and is judged
+            # against this note when its own turn comes.
+            if (following is not None and lo <= following.midi <= hi
+                    and not g.allows_transition(token, following.swara)):
+                return False
+            if last and not g.allows_ending(token):
+                return False
+            return True
+        candidates = [(midi, token) for midi, token in inside if allowed(token)]
+        if not candidates:
+            left += 1
+            continue
+        midi, token = min(candidates, key=lambda c: abs(c[0] - note.midi))
+        note.midi, note.swara = midi, token
+        moved += 1
+    return moved, left
+
+
+def _forbidden_moves(notes: List[Note], guidance: Optional[Any]) -> int:
+    """How many moves in a line a lesson forbids - the check a repair is
+    measured against, so a direction never leaves a line worse under the
+    lessons than the walk that made it."""
+    g = _guidance_or_none(guidance)
+    if g is None or not notes:
+        return 0
+    bad = sum(1 for a, b in zip(notes, notes[1:]) if not g.allows_transition(a.swara, b.swara))
+    bad += sum(1 for n in notes if parse_swara(n.swara)[0] in
+               set(getattr(g, "avoid_swaras", None) or ()))
+    if not g.allows_ending(notes[-1].swara):
+        bad += 1
+    return bad
 
 
 def _section_register(raaga: Raaga, kind: SectionKind, tonic: int,
@@ -548,10 +603,25 @@ def generate_section_notes(raaga: Raaga, section: Section, opts: MelodyOptions,
                 })
     if direction is not None and direction.register:
         # The register direction, applied to the finished section: pulled
-        # inside the directed window by step, then every move made legal
-        # in the direction it now travels.
-        _pull_into_window(raaga, notes, opts.tonic_midi, lo, hi)
-        enforce_direction(raaga, notes, opts.tonic_midi)
+        # inside the directed window by step and under the lessons, then
+        # every move made legal in the direction it now travels, again
+        # under the lessons.  If the line still breaks a lesson more than
+        # the walk did, the walk stands and the direction says it could
+        # not be done: a forbidden note is never the price of a register.
+        before = deepcopy(notes)
+        was_bad = _forbidden_moves(notes, guidance)
+        forbidden = set(getattr(guidance, "avoid_swaras", None) or ()) if guidance else set()
+        moved, left = _pull_into_window(raaga, notes, opts.tonic_midi, lo, hi, guidance)
+        enforce_direction(raaga, notes, opts.tonic_midi, forbidden or None)
+        if _forbidden_moves(notes, guidance) > was_bad:
+            notes[:] = before
+            direction.infeasible.append(
+                f"{section.name}: the {direction.register} register could not be "
+                f"reached without a note or a move the lessons forbid; left as composed")
+        elif left:
+            direction.infeasible.append(
+                f"{section.name}: {left} note(s) had no allowed place inside the "
+                f"{direction.register} register and were left where they were")
     return notes
 
 

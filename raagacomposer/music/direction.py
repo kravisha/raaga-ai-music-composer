@@ -11,20 +11,29 @@ names no control is reported as such, never guessed at.  An emotion word
 ("sadder", "tender") maps to controls - softer, closer, resting - and the
 reply says those controls, not that sadness was understood or achieved.
 
+A negated word ("not softer") sets nothing and is reported as declined; two
+values for one control in one sentence ("softer and stronger") set nothing
+and are reported as a contradiction; an explicit correction ("softer - no,
+stronger", "softer, actually stronger") is the later word.
+
 A direction is for one rewrite and one section.  It is laid over the
 lesson guidance for that rewrite only: explicit here beats a soft
 preference there (less ornament beats a lesson's add_gamaka), and a hard
 restriction there (a swara or transition to avoid, an ending to avoid)
 is never lifted here; a request that cannot coexist with one is reported
-as a conflict.  Nothing stored - lessons, the brief, the stored options -
-is changed.
+as a conflict, and a repair the generator cannot make under it is
+reported as infeasible.  Nothing stored - lessons, the brief, the stored
+options - is changed.
 """
 from __future__ import annotations
 
 import copy
 import re
 from dataclasses import dataclass, field
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
+
+#: The narrowest window a register direction may leave: a fifth.
+MIN_WINDOW = 7
 
 #: Word -> (control, value).  Longest phrase first when reading, so
 #: "fewer leaps" is not read as "leaps".
@@ -100,6 +109,13 @@ _UNSUPPORTED = re.compile(
     r"more silence|more space|longer notes|shorter notes|"
     r"different raaga|another raaga|change the raaga)\b")
 
+#: "not softer", "never louder", "without more gamaka", "no closer".
+_NEGATION = re.compile(r"\b(?:not|never|without|no|don't|do not|rather than|instead of)\s*$")
+#: "softer - no, stronger", "softer, actually stronger", "softer; I mean stronger".
+_CORRECTION = re.compile(r"(?:\bno\b|\bactually\b|\bi mean\b|\brather\b|\binstead\b|\bscratch that\b|\bmake that\b)")
+
+_CONTROLS = ("register", "motion", "cadence", "ornament", "energy", "variety")
+
 
 @dataclass
 class SectionDirection:
@@ -109,12 +125,14 @@ class SectionDirection:
     ornament: str = ""      # more | less
     energy: str = ""        # softer | stronger
     variety: str = ""       # more
-    words: List[str] = field(default_factory=list)        # what set the controls
-    unsupported: List[str] = field(default_factory=list)  # property words with no control
+    words: List[str] = field(default_factory=list)          # what set the controls
+    unsupported: List[str] = field(default_factory=list)    # property words with no control
+    declined: List[str] = field(default_factory=list)       # negated words, not applied
+    contradictions: List[str] = field(default_factory=list)  # two values, neither applied
+    infeasible: List[str] = field(default_factory=list)     # what the generator could not do
 
     def is_empty(self) -> bool:
-        return not (self.register or self.motion or self.cadence or self.ornament
-                    or self.energy or self.variety)
+        return not any(getattr(self, c) for c in _CONTROLS)
 
     def controls(self) -> List[str]:
         out = []
@@ -136,18 +154,23 @@ class SectionDirection:
         return out
 
     def describe(self) -> str:
-        """The controls pulled, and the words that were not controls."""
+        """The controls pulled, and every word that was not acted on."""
         parts = []
         if not self.is_empty():
             parts.append("; ".join(self.controls()))
+        if self.declined:
+            parts.append("not applied, as asked: " + ", ".join(self.declined))
+        if self.contradictions:
+            parts.append("asked both ways, so neither: " + ", ".join(self.contradictions))
         if self.unsupported:
             parts.append("not a control I have: " + ", ".join(self.unsupported))
+        if self.infeasible:
+            parts.append("could not be done: " + "; ".join(self.infeasible))
         return ". ".join(parts)
 
 
 def read_direction(text: str) -> SectionDirection:
-    """The controls a sentence asks for.  Later words win over earlier ones
-    for the same control ("softer, no, stronger" is stronger)."""
+    """The controls a sentence asks for."""
     direction = SectionDirection()
     lowered = (text or "").lower()
     covered = lowered
@@ -161,10 +184,42 @@ def read_direction(text: str) -> SectionDirection:
             for control, value in bundle:
                 hits.append((match.start(), control, value, word))
             covered = covered[:match.start()] + " " * len(word) + covered[match.end():]
-    for _, control, value, phrase in sorted(hits, key=lambda h: h[0]):
-        setattr(direction, control, value)
-        if phrase not in direction.words:
-            direction.words.append(phrase)
+    hits.sort(key=lambda h: h[0])
+
+    # A negated word is declined, not applied.
+    kept: List[Tuple[int, str, str, str]] = []
+    for start, control, value, phrase in hits:
+        before = lowered[max(0, start - 16):start]
+        if _NEGATION.search(before):
+            if phrase not in direction.declined:
+                direction.declined.append(phrase)
+            continue
+        kept.append((start, control, value, phrase))
+
+    # Two values for one control: a correction marker between them makes
+    # the later one the instruction; without one it is a contradiction and
+    # neither is applied.
+    by_control: Dict[str, List[Tuple[int, str, str]]] = {}
+    for start, control, value, phrase in kept:
+        by_control.setdefault(control, []).append((start, value, phrase))
+    for control, entries in by_control.items():
+        values = {v for _, v, _ in entries}
+        if len(values) == 1:
+            setattr(direction, control, entries[0][1])
+            for _, _, phrase in entries:
+                if phrase not in direction.words:
+                    direction.words.append(phrase)
+            continue
+        first_start = entries[0][0]
+        last_start, last_value, last_phrase = entries[-1]
+        between = lowered[first_start:last_start]
+        if _CORRECTION.search(between):
+            setattr(direction, control, last_value)
+            if last_phrase not in direction.words:
+                direction.words.append(last_phrase)
+        else:
+            direction.contradictions.append(" and ".join(
+                dict.fromkeys(phrase for _, _, phrase in entries)))
     for match in _UNSUPPORTED.finditer(lowered):
         word = match.group(0)
         if word not in direction.unsupported:
@@ -178,25 +233,27 @@ def read_direction(text: str) -> SectionDirection:
 def directed_register(lo: int, hi: int, low: int, high: int,
                       register: str) -> Tuple[int, int, str]:
     """The section's window under a register direction, kept inside the
-    usable voice window ``low``-``high`` and never narrower than a fifth.
-    Returns (lo, hi, conflict) - the conflict text when the direction
-    could not be honoured."""
+    usable voice window ``low``-``high`` and never narrower than a fifth
+    (``MIN_WINDOW``).  Returns (lo, hi, conflict) - the conflict text when
+    the direction could not be honoured, the window then unchanged."""
     if not register:
         return lo, hi, ""
     if register == "closer":
         width = hi - lo
-        if width <= 7:
+        if width <= MIN_WINDOW:
             return lo, hi, "the register is already within a fifth"
-        trim = max(1, int(round(width * 0.2)))
+        trim = min(max(1, int(round(width * 0.2))), (width - MIN_WINDOW) // 2)
+        if trim < 1:
+            return lo, hi, "the register cannot narrow without going under a fifth"
         return lo + trim, hi - trim, ""
     shift = -5 if register == "lower" else 5
     new_lo, new_hi = lo + shift, hi + shift
     if register == "lower" and new_lo < low:
-        new_lo, new_hi = low, max(low + 7, hi - (lo - low))
+        new_lo, new_hi = low, max(low + MIN_WINDOW, hi - (lo - low))
         if new_lo == lo:
             return lo, hi, "the singer's range has nothing below this section's window"
     if register == "higher" and new_hi > high:
-        new_hi, new_lo = high, min(high - 7, lo + (high - hi))
+        new_hi, new_lo = high, min(high - MIN_WINDOW, lo + (high - hi))
         if new_hi == hi:
             return lo, hi, "the singer's range has nothing above this section's window"
     return new_lo, new_hi, ""
