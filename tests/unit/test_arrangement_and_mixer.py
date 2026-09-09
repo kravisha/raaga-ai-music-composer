@@ -476,6 +476,117 @@ def test_auto_arrange_keeps_a_locked_region_and_rebuilds_around_it(melody, kambh
     assert not any(r.locked for r in pad2.regions)
 
 
+def _pallavi_of_two_notes():
+    """Arya's fixture: an 8-second Pallavi at 120 bpm in Hamsadhwani, two
+    sustained notes, 0-4 and 4-8 s."""
+    from raagacomposer.core.models import MelodyVersion, Section, SectionKind
+    from raagacomposer.raaga.library import library
+    section = Section(name="Pallavi", kind=SectionKind.PALLAVI, start=0.0, end=8.0)
+    melody = MelodyVersion(raaga="Hamsadhwani", tonic_midi=60, tempo_bpm=120,
+                           sections=[section],
+                           notes=[Note(swara="S", midi=60, start=0.0, duration=4.0,
+                                       section_id=section.id),
+                                  Note(swara="P", midi=67, start=4.0, duration=4.0,
+                                       section_id=section.id)])
+    return melody, library().require("Hamsadhwani")
+
+
+def _locked_rest(instrument, role, lo, hi):
+    from raagacomposer.core.models import Region, Track
+    return Track(instrument=instrument, role=role,
+                 regions=[Region(start=lo, end=hi, role=role, locked=True, notes=[])])
+
+
+def _generated_notes(arrangement, instrument, role):
+    track = next(t for t in arrangement.tracks
+                 if t.instrument == instrument and t.role == role)
+    return [(r, n) for r in track.regions if not r.locked for n in r.notes]
+
+
+def _dry(arrangement, instrument, role, sr=8000, seconds=8.0):
+    """The generated regions of one track, rendered alone."""
+    from raagacomposer.core.models import Track
+    from raagacomposer.music.synth import render_track
+    track = next(t for t in arrangement.tracks
+                 if t.instrument == instrument and t.role == role)
+    only = Track(instrument=track.instrument, role=track.role,
+                 regions=[r for r in track.regions if not r.locked])
+    return render_track(only, sr, seconds), sr
+
+
+def _rms(audio, sr, lo, hi):
+    seg = audio[int(lo * sr):int(hi * sr)]
+    return float(np.sqrt(np.mean(seg ** 2))) if len(seg) else 0.0
+
+
+def test_a_counter_line_writes_nothing_inside_a_locked_rest(arrangement):
+    """Arya's P1: the counter took a window from the melody note that began
+    at 0 s, so the 2-8 s region held notes at 0.5, 1.25 and 1.5 s, inside
+    the locked 0-2 s rest, though the rectangles did not overlap."""
+    melody, hamsadhwani = _pallavi_of_two_notes()
+    previous = arranger.new_version(None)
+    previous.tracks.append(_locked_rest("veena", "counter", 0.0, 2.0))
+    brief = CreativeBrief(language="Tamil", instruments_preferred=["veena"])
+    out = arranger.auto_arrange(melody, hamsadhwani, brief, seed=5, previous=previous,
+                                lead=catalog.get("veena"))
+    generated = _generated_notes(out, "veena", "counter")
+    assert generated, "the counter wrote nothing at all"
+    for region, note in generated:
+        assert note.start >= region.start - 1e-6 and note.start + note.duration <= region.end + 1e-6, \
+            (region.start, region.end, note.start, note.duration)
+        assert note.start >= 2.0, note.start
+    # The kept rest is untouched, and the lock is byte-equal.
+    kept = next(r for t in out.tracks if t.instrument == "veena" for r in t.regions if r.locked)
+    assert (kept.start, kept.end, kept.notes) == (0.0, 2.0, [])
+    # Render path: the generated regions alone put nothing in the rest's
+    # interior (a tail from a note ending at a boundary is allowed room).
+    audio, sr = _dry(out, "veena", "counter")
+    assert _rms(audio, sr, 0.3, 1.95) < 1e-4, _rms(audio, sr, 0.3, 1.95)
+    assert _rms(audio, sr, 2.5, 7.5) > 1e-3, "the part still plays where it may"
+
+
+def test_a_rhythm_stroke_stops_at_a_locked_rest(arrangement):
+    """Arya's P2: the stroke at 2.0 s lasted 0.2 s into the 2.1-3.1 s lock."""
+    melody, hamsadhwani = _pallavi_of_two_notes()
+    previous = arranger.new_version(None)
+    previous.tracks.append(_locked_rest("mridangam", "rhythm", 2.1, 3.1))
+    brief = CreativeBrief(language="Tamil", instruments_preferred=["mridangam"])
+    out = arranger.auto_arrange(melody, hamsadhwani, brief, seed=5, previous=previous,
+                                lead=catalog.get("veena"))
+    generated = _generated_notes(out, "mridangam", "rhythm")
+    assert generated
+    for region, note in generated:
+        assert note.start + note.duration <= region.end + 1e-6, (region.end, note.start, note.duration)
+        assert note.start >= region.start - 1e-6
+        assert not (note.start < 3.1 and note.start + note.duration > 2.1), (note.start, note.duration)
+    assert any(abs(n.start - 2.0) < 1e-6 for _, n in generated), "the stroke at 2.0 s is kept, cut short"
+    # Render path: a stroke's sample rings past its event, and that tail is
+    # allowed; what must not appear is a new stroke inside the rest.  So
+    # the rest's interior is quieter than the stroke before it and has no
+    # onset louder than that stroke's own decay.
+    audio, sr = _dry(out, "mridangam", "rhythm")
+    stroke = _rms(audio, sr, 2.0, 2.2)
+    assert stroke > 1e-3, "the stroke at 2.0 s is silent"
+    assert _rms(audio, sr, 2.5, 3.05) < stroke * 0.5, (stroke, _rms(audio, sr, 2.5, 3.05))
+    peak_in_rest = float(np.max(np.abs(audio[int(2.6 * sr):int(3.05 * sr)])))
+    peak_of_stroke = float(np.max(np.abs(audio[int(2.0 * sr):int(2.3 * sr)])))
+    assert peak_in_rest < peak_of_stroke * 0.5, (peak_in_rest, peak_of_stroke)
+
+
+def test_every_part_writer_stays_inside_its_span(kambhoji, melody):
+    """A part is the region's to write and nowhere else: whatever the
+    writer produced, nothing starts before the span or ends after it."""
+    for role in ("lead", "counter", "pad", "bass", "rhythm", "fill", "drone"):
+        for start, end in ((13.0, 27.5), (0.0, 2.1), (2.0, 8.0)):
+            notes = generate_part(melody, kambhoji,
+                                  PartRequest(instrument="mridangam" if role == "rhythm" else "veena",
+                                              role=role, start=start, end=end, seed=3))
+            for n in notes:
+                assert n.start >= start - 1e-6, (role, start, end, n.start)
+                assert n.start + n.duration <= end + 1e-6, (role, start, end, n.start, n.duration)
+                assert n.duration >= 0.03
+
+
 def test_auto_arrange_leaves_a_locked_track_alone(melody, kambhoji):
     brief = CreativeBrief(language="Tamil")
     first = arranger.auto_arrange(melody, kambhoji, brief, seed=5)

@@ -387,7 +387,34 @@ def generate_part(melody: MelodyVersion, raaga: Raaga, req: PartRequest
         raise ValueError(f"Unknown role: {role}")
     low, high = choose_register(inst, role, melody, melody.tonic_midi)
     notes = writer(melody, raaga, req, inst, low, high)
-    return sorted(notes, key=lambda n: n.start)
+    return sorted(_within(notes, req.start, req.end), key=lambda n: n.start)
+
+
+def _within(notes: List[Note], start: float, end: float) -> List[Note]:
+    """Only what lies inside ``start``-``end``: a note is the part's to
+    write nowhere else.  The counter line took its windows from a melody
+    note that began before the span, and a rhythm stroke's duration ran
+    past the span's end, so fresh notes sounded inside a passage the
+    creator had locked while the region rectangle said otherwise.  A note
+    starting before the span starts at the span; one running past its end
+    stops there; one wholly outside, or too short to sound once cut, is
+    dropped."""
+    kept: List[Note] = []
+    for note in notes:
+        s, e = note.start, note.start + note.duration
+        if e <= start + 1e-6 or s >= end - 1e-6:
+            continue
+        if s < start:
+            s = start
+        if e > end:
+            e = end
+        if e - s < 0.03:
+            continue
+        if s != note.start or e - s != note.duration:
+            note.start = round(s, 4)
+            note.duration = round(e - s, 4)
+        kept.append(note)
+    return kept
 
 
 # --------------------------------------------------------------------------
