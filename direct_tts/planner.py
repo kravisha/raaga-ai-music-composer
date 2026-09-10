@@ -22,6 +22,7 @@ import posixpath
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Sequence
 
+from direct_tts._paths import is_within_root
 from direct_tts.manifest import (
     EVAL,
     TRAIN,
@@ -94,6 +95,12 @@ class ExportPlan:
     eval_policy: str = SESSION_DISJOINT
     metadata_ready: bool = False
     blocking_reasons: list[str] = field(default_factory=list)
+    # True iff this plan was produced with dry_run_view=True. A preview
+    # plan may still report metadata_ready=True (so a caller can see what
+    # *would* be planned), but it must never be treated as executable:
+    # verify_plan refuses any plan with preview_only=True regardless of
+    # what it finds on disk.
+    preview_only: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         def d(obj):
@@ -116,10 +123,14 @@ def _export_path(export_root: str, split: str, entry: Mapping[str, Any]) -> str:
 def _is_within_root(export_root: str, export_path: str) -> bool:
     """Defense in depth: confirm the resolved export path cannot escape the
     requested root, even though validate_entry already restricts ids to
-    safe filename stems with no path separators."""
-    root_norm = posixpath.normpath(export_root)
-    path_norm = posixpath.normpath(export_path)
-    return path_norm == root_norm or path_norm.startswith(root_norm + "/")
+    safe filename stems with no path separators.
+
+    Delegates to :func:`direct_tts._paths.is_within_root`, which resolves
+    both paths against the real filesystem (``os.path.realpath``) rather
+    than doing purely lexical, forward-slash-only normalization, so a
+    Windows backslash traversal or a symlink cannot slip past this check.
+    """
+    return is_within_root(export_root, export_path)
 
 
 def plan_export(
@@ -147,7 +158,12 @@ def plan_export(
     ``dry_run_view`` opts out of the "export root must not already exist"
     check below, for callers that only want to preview a plan against a
     root that may already hold prior output. It has no effect on any other
-    check, and never makes the plan execution-ready by itself.
+    check, and never makes the plan execution-ready by itself: the returned
+    plan is marked ``preview_only=True``, and ``direct_tts.verifier.verify_plan``
+    unconditionally refuses any plan with ``preview_only=True`` regardless
+    of what it finds on disk, and separately always rechecks the export
+    root's absence at verification time even for non-preview plans (since
+    the root may have been created after this call returned).
     """
     if eval_policy not in _EVAL_POLICIES:
         raise ValueError(
@@ -208,6 +224,11 @@ def plan_export(
     train_entries = [e for e in final if e["split"] == TRAIN]
     eval_entries = [e for e in final if e["split"] == EVAL]
     train_source_groups = {e.get("source_group") for e in train_entries}
+    # Session identity is bound to content, not to the declared label: the
+    # same source_sha256 filed under two different source_group strings is
+    # still the same recording (e.g. a renamed session folder), and must
+    # never be treated as an independent, session-disjoint eval source.
+    train_source_hashes = {str(e.get("source_sha256")).lower() for e in train_entries}
 
     def _plan_kwargs(e: Mapping[str, Any], split: str) -> dict[str, Any]:
         return dict(
@@ -233,6 +254,7 @@ def plan_export(
         kind = (
             WITHIN_SESSION_BLOCKED
             if e.get("source_group") in train_source_groups
+            or str(e.get("source_sha256")).lower() in train_source_hashes
             else SESSION_DISJOINT
         )
         eval_plans.append(
@@ -249,6 +271,20 @@ def plan_export(
         blocking_reasons.append(
             f"export root {export_root!r} already exists; refusing to plan into "
             "a pre-existing root outside an explicit dry-run view"
+        )
+
+    if rejected:
+        # An entry only reaches `rejected` if it was explicitly requested
+        # for train/eval (candidates whose split was not train/eval were
+        # already routed to `excluded` above and never validated here).
+        # A requested train/eval record that fails admission (disputed
+        # text, unreviewed speaker/quality, overlap, etc.) must block the
+        # whole export rather than being silently dropped while other
+        # entries proceed -- otherwise a disputed clip could be excluded
+        # from the count without anyone noticing the export still ran.
+        blocking_reasons.append(
+            "requested train/eval record(s) rejected, not silently dropped: "
+            + "; ".join(f"{r.id} ({', '.join(r.reasons)})" for r in rejected)
         )
 
     if not train_plans:
@@ -279,4 +315,5 @@ def plan_export(
         eval_policy=eval_policy,
         metadata_ready=metadata_ready,
         blocking_reasons=blocking_reasons,
+        preview_only=dry_run_view,
     )

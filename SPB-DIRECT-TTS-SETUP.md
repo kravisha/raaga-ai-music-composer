@@ -78,24 +78,33 @@ is what I'd recommend independent of anyone else's agreement.
 ## What is unproven and should gate further investment
 
 1. **A synthetic single-step VITS training measurement now exists, but it
-   is narrower than full feasibility.** Codex's `runtime-probe-01/result.json`
-   (not something I ran; I'm reporting it, not repeating it) records one
-   complete VITS generator+discriminator forward/backward/optimizer step
-   on a 1-second synthetic tone, FP32, batch size 1, on this GTX 1060 6GB:
-   2.587 s wall time, 1,899,811,328 bytes (≈1.77 GiB) peak GPU allocated,
-   744/111 Adam optimizer-state entries for generator/discriminator,
-   finite non-NaN losses (generator 66.72, discriminator 7.74), and the
-   checkpoint file left unchanged on disk (no learned checkpoint was
-   saved — this was a diagnostic step, not training). That is a real,
-   materially stronger result than the earlier Seed-VC-derived 4.90 GiB
-   placeholder I flagged before: it is an actual VITS train step, and its
-   peak allocation leaves comfortable headroom under the ~5 GB budget at
-   this batch size. It still does **not** establish long-clip feasibility,
-   multi-step/multi-epoch memory growth, a real data loader, or SPB audio
-   at all — the probe's own `limits` field says so explicitly (one 1-second
-   synthetic signal, not speech training or quality evidence). I'd treat
-   this as "the minimal case does not immediately OOM," not "training on
-   real SPB clips is proven to fit."
+   is narrower than full feasibility.** The current corrected, final
+   recipe-matching resource probe is Codex's
+   `runtime-probe-20s-weightnorm-01/result.json` (not something I ran; I'm
+   reporting it, not repeating it) — it supersedes both
+   `runtime-probe-01/result.json` (1-second synthetic input) and
+   `runtime-probe-20s-01/result.json` (20-second input but omitted the
+   generator's weight-norm reparameterization that the real training
+   recipe applies), since both earlier probes measured a smaller or
+   inexactly-matching generator than the actual training recipe would use.
+   The corrected probe records one complete VITS generator+discriminator
+   forward/backward/optimizer step on a 20-second synthetic tone (179 text
+   tokens), FP32, batch size 1, `generator_weightnorm_matches_upstream_recipe:
+   true`, on this GTX 1060 6GB: 1.4627 s wall time, 1,977,047,040 bytes
+   (≈1.84 GiB) peak GPU allocated, 828/111 Adam optimizer-state entries for
+   generator/discriminator, finite non-NaN losses (generator 55.22,
+   discriminator 7.65), and the checkpoint file left unchanged on disk (no
+   learned checkpoint was saved — this was a diagnostic step, not
+   training). That peak allocation leaves comfortable headroom under the
+   ~5 GB budget at this batch size, at a duration matching a real single
+   review clip rather than the earlier 1-second placeholder. It still does
+   **not** establish real-speech or multi-step/multi-epoch memory growth,
+   a real data loader, or SPB audio at all — the probe's own `limits`
+   field says so explicitly (one 20-second *synthetic* signal, not speech
+   training or quality evidence). No real SPB training has run. I'd treat
+   this as "a recipe-matching single step does not immediately OOM at a
+   realistic clip duration," not "training on real SPB clips is proven to
+   fit."
 2. **The generator-tensor diff I called for now exists and resolves the
    specific risk I flagged.** `assets/initialization-comparison.json`
    shows all 762 generator tensors in the downloaded training checkpoint
@@ -181,10 +190,16 @@ am not re-running them, not as open work:
   before calling them the same initialization.~~ Done: byte-identical
   generator, 74 added discriminator tensors (item 2 above).
 - ~~First pilot step: synthetic tensors only... run one forward+backward
-  pass at batch size 1, record peak memory, and stop.~~ Done: 2.587 s,
-  ≈1.77 GiB peak allocated, FP32, batch 1, 1-second synthetic tone (item
-  1 above). Still open: the same measurement on a real, multi-second
-  Tamil clip and across more than one step.
+  pass at batch size 1, record peak memory, and stop.~~ Done, and since
+  superseded by a corrected, recipe-matching re-measurement: the final
+  synthetic probe (`runtime-probe-20s-weightnorm-01/result.json`) is
+  1.4627 s wall time, ≈1.84 GiB (1,977,047,040 bytes) peak GPU allocated,
+  FP32, batch 1, a 20-second synthetic tone, with the generator's
+  weight-norm reparameterization matching the actual upstream training
+  recipe (the two earlier probes did not: one used a 1-second input, the
+  other a 20-second input but without weight-norm). No real SPB training
+  has run under any of these probes. Still open: the same measurement
+  across more than one step and with a real data loader.
 
 Still open:
 
@@ -199,16 +214,14 @@ Still open:
   `push_to_hub`, do not use `overwrite_output_dir` against an existing
   directory, and use genuinely separate train/eval manifests (never the
   upstream pattern of one split serving both).
-- Next pilot step, building on the completed 1-second synthetic
-  measurement above: shapes matching the target 16 kHz / mel-spectrogram
-  configuration MMS expects on a real, multi-second duration and across
-  more than one step (note: the review clips extracted so far, including
-  mine, are 48 kHz FLOAT WAV exact crops of the untouched source — any
-  resampling to 16 kHz happens only in a training data-loading step,
-  never by re-processing the immutable review clips). Do not proceed to
-  real SPB data until that number is known and is comfortably under the
-  ~5 GB free budget with margin for the data loader and any held-out
-  eval pass.
+- Multi-step/multi-epoch memory growth and a real data loader, building
+  on the completed single-step synthetic measurement above (note: the
+  review clips extracted so far, including mine, are 48 kHz FLOAT WAV
+  exact crops of the untouched source — any resampling to 16 kHz happens
+  only in a training data-loading step, never by re-processing the
+  immutable review clips). Do not proceed to real SPB data until that
+  number is known and is comfortably under the ~5 GB free budget with
+  margin for the data loader and any held-out eval pass.
 - Start FP32 as the spec requires; treat a measured FP32 OOM at batch
   size 1 as the evidence needed to justify trying FP16/mixed precision,
   and record that justification rather than switching precision by
@@ -305,3 +318,85 @@ which falsifies that general claim. I narrowed it to our actual
 F0-preserving V1/SVC chain, where the reasoning still plausibly applies;
 see that section for the corrected argument. This does not change my
 agreement with option B.
+
+## Update (round 2): four further admission-seam defects fixed
+
+A second, independent review of commit `495ae02` reproduced four further
+defects in the export admission seam, with executable evidence in
+`Raaga-SPB-Architecture-Review-20260910/test_validator_independent_round2.py`
+(not modified by me, per instructions). All four now fail-then-pass; fixed
+in `direct_tts/planner.py`, `direct_tts/verifier.py`, and a new
+`direct_tts/_paths.py`, with my own additional regression tests (not a
+substitute for the independent evidence file) appended to
+`tests/test_direct_tts_manifest.py`:
+
+1. **A rejected requested train/eval record did not block the export.**
+   `plan_export` computed a `rejected` list (with reasons) but never added
+   it to `blocking_reasons`, so a disputed/invalid entry that was
+   explicitly requested for train or eval could be quietly excluded from
+   the plan while `metadata_ready` stayed `True` as long as one valid
+   train/eval pair remained elsewhere. `plan_export` now adds a blocking
+   reason whenever `rejected` is nonempty. This only applies to entries
+   that were candidates (`split` in `{train, eval}`) and failed admission
+   — entries never requested for train/eval (`review_only`, pending, or
+   absent `split`) are still routed to `excluded`, not `rejected`, and do
+   not block readiness.
+2. **Same-content source under a different `source_group` label still
+   counted as session-disjoint.** Eval-vs-train session relationship was
+   classified only by comparing the declared `source_group` string, so
+   the same audio bytes (`source_sha256`) filed under two different
+   session labels (e.g. a renamed session folder) could pass as an
+   independent eval source. `plan_export` now also treats a shared
+   `source_sha256` between a train and eval entry as the same session for
+   `eval_kind` classification, regardless of the declared `source_group`
+   labels, while still truthfully labelling it `within_session_blocked`
+   rather than rejecting it outright — an explicit
+   `eval_policy="within_session_blocked"` pilot still works correctly on
+   such an entry.
+3. **`plan_export(..., dry_run_view=True)` followed by `verify_plan` could
+   report `execution_ready=True`.** The dry-run/preview path intentionally
+   skips the "export root must not already exist" check at planning time
+   (so a caller can preview a plan against a root that may already hold
+   prior output), but `verify_plan` never independently rechecked root
+   absence, so a preview could be handed straight to `verify_plan` and
+   come back looking executable. `ExportPlan` now carries a
+   `preview_only` field set from `dry_run_view`, and `verify_plan`
+   unconditionally refuses any plan with `preview_only=True`, regardless
+   of what it finds on disk.
+4. **A root created between planning and verification was not re-checked.**
+   Even for a non-preview plan, `verify_plan` never itself checked
+   whether `export_root` existed — it relied entirely on the stale
+   planning-time check baked into `plan.metadata_ready`. `verify_plan` now
+   always calls `exists_fn(export_root)` itself and blocks if it exists,
+   independent of `plan.metadata_ready` and `preview_only`. This is a
+   read-only recheck, not a race-free guarantee: a concurrent writer could
+   still create the root immediately after `verify_plan` returns. I
+   documented in `verify_plan`'s docstring that the future actual exporter
+   must create its output exclusively (e.g. exclusive-create mkdir/open)
+   to close that specific race; this verifier does not and cannot claim
+   to prevent concurrent writes by itself.
+
+Also fixed, found while reviewing the above: `_is_within_root` in both
+`planner.py` and `verifier.py` used `posixpath.normpath`, which only
+understands forward slashes and pure string syntax — it does not resolve
+a Windows backslash traversal (`dataset\..\..\escape`), a drive-relative
+path, or a symlink/junction, so a crafted or malformed path could pass a
+purely lexical check while landing outside the intended root on this
+platform. Both now delegate to a new shared `direct_tts/_paths.py`, which
+resolves both the root and the candidate path with `os.path.realpath`
+(real filesystem semantics, both separator styles, existing
+symlinks/junctions followed) and compares them case-insensitively via
+`os.path.normcase`, bound to the same requested root string. I also made
+`verifier._verify_one` treat a hash/read failure (a `digest_fn` raising
+`OSError` — permission error, a file vanishing after the existence check,
+a transient I/O error) as a blocked verification result (`*_read_failed`
+reason, `ok=False`) rather than letting the exception propagate out of
+`verify_plan` or silently treating it as a pass.
+
+Ran the full author suite plus the independent round-2 evidence file
+together (`pytest tests/test_direct_tts_manifest.py
+.../test_validator_independent_round2.py --basetemp=<new dir>`, Python
+`raaga-ai-music-composer/.venv`): 69 passed (59 author, 4 independent
+round-2, 6 new own regression tests), 0 failed. I did not edit the
+independent evidence file and did not touch the merged manifest,
+transcripts, or any existing review batch.
