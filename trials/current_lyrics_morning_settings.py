@@ -42,6 +42,11 @@ WORKSPACE = Path(__file__).resolve().parent.parent
 C_RENDER = WORKSPACE / "renders" / "r20260910T003437Z-01"
 GUIDE = C_RENDER / "guide-input-0.5.wav"
 C_LISTENING = C_RENDER / "listening" / "C-converted-headroom-minus18.wav"
+#: C's preserved raw. A lower-level C copy is made from this by scalar gain, so
+#: it is never derived from C's already-normalised listening file and C's own
+#: files are never rewritten.
+C_RAW = (C_RENDER / "conversion-output" /
+         "vc_guide-input-0_spb-credited-reference-8s_1.0_30_0.7.wav")
 REFERENCE = QUALITY / "artist-reference-20260909" / "spb-credited-reference-8s.wav"
 CHECKPOINT = ROOT / "models" / "Plachta--Seed-VC" / \
     "DiT_seed_v2_uvit_whisper_base_f0_44k_bigvgan_pruned_ft_ema_v2.pth"
@@ -53,6 +58,7 @@ EXPECTED = {
     CHECKPOINT: "42aef93ffe65857c840d270252fa040f7ba04514945ec460f3ac1ac2a96de684",
     CONFIG: "fbca8ccaea2554894769777b822029d8a4e9290cab0bac1b10d9eac180a6e1cb",
     C_LISTENING: "bcb5f6a5d44281bd3a20bd585a93b15b33eee369b55e16b7df0d2c55aed9e046",
+    C_RAW: "a04d17dd92ce7f9b78314ca8e6ff5e2e4b11f376776b45144aa46b2d462eb3ac",
 }
 
 SEED = 20260909
@@ -67,6 +73,94 @@ STATUS = OUT / "run-status.json"
 
 def sha(path: Path) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def level_name(dbfs: float) -> str:
+    """A filename that states the level it actually is."""
+    return f"minus{abs(dbfs):.1f}".replace(".", "p")
+
+
+def prepare_listening(raw, out: Path, sf, np) -> dict:
+    """One level both candidates can reach, by scalar gain only.
+
+    If E cannot sit at -18 dBFS without passing the peak cap, the whole
+    comparison drops to a lower common level - **and C gets a copy at that same
+    level**, made from C's preserved raw. An earlier version lowered only E and
+    still pointed the comparison at the original -18 dBFS C, which would have
+    put two files at different levels side by side and called it matched.
+
+    C's own files are never rewritten. The lower-level C copy is new, lives
+    here, and says its level in its name.
+    """
+    rail_p, rail_n = 1.0 - 2.0 ** -23, -1.0
+    rms = float(np.sqrt(np.mean(raw ** 2)))
+    gain = 10 ** (LISTEN_TARGET_DBFS / 20) / rms
+    peak_after = float(np.max(np.abs(raw * gain)))
+
+    applied = LISTEN_TARGET_DBFS
+    capped = peak_after > PEAK_CAP
+    if capped:
+        applied = LISTEN_TARGET_DBFS - float(20 * np.log10(peak_after / PEAK_CAP))
+        gain = 10 ** (applied / 20) / rms
+
+    scaled = raw * gain
+    name = ("E-current-lyrics-cfg03-" + level_name(applied) + ".wav")
+    path = out / name
+    sf.write(str(path), scaled, SR, subtype="PCM_24")
+    final, _ = sf.read(str(path), dtype="float64")
+    if final.ndim > 1:
+        final = final.mean(axis=1)
+
+    record = {
+        "path": str(path), "sha256": sha(path), "subtype": "PCM_24",
+        "requested_target_rms_dbfs": LISTEN_TARGET_DBFS,
+        "applied_target_rms_dbfs": applied,
+        "gain_db": float(20 * np.log10(gain)),
+        "processing": "one scalar gain only; no filter, EQ, limiter or new target",
+        "peak_at_requested_target": peak_after,
+        "peak_cap": PEAK_CAP, "peak_cap_exceeded": capped,
+        "achieved_rms_dbfs": float(20 * np.log10(float(np.sqrt(np.mean(final ** 2))))),
+        "achieved_peak": float(np.max(np.abs(final))),
+        "pcm24_samples_at_positive_rail": int(np.sum(final >= rail_p)),
+        "pcm24_samples_at_negative_rail": int(np.sum(final <= rail_n)),
+        "c_rails_note": ("C's preserved raw already holds 117 PCM24 rail samples; "
+                         "that is irreversible in its input to normalisation and "
+                         "no later gain undoes it."),
+    }
+
+    if not capped:
+        record["compare_with"] = str(C_LISTENING)
+        record["compare_with_sha256"] = EXPECTED[C_LISTENING]
+        record["compare_with_note"] = ("The preserved C listening copy, already at "
+                                       "the same -18 dBFS target.")
+        return record
+
+    # Both copies at the same lower level, C's built from C's preserved raw.
+    c_raw, _ = sf.read(str(C_RAW), dtype="float64")
+    if c_raw.ndim > 1:
+        c_raw = c_raw.mean(axis=1)
+    c_gain = 10 ** (applied / 20) / float(np.sqrt(np.mean(c_raw ** 2)))
+    c_path = out / ("C-comparison-" + level_name(applied) + ".wav")
+    sf.write(str(c_path), c_raw * c_gain, SR, subtype="PCM_24")
+    c_final, _ = sf.read(str(c_path), dtype="float64")
+    if c_final.ndim > 1:
+        c_final = c_final.mean(axis=1)
+    record["compare_with"] = str(c_path)
+    record["compare_with_sha256"] = sha(c_path)
+    record["compare_with_note"] = (
+        "A NEW lower-level C copy at the same applied target, made from C's "
+        "preserved raw by scalar gain only. C's own files are unchanged; this "
+        "one exists because E could not reach -18 dBFS under the peak cap.")
+    record["compare_with_detail"] = {
+        "from": str(C_RAW), "applied_target_rms_dbfs": applied,
+        "gain_db": float(20 * np.log10(c_gain)),
+        "processing": "one scalar gain only",
+        "achieved_rms_dbfs": float(20 * np.log10(float(np.sqrt(np.mean(c_final ** 2))))),
+        "achieved_peak": float(np.max(np.abs(c_final))),
+        "pcm24_samples_at_positive_rail": int(np.sum(c_final >= rail_p)),
+        "pcm24_samples_at_negative_rail": int(np.sum(c_final <= rail_n)),
+    }
+    return record
 
 
 def main() -> int:
@@ -201,50 +295,10 @@ def main() -> int:
                                "clipped PCM sample. Nothing has been clamped."),
         }
 
-        # -- listening copy at -18 dBFS RMS, scalar gain only
-        rms = float(np.sqrt(np.mean(raw ** 2)))
-        gain = 10 ** (LISTEN_TARGET_DBFS / 20) / rms
-        scaled = raw * gain
-        peak_after = float(np.max(np.abs(scaled)))
-        capped = peak_after > PEAK_CAP
-        applied_target = LISTEN_TARGET_DBFS
-        if capped:
-            # Act, do not merely announce. An earlier version set this flag and
-            # then wrote the unadjusted samples anyway, which would have reported
-            # a cap that never happened. The whole comparison drops to a common
-            # lower level instead - scalar only, both new copies, and preserved C
-            # is never rewritten.
-            applied_target = LISTEN_TARGET_DBFS - float(
-                20 * np.log10(peak_after / PEAK_CAP))
-            gain = 10 ** (applied_target / 20) / rms
-            scaled = raw * gain
-            peak_after = float(np.max(np.abs(scaled)))
-        listening = OUT / "E-current-lyrics-cfg03-minus18.wav"
-        sf.write(str(listening), scaled, SR, subtype="PCM_24")
+        # -- listening copies, scalar gain only, at a level BOTH can reach
+        listening_measure = prepare_listening(raw, OUT, sf, np)
+        listening = Path(listening_measure["path"])
         final, _ = sf.read(str(listening), dtype="float64")
-        if final.ndim > 1:
-            final = final.mean(axis=1)
-        rail_p, rail_n = 1.0 - 2.0 ** -23, -1.0
-        listening_measure = {
-            "path": str(listening), "sha256": sha(listening), "subtype": "PCM_24",
-            "target_rms_dbfs": LISTEN_TARGET_DBFS,
-            "applied_target_rms_dbfs": applied_target,
-            "gain_db": float(20 * np.log10(gain)),
-            "processing": "one scalar gain only; no filter, EQ, limiter or new target",
-            "peak_after_gain_before_write": peak_after,
-            "peak_cap_exceeded": capped,
-            "peak_cap": PEAK_CAP,
-            "achieved_rms_dbfs": float(20 * np.log10(float(np.sqrt(np.mean(final ** 2))))),
-            "achieved_peak": float(np.max(np.abs(final))),
-            "pcm24_samples_at_positive_rail": int(np.sum(final >= rail_p)),
-            "pcm24_samples_at_negative_rail": int(np.sum(final <= rail_n)),
-            "compare_with": str(C_LISTENING),
-            "compare_with_sha256": EXPECTED[C_LISTENING],
-            "c_rails_note": ("C's preserved raw already holds 117 PCM24 rail "
-                             "samples; that is irreversible in its input to "
-                             "normalisation and no later gain undoes it."),
-        }
-
         for path, expected in EXPECTED.items():
             assert sha(path) == expected, f"{path} changed during the run"
 
