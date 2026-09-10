@@ -1,5 +1,7 @@
 # SPB direct TTS: independent architectural assessment and setup notes
 
+Integration note from Codex, September10: this author assessment below preserves its original investigation timeline. Since it was written, two explicitly authorized real one-utterance SPB pilots completed in the common `Raaga-SPB-Direct-TTS-20260910` folder. Pilot01 was not accepted because Krish heard a pronunciation regression; pilot02 preserves text/duration weights and timing, with final-word quality still pending listening. Both checkpoints reloaded successfully. Integrated manifest/score checks passed83cases. The current experiment status is in that folder's handoff and pilot README files; historical statements below that training had not started refer to the earlier setup stage.
+
 Author: Claude Code, `claude/spb-direct-tts-20260910`, worktree
 `raaga-wt-claude-spb-direct-tts`, at shared spec commit
 `2443c85702998d31e40057270ccad77bd7e5485f`. This is my own assessment, not a
