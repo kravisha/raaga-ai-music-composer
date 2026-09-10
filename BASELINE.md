@@ -21,9 +21,24 @@ production acceptance.
 Byte-identical. All 199,168 samples at 44100 Hz, 4.516281 s. The raw containers
 differ only in the WAV `PEAK` chunk's write timestamp.
 
-**What it is:** a synthetic SPB-reference-conditioned conversion of *Krish's own
-recorded* «திரும்பி வந்தாய் அன்பே», from his word-timed lower-register source.
+**What it is:** a synthetic SPB-reference-conditioned conversion of a recorded
+performance of «திரும்பி வந்தாய் அன்பே», word-timed and lowered in register.
 **Not** newly synthesised current lyrics, and **not** an authentic SPB recording.
+
+**Correction, and it is mine.** I repeatedly called that input guide "Krish's own
+recorded voice". **The evidence does not support that**, and I should not have
+said it. The attribution came from a filename — `krish-repeated-phrase-native.wav`
+— and from a hardcoded string in an older script. A filename is not evidence of
+who performed, which is the exact standard I have applied to everyone else's work
+all day and failed to apply to my own. The chain traces to `WhatsApp Audio
+2026-09-08 at 7.00.14 PM.mp4`; **the performer of that guide is not established**
+and is being checked separately. Krish identifies the audible voice in morning 04
+as SPB, not himself — and that is the *output* of the conversion, which is a
+different thing again from whoever sang the input.
+
+Three distinct things, kept apart from here on: the **input guide** (performer
+unestablished), the **conditioning reference** (the SPB-credited song excerpt),
+and the **output** (SPB-conditioned synthesis, not an authentic recording).
 
 Input `05-recorded-voice-word-timing-lower-register.wav` `e650a658…`; reference
 `spb-credited-reference-8s.wav` `7ba960f2…`, an accompanied song excerpt rather
