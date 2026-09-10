@@ -33,6 +33,22 @@
         "rests_and_phrasing": "not separately remarked on"
       },
       "note": "A record of what a person said about these exact bytes. It updates no model weights."
+    },
+    {
+      "entry_id": "f0003",
+      "render_id": "r20260910T003437Z-01",
+      "audio": "renders\\r20260910T003437Z-01\\listening\\C-converted-headroom-minus18.wav",
+      "audio_sha256": "bcb5f6a5d44281bd3a20bd585a93b15b33eee369b55e16b7df0d2c55aed9e046",
+      "author": "Krish",
+      "timestamp_utc": "2026-09-10T00:48:11Z",
+      "text": "C is definitely better than B (said twice). Continue. The first Nila phrase is better. The initial Ira of the second phrase, Iravum Pagal Aagum, is meek/weak and needs more strength and presence. This is a preferred comparison, not final acceptance.",
+      "segment": "second phrase onset, 'Ira' (இ ர) at 6.30-7.50 s",
+      "disposition": "preferred",
+      "aspects": {
+        "words": "first phrase better; Ira onset weak",
+        "rests_and_phrasing": "second phrase entry lacks presence"
+      },
+      "note": "A record of what a person said about these exact bytes. It updates no model weights."
     }
   ],
   "note": "Feedback only. Nothing here trains a model or changes any weights."

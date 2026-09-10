@@ -70,7 +70,8 @@ def read_bank(bank_zip: Path) -> tuple:
 
 
 def render(placed: list, tune, requests: list, *, bank_zip: Path, dll_path: Path,
-           destination: Path, breath: float = 0.47, tension: float = 0.46) -> dict:
+           destination: Path, breath: float = 0.47, tension: float = 0.46,
+           syllable_volume: dict | None = None) -> dict:
     """One guide file for the whole tune, phrase by phrase.
 
     Each contiguous sung stretch is synthesised on its own and placed at its own
@@ -86,6 +87,16 @@ def render(placed: list, tune, requests: list, *, bank_zip: Path, dll_path: Path
     if destination.exists():
         raise CarrierError(f"{destination} exists; renders are not overwritten.")
 
+    # Presence for named syllables only. 100 is the engine's own normal; this is
+    # the synthesiser's output level for one request, so it changes how strongly
+    # a syllable is voiced and touches neither its pitch nor its timing.
+    syllable_volume = dict(syllable_volume or {})
+    for key in syllable_volume:
+        if not any(item.text == key or item.index == key for item in placed):
+            raise CarrierError(
+                f"syllable_volume names {key!r}, which is not in this phrase. A "
+                f"control aimed at nothing would look like it had an effect.")
+
     bank, aliases = read_bank(Path(bank_zip))
     total = int(round(tune.duration_s * SAMPLE_RATE))
     if total <= 0:
@@ -98,7 +109,8 @@ def render(placed: list, tune, requests: list, *, bank_zip: Path, dll_path: Path
         members = [(item, request) for item, request in zip(placed, requests)
                    if item.phrase == phrase]
         piece, offset, phrase_events = _render_phrase(
-            members, tune, bank, aliases, Path(dll_path), breath, tension)
+            members, tune, bank, aliases, Path(dll_path), breath, tension,
+            syllable_volume)
         begin = int(round(offset * SAMPLE_RATE))
         end = min(total, begin + len(piece))
         if end > begin:
@@ -129,12 +141,22 @@ def render(placed: list, tune, requests: list, *, bank_zip: Path, dll_path: Path
         "rest_check": silent,
         "driven_by": ("the tune's continuous pitch curve, per hop; note pitches "
                       "are not used as a substitute"),
+        "syllable_volume": syllable_volume,
         "voice": "Hanakoloid CVVC bank by HanadaP - a guide voice, not the target",
     }
 
 
+def _volume_for(item, syllable_volume: dict) -> float:
+    """100 unless this syllable was named. Keyed by index or by text."""
+    for key in (item.index, item.text):
+        if key in syllable_volume:
+            return float(syllable_volume[key])
+    return 100.0
+
+
 def _render_phrase(members: list, tune, bank, aliases, dll_path: Path,
-                   breath: float, tension: float) -> tuple:
+                   breath: float, tension: float,
+                   syllable_volume: dict | None = None) -> tuple:
     """Synthesise one contiguous stretch. Its own engine instance, its own curve."""
     start = min(item.start_s for item, _ in members)
     end = max(item.end_s for item, _ in members)
@@ -166,12 +188,14 @@ def _render_phrase(members: list, tune, bank, aliases, dll_path: Path,
             local = item.start_s - start
             duration = item.duration_s
             tail_seconds = min(0.13, duration * 0.3) if tail else 0.0
+            volume = _volume_for(item, syllable_volume)
             events.append(_add(dll, synth, logger, bank, aliases, head,
-                               local, duration - tail_seconds, item.midi, False))
+                               local, duration - tail_seconds, item.midi, False,
+                               volume))
             if tail:
                 events.append(_add(dll, synth, logger, bank, aliases, tail,
                                    local + duration - tail_seconds, tail_seconds,
-                                   item.midi, True))
+                                   item.midi, True, volume))
 
         count = int(math.ceil((end - start) / tune.hop_s)) + 1
         f0 = _curve_slice(tune, start, count)
@@ -228,7 +252,7 @@ def _curve_slice(tune, start: float, count: int) -> np.ndarray:
 
 
 def _add(dll, synth, logger, bank, aliases, alias: str, position: float,
-         duration: float, midi: float, coda: bool) -> dict:
+         duration: float, midi: float, coda: bool, volume: float = 100.0) -> dict:
     if alias not in aliases:
         raise CarrierError(f"The bank does not hold {alias!r}.")
     filename, (offset, consonant, cutoff, pre, overlap) = aliases[alias]
@@ -254,7 +278,7 @@ def _add(dll, synth, logger, bank, aliases, alias: str, position: float,
         sample_fs=SAMPLE_RATE, sample_length=len(samples),
         sample=samples.ctypes.data_as(_pd), tone=int(round(midi)), con_vel=velocity,
         offset=offset, required_length=duration * 1000 + 20, consonant=consonant,
-        cut_off=cutoff, volume=100, modulation=0, tempo=100,
+        cut_off=cutoff, volume=volume, modulation=0, tempo=100,
         flag_g=0, flag_O=0, flag_P=86, flag_Mt=0, flag_Mb=0, flag_Mv=100)
     fade = 20 if coda else 15
     dll.PhraseSynthAddRequest(synth, C.byref(request), position * 1000, 0,
@@ -262,7 +286,7 @@ def _add(dll, synth, logger, bank, aliases, alias: str, position: float,
     return {"alias": alias, "sample": filename,
             "sample_sha256": hashlib.sha256(raw).hexdigest(),
             "position_s": round(position, 6), "duration_s": round(duration, 6),
-            "coda": coda}
+            "coda": coda, "volume": volume}
 
 
 def _rest_levels(audio: np.ndarray, tune) -> dict:
