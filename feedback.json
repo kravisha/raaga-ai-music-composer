@@ -1,0 +1,39 @@
+{
+  "schema": "voice-prototype-feedback/1",
+  "entries": [
+    {
+      "entry_id": "f0001",
+      "render_id": "r20260910T001153Z-01",
+      "audio": "renders\\r20260910T001153Z-01\\listening\\A-guide-minus18.wav",
+      "audio_sha256": "d4bb4dbf09ff3445c65043b6d51301caa6cdb0125ad0e9fd1b3feb3117a67d93",
+      "author": "Krish",
+      "timestamp_utc": "2026-09-10T00:28:19Z",
+      "text": "A is bad.",
+      "segment": "whole clip",
+      "disposition": "not_preferred",
+      "aspects": {
+        "words": "needs finer articulation"
+      },
+      "note": "A record of what a person said about these exact bytes. It updates no model weights."
+    },
+    {
+      "entry_id": "f0002",
+      "render_id": "r20260910T001153Z-01",
+      "audio": "renders\\r20260910T001153Z-01\\listening\\B-converted-minus18.wav",
+      "audio_sha256": "cd57f7ec3a2f227f3da63fde88865f8b2a952f5e00f5103781b7cf84f6d84fcb",
+      "author": "Krish",
+      "timestamp_utc": "2026-09-10T00:28:19Z",
+      "text": "B is better than A, but both are not acceptable. There needs to be more fine tuning on the articulation side and the character side. The tune is okay, but we need more training. This has to go through multiple iterations with me listening and giving feedback each time.",
+      "segment": "whole clip",
+      "disposition": "needs_work",
+      "aspects": {
+        "words": "articulation needs finer work",
+        "voice_resemblance": "character needs finer work",
+        "ornaments": "tune is okay",
+        "rests_and_phrasing": "not separately remarked on"
+      },
+      "note": "A record of what a person said about these exact bytes. It updates no model weights."
+    }
+  ],
+  "note": "Feedback only. Nothing here trains a model or changes any weights."
+}
