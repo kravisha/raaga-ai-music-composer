@@ -49,6 +49,22 @@
         "rests_and_phrasing": "second phrase entry lacks presence"
       },
       "note": "A record of what a person said about these exact bytes. It updates no model weights."
+    },
+    {
+      "entry_id": "f0004",
+      "render_id": "current-lyrics-morning-settings",
+      "audio": "renders\\current-lyrics-morning-settings\\E-current-lyrics-cfg03-minus18.wav",
+      "audio_sha256": "f1959b144f5cd3e041e631965a162b41d783b24cab08af2eb8a993a4d0340de8",
+      "author": "Krish",
+      "timestamp_utc": "2026-09-10T01:34:42Z",
+      "text": "E is bad, not acceptable. I don't think this path is acceptable at this time. Let's go back to where we were at the seventy percent morning. Regroup from there.",
+      "segment": "whole clip",
+      "disposition": "not_preferred",
+      "aspects": {
+        "voice_resemblance": "not acceptable",
+        "words": "not acceptable"
+      },
+      "note": "A record of what a person said about these exact bytes. It updates no model weights."
     }
   ],
   "note": "Feedback only. Nothing here trains a model or changes any weights."
