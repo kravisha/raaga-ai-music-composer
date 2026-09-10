@@ -154,20 +154,58 @@ def main() -> int:
     if abs(covered - len(speech) / rate) > 1e-6:
         raise ShapeError(f"partition covers {covered:.6f}s of {len(speech)/rate:.6f}s")
 
+    # -- trim the absorbed silence -------------------------------------------
+    # Closing the gaps gave contiguous coverage, which is right: nothing spoken
+    # is dropped. But it also pulled the silence BETWEEN words into whichever
+    # syllable preceded it, and the next step would then protect that silence as
+    # a coda. `வாய்` kept 0.2650 s of mostly inter-word gap as consonant and left
+    # its vowel 17 ms, which is what produced a repeated syllable rather than a
+    # held note. So the span is kept for coverage, and an ACOUSTIC sub-span is
+    # measured inside it; only the acoustic part is treated as speech.
+    frame = max(1, int(0.005 * rate))
+    energy_floor = float(np.sqrt(np.mean(speech ** 2))) * 0.06
+    for span in spans:
+        begin, end = int(span["start_s"] * rate), int(span["end_s"] * rate)
+        piece = speech[begin:end]
+        if len(piece) < frame * 2:
+            span["acoustic_start_s"], span["acoustic_end_s"] = span["start_s"], span["end_s"]
+            span["gap_before_s"] = span["gap_after_s"] = 0.0
+            continue
+        count = len(piece) // frame
+        levels = np.sqrt(np.mean(
+            piece[:count * frame].reshape(count, frame) ** 2, axis=1))
+        loud = np.flatnonzero(levels > energy_floor)
+        if len(loud) == 0:
+            span["acoustic_start_s"], span["acoustic_end_s"] = span["start_s"], span["end_s"]
+            span["gap_before_s"] = span["gap_after_s"] = 0.0
+            continue
+        first = span["start_s"] + max(0, loud[0] - 1) * frame / rate
+        last = span["start_s"] + min(count, loud[-1] + 2) * frame / rate
+        span["acoustic_start_s"] = round(float(first), 6)
+        span["acoustic_end_s"] = round(float(min(last, span["end_s"])), 6)
+        span["gap_before_s"] = round(span["acoustic_start_s"] - span["start_s"], 6)
+        span["gap_after_s"] = round(span["end_s"] - span["acoustic_end_s"], 6)
+        span["acoustic_seconds"] = round(
+            span["acoustic_end_s"] - span["acoustic_start_s"], 6)
+        span["trim_note"] = ("silence at the span edges is recorded as gap, not "
+                             "protected as consonant")
+
     # -- measured voiced region per syllable, inherent vowels included -------
     whole = parselmouth.Sound(speech, sampling_frequency=rate)
     pitch = whole.to_pitch(time_step=0.005, pitch_floor=60.0, pitch_ceiling=500.0)
     times = pitch.xs()
     values = pitch.selected_array["frequency"]
     for span in spans:
-        inside = (times >= span["start_s"]) & (times < span["end_s"])
+        inside = ((times >= span["acoustic_start_s"])
+                  & (times < span["acoustic_end_s"]))
         voiced = times[inside][values[inside] > 0]
         if len(voiced) and voiced[-1] - voiced[0] >= MIN_VOICED_S:
             span["nucleus_s"] = [float(voiced[0]), float(voiced[-1])]
             span["nucleus_estimated_by"] = "Praat pitch track, voiced frames"
         else:
-            middle = (span["start_s"] + span["end_s"]) / 2
-            half = max((span["end_s"] - span["start_s"]) * 0.25, MIN_VOICED_S / 2)
+            middle = (span["acoustic_start_s"] + span["acoustic_end_s"]) / 2
+            half = max((span["acoustic_end_s"] - span["acoustic_start_s"]) * 0.25,
+                       MIN_VOICED_S / 2)
             span["nucleus_s"] = [middle - half, middle + half]
             span["nucleus_estimated_by"] = "fallback: centre of the span, no voiced frames found"
         span["nucleus_is_an_estimate"] = True
@@ -179,7 +217,8 @@ def main() -> int:
             zip(MORNING_MIDI, MORNING_DURATIONS, per_note)):
         members = spans[index:index + take]
         index += take
-        weights = [max(m["end_s"] - m["start_s"], 1e-3) for m in members]
+        weights = [max(m.get("acoustic_seconds",
+                              m["end_s"] - m["start_s"]), 1e-3) for m in members]
         offset = at
         for member, weight in zip(members, weights):
             share = duration * weight / sum(weights)
@@ -187,7 +226,9 @@ def main() -> int:
                                 note_start_s=round(at, 6), note_duration_s=duration,
                                 target_start_s=round(offset, 6),
                                 target_seconds=round(share, 6),
-                                spoken_seconds=round(member["end_s"] - member["start_s"], 6)))
+                                spoken_seconds=round(
+                                    member.get("acoustic_seconds",
+                                               member["end_s"] - member["start_s"]), 6)))
             offset += share
         at += duration
 
@@ -213,7 +254,8 @@ def main() -> int:
     out = np.zeros(int(round(total * rate)), dtype=np.float64)
     events, failures = [], []
     for item in mapping:
-        begin, end = int(item["start_s"] * rate), int(item["end_s"] * rate)
+        begin = int(item.get("acoustic_start_s", item["start_s"]) * rate)
+        end = int(item.get("acoustic_end_s", item["end_s"]) * rate)
         piece = speech[begin:end]
         target_samples = int(round(item["target_seconds"] * rate))
         hz = 440.0 * 2 ** ((item["midi"] - 69) / 12.0)
@@ -250,8 +292,9 @@ def main() -> int:
             failures.append({"syllable": item["chars"], "why": "resynthesis empty"})
             continue
 
-        n0 = int(max(0, (item["nucleus_s"][0] - item["start_s"]) * rate))
-        n1 = int(min(len(wave), (item["nucleus_s"][1] - item["start_s"]) * rate))
+        origin = item.get("acoustic_start_s", item["start_s"])
+        n0 = int(max(0, (item["nucleus_s"][0] - origin) * rate))
+        n1 = int(min(len(wave), (item["nucleus_s"][1] - origin) * rate))
         n0, n1 = min(n0, len(wave)), min(max(n1, n0 + 1), len(wave))
         onset, nucleus, coda = wave[:n0], wave[n0:n1], wave[n1:]
         period = max(32, int(rate / hz))
@@ -287,6 +330,10 @@ def main() -> int:
             "target_seconds": item["target_seconds"],
             "realised_seconds": round(room / rate, 6),
             "onset_samples_kept": int(len(onset)), "coda_samples_kept": int(len(coda)),
+            "gap_trimmed_before_s": item.get("gap_before_s", 0.0),
+            "gap_trimmed_after_s": item.get("gap_after_s", 0.0),
+            "vowel_budget_s": round(item["target_seconds"]
+                                    - (len(onset) + len(coda)) / rate, 6),
             "nucleus_estimated_by": item["nucleus_estimated_by"],
             "nucleus_is_an_estimate": True,
             "treatment": kept,
@@ -304,7 +351,7 @@ def main() -> int:
         raise ShapeError("the shaped guide is silent")
     out *= 0.445 / peak
     resampled = scipy_signal.resample_poly(out, SR_TARGET, rate)
-    guide = OUT / "07-shaped-guide-pitchfixed.wav"
+    guide = OUT / "09-shaped-guide-aligned.wav"
     if guide.exists():
         raise ShapeError(f"{guide} exists; guides are not overwritten")
     sf.write(str(guide), resampled, SR_TARGET, subtype="PCM_24")
