@@ -62,6 +62,10 @@ SYLLABLES = [
 
 SR_TARGET = 44100
 MIN_VOICED_S = 0.030
+#: Below this, frame-to-frame band change is window-phase ripple rather than a
+#: change in the sound. Measured: 4.3e-3 on a stationary harmonic, 0.034 at the
+#: quietest inside real speech.
+STATIONARY_FLOOR = 0.01
 
 
 class ShapeError(Exception):
@@ -86,6 +90,139 @@ def largest_remainder(total: int, weights: list) -> list:
 
 
 from trials.periodic_retime import retime as tile_to_length  # noqa: E402
+
+
+def steady_region(np, piece, rate, times, freqs, origin, floor_s):
+    """The part of a syllable that is actually a held vowel.
+
+    "First-to-last voiced frame" was the wrong proxy. Tamil nasals, the
+    approximants and the inherent vowel are all voiced, so that span is the
+    whole syllable - it covered over 85% of the acoustic span in 11 of 13
+    syllables here - and tiling it repeats the syllable instead of holding a
+    vowel.
+
+    A held vowel is steady in **two** ways at once: its pitch stops moving and
+    its spectral shape stops moving. Consonants fail one or both - a nasal
+    changes the spectrum sharply even while voicing continues, and a glide moves
+    both. So this scores each frame on both and takes the longest run where both
+    are quiet.
+
+    Returns `(start_s, end_s, how)` in file time, or `(None, None, why)`.
+    """
+    window = int(0.025 * rate)
+    hop = int(0.005 * rate)
+    if len(piece) < window + hop:
+        return None, None, "span shorter than one analysis window"
+
+    count = (len(piece) - window) // hop + 1
+    taper = np.hanning(window)
+    bins = window // 2 + 1
+    freqs_hz = np.fft.rfftfreq(window, 1 / rate)
+
+    # Coarse log-spaced BANDS, not raw bins. A raw log spectrum shifts with the
+    # window's phase against the waveform even when the sound is perfectly
+    # stationary, so a steady harmonic tone reads as changing. Summing power
+    # into bands removes that: a stationary harmonic signal now measures
+    # stationary. Verified in `tests/test_steady_region.py`.
+    edges = np.geomspace(80.0, max(rate / 2 - 1, 1000.0), 25)
+    band_of = np.clip(np.searchsorted(edges, freqs_hz) - 1, 0, len(edges) - 2)
+    bands = len(edges) - 1
+
+    power = np.zeros((count, bands))
+    for i in range(count):
+        frame = piece[i * hop:i * hop + window] * taper
+        magnitude = np.abs(np.fft.rfft(frame)) ** 2
+        power[i] = np.bincount(band_of, weights=magnitude, minlength=bands)
+    log = np.log(power + 1e-12)
+    log -= log.mean(axis=1, keepdims=True)
+    norm = np.linalg.norm(log, axis=1, keepdims=True)
+    shape = log / np.maximum(norm, 1e-9)
+    spectral_change = np.ones(count)
+    spectral_change[1:] = 1.0 - np.sum(shape[1:] * shape[:-1], axis=1)
+
+    # Pitch movement over the same frames.
+    frame_times = origin + (np.arange(count) * hop + window / 2) / rate
+    f0 = np.interp(frame_times, times, np.where(freqs > 0, freqs, np.nan))
+    pitch_change = np.ones(count)
+    with np.errstate(invalid="ignore"):
+        octaves = np.abs(np.diff(np.log2(np.where(f0 > 0, f0, np.nan))))
+    pitch_change[1:] = np.nan_to_num(octaves, nan=1.0)
+    voiced = np.nan_to_num(f0, nan=0.0) > 0
+
+    # The threshold has to be relative to this syllable. An earlier version
+    # capped it at an absolute 0.02, but the QUIETEST frame-to-frame change
+    # inside a genuinely steady vowel measures about 0.034 here - the ceiling
+    # sat below the natural floor, so nothing ever qualified and every syllable
+    # silently fell back.
+    if count > 3:
+        moving = spectral_change[1:]
+        quietest = float(np.nanmin(moving))
+        upper = float(np.nanpercentile(moving, 75))
+        # Anchored to the quietest change actually observed here, not to a
+        # percentile and not to an absolute constant. A percentile collapses
+        # when most changes are near zero - it then admits about half the frames
+        # at random and a stationary signal reads as unsteady. An absolute cap
+        # fails the other way: the quietest change inside a real vowel measures
+        # about 0.034, well above the 0.02 ceiling an earlier version used, so
+        # nothing ever qualified. The 1e-6 floor lets numerical noise through.
+        # Two regimes, and the floor is what separates them. Band energies
+        # still ripple slightly with the window's phase against the waveform -
+        # measured at up to 4.3e-3 on a stationary harmonic tone, cycling every
+        # four hops - while the quietest change inside real speech measures
+        # about 0.034. A floor of 0.01 sits between the two: below it nothing is
+        # meaningfully changing, and above it the anchored value governs.
+        spectral_limit = max(STATIONARY_FLOOR,
+                             quietest + 0.35 * (upper - quietest))
+    else:
+        spectral_limit = float(np.nanmax(spectral_change)) + 1.0
+    steady = voiced & (spectral_change <= spectral_limit) & (pitch_change <= 0.03)
+
+    # Energy per frame. Steadiness alone does not separate a vowel from a
+    # sustained nasal - a held /m/ is steady too - but a vowel is the loud part
+    # of its syllable and a nasal is not, so runs are scored by energy as well
+    # as length.
+    energy = np.array([float(np.sqrt(np.mean(
+        piece[i * hop:i * hop + window] ** 2))) for i in range(count)])
+    loudest = float(np.max(energy)) if count else 0.0
+
+    runs, run_start = [], None
+    for i, flag in enumerate(list(steady) + [False]):
+        if flag and run_start is None:
+            run_start = i
+        elif not flag and run_start is not None:
+            runs.append((run_start, i))
+            run_start = None
+    runs = [r for r in runs if r[1] - r[0] >= 2]
+    if not runs:
+        return None, None, "no steady run of two frames"
+
+    def score(run):
+        mean_energy = float(np.mean(energy[run[0]:run[1]]))
+        return (run[1] - run[0]) * (mean_energy / max(loudest, 1e-12)) ** 2
+
+    best_run = max(runs, key=score)
+    mean_energy = float(np.mean(energy[best_run[0]:best_run[1]]))
+    relative = mean_energy / max(loudest, 1e-12)
+    if relative < 0.35:
+        return None, None, (f"steadiest run is quiet ({relative:.2f} of the "
+                            f"syllable peak) - likely a nasal, not the vowel")
+
+    # best_run[1] is exclusive, so the last INCLUDED frame is best_run[1] - 1;
+    # using the exclusive index put the end a whole hop past the audio.
+    start = origin + (best_run[0] * hop) / rate
+    last_frame = best_run[1] - 1
+    end = origin + (last_frame * hop + window) / rate
+    limit = origin + len(piece) / rate
+    end = min(end, limit)
+    start = min(start, end)
+    if end - start < floor_s:
+        return None, None, f"steadiest run only {end - start:.4f}s"
+    return float(start), float(end), (
+        f"ESTIMATE - steadiest loud run: band-spectrum change <= "
+        f"{spectral_limit:.4f}, pitch change <= 3% per 5 ms, energy "
+        f"{relative:.2f} of the syllable peak, {best_run[1] - best_run[0]} "
+        f"frames. A sustained nasal can also be steady and loud, so this is not "
+        f"a verified vowel.")
 
 
 def main() -> int:
@@ -196,12 +333,22 @@ def main() -> int:
     times = pitch.xs()
     values = pitch.selected_array["frequency"]
     for span in spans:
+        begin = int(span["acoustic_start_s"] * rate)
+        finish = int(span["acoustic_end_s"] * rate)
+        low, high, how = steady_region(np, speech[begin:finish], rate, times,
+                                       values, span["acoustic_start_s"],
+                                       MIN_VOICED_S)
         inside = ((times >= span["acoustic_start_s"])
                   & (times < span["acoustic_end_s"]))
         voiced = times[inside][values[inside] > 0]
-        if len(voiced) and voiced[-1] - voiced[0] >= MIN_VOICED_S:
+        if low is not None:
+            span["nucleus_s"] = [low, high]
+            span["nucleus_estimated_by"] = "steady region: " + how
+        elif len(voiced) and voiced[-1] - voiced[0] >= MIN_VOICED_S:
             span["nucleus_s"] = [float(voiced[0]), float(voiced[-1])]
-            span["nucleus_estimated_by"] = "Praat pitch track, voiced frames"
+            span["nucleus_estimated_by"] = (
+                "FALLBACK to voiced frames - " + how + " - this span may repeat "
+                "consonant material when stretched")
         else:
             middle = (span["acoustic_start_s"] + span["acoustic_end_s"]) / 2
             half = max((span["acoustic_end_s"] - span["acoustic_start_s"]) * 0.25,
@@ -351,7 +498,7 @@ def main() -> int:
         raise ShapeError("the shaped guide is silent")
     out *= 0.445 / peak
     resampled = scipy_signal.resample_poly(out, SR_TARGET, rate)
-    guide = OUT / "09-shaped-guide-aligned.wav"
+    guide = OUT / "13-shaped-guide-steady.wav"
     if guide.exists():
         raise ShapeError(f"{guide} exists; guides are not overwritten")
     sf.write(str(guide), resampled, SR_TARGET, subtype="PCM_24")
