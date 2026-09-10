@@ -5,6 +5,9 @@ Bounded to: what is installed that can turn Tamil text and a melody into sung
 audio, and what existing material could do it differently from the rejected
 Japanese-CVVC path.
 
+> **Narrowed 2026-09-09, after review. Read §8 before §1** — its headline claim
+> is corrected there, and two of its proposals are demoted to hypotheses.
+
 ## 1. Installed text-to-speech / singing capability: none
 
 Checked all three virtualenvs and the system path for `TTS`, `coqui`, `piper`,
@@ -125,3 +128,27 @@ gap rather than a tuning gap. I would rather say that plainly than spend another
 render finding it out.
 
 **Nothing rendered. No candidate launched. Awaiting direction.**
+
+---
+
+## 8. Corrections to this document
+
+**§1's headline is wrong.** `VitsModel` and `VitsTokenizer` import cleanly from
+`transformers 4.57.6` in the Singing-Experiment venv on `torch 2.7.1+cu126`;
+verified. I searched for standalone TTS packages and missed that `transformers`
+ships the VITS architecture. **What is missing is Tamil weights, not synthesis
+code.** "No synthesis capability is installed" should read "no ready Tamil
+model is installed".
+
+**§5's two methods are hypotheses, not fixes.** Neither the Tamil human unit
+bank nor the lowered Japanese bank has been tested. I presented them as ranked
+solutions; they are untested proposals.
+
+**§5A's number is weaker than I made it sound.** The 132.4 Hz median is measured
+over an 8-second *song mix with accompaniment* — instruments are in that
+estimate. It does not establish SPB's vocal range, and the +22-semitone gap
+inherits that uncertainty.
+
+**§3's framing was also too broad.** The main pipeline already fits lyrics to
+specific notes with unequal durations and honours gamaka; the gap is narrower
+and better located than "no path exists". See `MAIN-PIPELINE-TRACE.md`.
