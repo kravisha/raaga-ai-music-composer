@@ -12,7 +12,20 @@ from direct_tts.manifest import (
     validate_entry,
     find_cross_entry_issues,
 )
-from direct_tts.planner import ExportPlan, EvalEntryPlan, plan_export
+from direct_tts.planner import (
+    ExportPlan,
+    EvalEntryPlan,
+    TrainEntryPlan,
+    SESSION_DISJOINT,
+    WITHIN_SESSION_BLOCKED,
+    plan_export,
+)
+from direct_tts.verifier import (
+    EntryVerification,
+    VerificationResult,
+    sha256_of_file,
+    verify_plan,
+)
 
 __all__ = [
     "ADMITTED_TARGET",
@@ -22,5 +35,12 @@ __all__ = [
     "find_cross_entry_issues",
     "ExportPlan",
     "EvalEntryPlan",
+    "TrainEntryPlan",
+    "SESSION_DISJOINT",
+    "WITHIN_SESSION_BLOCKED",
     "plan_export",
+    "EntryVerification",
+    "VerificationResult",
+    "sha256_of_file",
+    "verify_plan",
 ]

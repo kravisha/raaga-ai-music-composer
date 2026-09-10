@@ -8,6 +8,7 @@ audio backend.
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
@@ -21,6 +22,13 @@ REVIEWED = "reviewed"
 DISPUTED = "disputed"
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$", re.IGNORECASE)
+
+# A filename stem only: no path separators, no leading dot (so a lone ".."
+# or a hidden-file-style id can never appear), safe to join under an export
+# root without escaping it. This is the admission-time half of path-traversal
+# defense; planner.py additionally verifies the joined path stays under the
+# requested root before it is ever handed back to a caller.
+_SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
 TRAIN = "train"
 EVAL = "eval"
@@ -60,6 +68,12 @@ def validate_entry(entry: Mapping[str, Any]) -> list[ValidationIssue]:
 
     if not _is_nonempty_str(entry.get("id")):
         reject("missing_id", "entry has no nonempty id")
+    elif not _SAFE_ID_RE.match(entry["id"]):
+        reject(
+            "unsafe_id",
+            f"id {entry['id']!r} is not a safe filename stem (no path "
+            "separators, must start with a letter or digit)",
+        )
 
     if not _is_nonempty_str(entry.get("source_path")) or not _is_sha256(
         entry.get("source_sha256")
@@ -67,6 +81,13 @@ def validate_entry(entry: Mapping[str, Any]) -> list[ValidationIssue]:
         reject(
             "missing_source_provenance",
             "source_path and a 64-hex-char source_sha256 are required",
+        )
+
+    if not _is_nonempty_str(entry.get("source_group")):
+        reject(
+            "missing_source_group",
+            "source_group is required and must be nonempty; a missing "
+            "group is never treated as independent of other entries",
         )
 
     if not _is_nonempty_str(entry.get("path")) or not _is_sha256(entry.get("sha256")):
@@ -77,12 +98,23 @@ def validate_entry(entry: Mapping[str, Any]) -> list[ValidationIssue]:
 
     start = entry.get("start_seconds")
     end = entry.get("end_seconds")
-    if not isinstance(start, (int, float)) or not isinstance(end, (int, float)) or not (
+
+    def _is_finite_number(value: Any) -> bool:
+        # bool is a subclass of int, so it must be excluded explicitly, and
+        # inf/nan are technically floats but never a valid clip boundary.
+        return (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(value)
+        )
+
+    if not _is_finite_number(start) or not _is_finite_number(end) or not (
         end > start >= 0
     ):
         reject(
             "invalid_interval",
-            f"start_seconds/end_seconds must satisfy end > start >= 0, got {start!r}/{end!r}",
+            "start_seconds/end_seconds must be finite, non-boolean numbers "
+            f"satisfying end > start >= 0, got {start!r}/{end!r}",
         )
 
     if entry.get("is_diagnostic_anchor"):
@@ -147,7 +179,18 @@ def validate_entry(entry: Mapping[str, Any]) -> list[ValidationIssue]:
 
 
 def _intervals_conflict(a: Mapping[str, Any], b: Mapping[str, Any]) -> bool:
-    if a.get("source_path") != b.get("source_path"):
+    # Identity is content, not the recorded path/name: two entries can carry
+    # different source_path strings (a copy, a different mount point, a
+    # relabelled session) and still be bytes-identical source audio. Any
+    # such pair sharing an overlapping/duplicate window must be rejected
+    # regardless of source_path or source_group, so this keys on
+    # source_sha256 rather than source_path. Callers are expected to only
+    # pass entries that already passed validate_entry, so both hashes are
+    # guaranteed to be well-formed 64-hex-char strings here.
+    a_hash, b_hash = a.get("source_sha256"), b.get("source_sha256")
+    if not (_is_sha256(a_hash) and _is_sha256(b_hash)):
+        return False
+    if str(a_hash).lower() != str(b_hash).lower():
         return False
     a_start, a_end = a.get("start_seconds"), a.get("end_seconds")
     b_start, b_end = b.get("start_seconds"), b.get("end_seconds")
