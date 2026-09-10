@@ -164,6 +164,8 @@ it. Each is governed by CANONICAL_SPEC_v0.3 and cites the sections it builds on.
 
 ## Summary
 
+September 10 direction: [SPB_DIRECT_TTS_ADAPTATION.md](SPB_DIRECT_TTS_ADAPTATION.md) records the authorized direct MMS Tamil adaptation, shared worktree ownership, reviewed speech data, bounded training and held-out listening evaluation. It preserves the prior prototype and training-workflow history.
+
 - **Total distinct old references mapped:** 47
 - **Unmapped old references:** 0
 - **v0.3 sections with explicit old mappings:** 51
