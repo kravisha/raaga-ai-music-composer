@@ -21,6 +21,11 @@ in the first version:
    to hit an exact sample count. A Praat DurationTier triangle was used before
    and does **not** integrate to the target — it averages toward it. Every
    syllable's realised length is measured and asserted.
+5. **Pitch is preserved by construction.** Retiming uses phase-synchronous
+   overlap-add with the output hop equal to the period; an earlier tiler shifted
+   a 200 Hz tone to 266.67 Hz. `trials/periodic_retime.py` carries the invariant
+   check.
+
 4. **Failures fail.** If Praat cannot pitch a syllable, this stops. The previous
    version fell back to the unpitched speech and still called the result
    score-shaped.
@@ -80,39 +85,7 @@ def largest_remainder(total: int, weights: list) -> list:
     return share
 
 
-def tile_to_length(np, block, target: int, period: int) -> "np.ndarray":
-    """Stretch or compress a periodic block to exactly `target` samples.
-
-    Whole periods are repeated or dropped with short crossfades. Because the
-    nucleus has already been flattened to one known pitch, a period is a known
-    integer, and the result lands on the exact sample count rather than near it.
-    """
-    if target <= 0:
-        return np.zeros(0)
-    if len(block) == 0:
-        return np.zeros(target)
-    period = max(32, min(period, max(64, len(block) // 2)))
-    if len(block) < 2 * period:
-        index = (np.arange(target) * (len(block) - 1) / max(target - 1, 1))
-        return np.interp(index, np.arange(len(block)), block)
-    out = np.zeros(target)
-    fade = max(8, period // 4)
-    written, read = 0, 0
-    while written < target:
-        take = min(period, target - written, len(block) - read)
-        if take <= 0:
-            read = 0
-            continue
-        segment = block[read:read + take].copy()
-        if written and fade < take:
-            segment[:fade] *= np.linspace(0, 1, fade)
-            out[written:written + fade] *= np.linspace(1, 0, fade)
-        out[written:written + take] += segment
-        written += take - (fade if (written and fade < take) else 0)
-        read += take
-        if read >= len(block) - period:
-            read = max(0, len(block) - 2 * period)
-    return out[:target]
+from trials.periodic_retime import retime as tile_to_length  # noqa: E402
 
 
 def main() -> int:
@@ -285,13 +258,13 @@ def main() -> int:
         fixed = len(onset) + len(coda)
 
         if target_samples > fixed + period:
-            body = tile_to_length(np, nucleus, target_samples - fixed, period)
+            body = tile_to_length(nucleus, target_samples - fixed, period)
             built = np.concatenate([onset, body, coda])
             kept = "onset and coda kept at spoken length; nucleus retimed"
         else:
             # Not enough room to keep the consonants whole. Compress everything
             # and say so, rather than pretending they were protected.
-            built = tile_to_length(np, wave, target_samples, period)
+            built = tile_to_length(wave, target_samples, period)
             kept = "target shorter than the consonants; whole syllable compressed"
         if len(built) != target_samples:
             raise ShapeError(f"{item['chars']!r} built {len(built)} of "
@@ -331,16 +304,20 @@ def main() -> int:
         raise ShapeError("the shaped guide is silent")
     out *= 0.445 / peak
     resampled = scipy_signal.resample_poly(out, SR_TARGET, rate)
-    guide = OUT / "05-shaped-guide.wav"
+    guide = OUT / "07-shaped-guide-pitchfixed.wav"
     if guide.exists():
-        guide = OUT / "05-shaped-guide-v2.wav"
+        raise ShapeError(f"{guide} exists; guides are not overwritten")
     sf.write(str(guide), resampled, SR_TARGET, subtype="PCM_24")
 
     (OUT / "06-articulation.json").write_text(json.dumps(
         {"events": events,
-         "note": ("Nucleus boundaries are ESTIMATES from Praat's pitch track, "
-                  "including inherent vowels that are not written. Onset and coda "
-                  "keep their spoken sample counts wherever the target allows."),
+         "note": ("Nucleus boundaries are ESTIMATES from Praat's voiced-frame "
+                  "endpoints, including inherent vowels that are not written. "
+                  "Onset and coda keep their spoken sample counts where the "
+                  "target allows. That is a timing decision, NOT acoustic "
+                  "validation: nothing here proves a nasal or voiced coda "
+                  "survived, and voiced-frame endpoints are not phoneme "
+                  "boundaries."),
          "realised_total_seconds": round(realised, 6),
          "score_total_seconds": round(total, 6)},
         indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
