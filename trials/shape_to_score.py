@@ -96,16 +96,23 @@ def steady_region(np, piece, rate, times, freqs, origin, floor_s):
     """The part of a syllable that is actually a held vowel.
 
     "First-to-last voiced frame" was the wrong proxy. Tamil nasals, the
-    approximants and the inherent vowel are all voiced, so that span is the
-    whole syllable - it covered over 85% of the acoustic span in 11 of 13
-    syllables here - and tiling it repeats the syllable instead of holding a
+    approximants and the inherent vowel are all voiced, so that span measured as
+    the whole syllable - over 85% of the acoustic span in 11 of 13 syllables
+    here - which means stretching it stretched consonant material along with the
     vowel.
 
-    A held vowel is steady in **two** ways at once: its pitch stops moving and
-    its spectral shape stops moving. Consonants fail one or both - a nasal
-    changes the spectrum sharply even while voicing continues, and a glide moves
-    both. So this scores each frame on both and takes the longest run where both
-    are quiet.
+    **What this does not claim.** It does not claim that consonants all fail a
+    stationarity test: a sustained nasal is steady in both pitch and spectrum,
+    which is why runs are additionally scored by energy, and that is a heuristic
+    rather than a phonetic decision. It does not claim the earlier retimer
+    looped whole syllables - `periodic_retime` maps grain positions
+    monotonically across the block and does not loop. And a change in what a
+    recogniser prints is changed decoder behaviour, not demonstrated audible
+    improvement.
+
+    What it does: takes the longest run that is quiet in **both** band-spectrum
+    change and pitch change, prefers the loud one, and returns it **as an
+    estimate**.
 
     Returns `(start_s, end_s, how)` in file time, or `(None, None, why)`.
     """

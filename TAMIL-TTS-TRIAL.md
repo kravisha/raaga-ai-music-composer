@@ -105,3 +105,55 @@ Preserved unchanged: raw TTS `01`, failed guide `05`, corrected guide `07`, the
 SPB reference, morning 04 original and reproduced, and C, D, E.
 
 Stopped for listening. No further shaping, model or conversion.
+
+---
+
+# Close-out — three shaping bugs fixed, gate still fails, stopped
+
+Guide **`13-shaped-guide-steady.wav`**, sha
+`3d09de2c16444dfc3fa6df55948d1f9920809ddb21da3a85dac7bb7a3106f6d3`, 4.52 s, peak
+0.446391, no rails, finite. **No conversion was run. No further variants.**
+
+## What was wrong, and what fixed it
+
+| # | defect | fix | evidence |
+| --- | --- | --- | --- |
+| 1 | Inter-word silence absorbed into a span, then protected as coda — `வாய்` kept 0.2650 s of gap and left its vowel 0.0175 s | acoustic sub-span per syllable; trimmed silence recorded as **gap** | vowel budget 0.0175 → 0.2525 s; syllables under 50 ms: 2 → **0** |
+| 2 | Retimer advanced read by a period, write by `period − fade` — 200 Hz came back at 266.67 Hz | phase-synchronous OLA, output hop = period | 200 → **199.951 Hz**, −0.42 cents, exact length |
+| 3 | Nucleus = every voiced frame, which in Tamil is the whole syllable | steadiest **loud** run in band spectrum *and* pitch | >85% coverage: 11/13 → **0/13**; fallbacks 13/13 → **0/13** |
+
+Fixing #3 needed three further corrections of my own, each found by measuring
+rather than reasoning: a raw log spectrum moves with window phase (→ band
+energies, ripple ≤ 4.3e-3); the run end used an exclusive index (→ last included
+frame, clamped); and the threshold was wrong in both directions — an absolute
+0.02 ceiling below the 0.034 speech floor, then a percentile that collapsed near
+zero (→ anchored to the syllable's own minimum with a 0.01 stationarity floor).
+
+`tests/test_steady_region.py` — seven invariants, including both reported
+failures. All pass.
+
+## Gates
+
+**F0 — passes.** 13 of 13 syllables return pitch, median **3.63 cents**, max
+20.64. Same seven notes, same durations, same `[2,1,1,2,1,3,3]` allocation, same
+retimer.
+
+**Words — fails. 0 of 6.** Transcript
+`நான் அன்னுடைய காத்தியைப் பார்க்கிறேன்`.
+
+**The transcript stopped repeating, and that is not a claim of improvement.** A
+plausible-but-wrong transcript is **changed decoder behaviour**, not demonstrated
+audible progress. Nothing here establishes that guide 13 sounds better than 09;
+only Krish can say that.
+
+Nucleus bounds remain **estimates**. A sustained nasal is steady in pitch and
+spectrum too, the energy preference is a heuristic rather than a phonetic
+decision, and the retimer maps grains monotonically — it never looped syllables.
+
+## State
+
+Preserved and verified: raw TTS `01`, guides `05`, `07`, `09`, `11`, `12`, the
+SPB reference, morning 04 original and reproduced, and C, D, E. Mapping and
+articulation snapshots for the superseded guides are kept beside them.
+
+**Nothing running. No conversion. No further variants.**
