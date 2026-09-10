@@ -115,7 +115,10 @@ def write_ready(entries, status):
 
 
 def main():
-    AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+    # Review audio can already carry human corrections. Refuse a repeat run
+    # before decoding or writing anything, rather than overwriting that batch.
+    OUT_DIR.mkdir(parents=True, exist_ok=False)
+    AUDIO_DIR.mkdir(exist_ok=False)
 
     source_sha_before = sha256_of_file(SOURCE)
     assert source_sha_before == SOURCE_SHA256_EXPECTED, (
