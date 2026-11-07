@@ -229,3 +229,78 @@ def render(groove: Groove | None = None, sr: int = 44100, seed: int = 7) -> tupl
     out = dsp.normalize_loudness(mix, sr, -14.0)
     out = dsp.limiter(out, -1.0, sr)
     return dsp.fade(out, 0.01, 1.0, sr).astype(np.float32), g
+
+
+# --------------------------------------------------------------------------
+# v2 (Krish, 7 Nov 2026): "add some beats, and instead of the organ use saxophone, violin, veena - a strong lead with punch"
+# --------------------------------------------------------------------------
+MIX_PUNCH = {
+    "drum_kit": (1.0, 0.0), "bass": (0.9, 0.0), "saxophone": (0.95, 0.08), "violin": (0.6, -0.22),
+    "veena": (0.9, 0.18), "strings": (0.45, 0.0), "kanjira": (0.35, -0.3), "tambourine": (0.3, 0.32),
+    "mridangam": (0.6, -0.12), "synth_pad": (0.18, 0.0),
+}
+
+
+def orchestrate_show(silence: float = 10.0) -> tuple[dict[str, list[Note]], float]:
+    """The entrance and groove re-voiced: saxophone lead, violin an octave above it the second time round, the run on veena,
+    the stabs on strings and sax, and a busier beat (16th hats, a kick push, tambourine off-beats, mridangam fills)."""
+    g, parts, seconds = build_show(silence)
+    st = g.step_seconds
+    bar_s = STEPS * st
+    run_from, run_to = silence + 3 * bar_s, silence + 5 * bar_s
+    groove_from = silence + ENTRANCE_BARS * bar_s
+    second_pass = groove_from + len(HOOK) * bar_s
+    groove_end = groove_from + (g.bars - g.outro_bars) * bar_s
+    out: dict[str, list[Note]] = {k: [] for k in MIX_PUNCH}
+    for key in ("drum_kit", "bass", "kanjira", "synth_pad"):
+        out[key] = list(parts.get(key, []))
+
+    def copy(n: Note, shift: int = 0, vel: int | None = None) -> Note:
+        return Note(swara=n.swara, midi=n.midi + shift, start=n.start, duration=n.duration,
+                    velocity=n.velocity if vel is None else vel)
+
+    for n in parts["electric_piano"]:
+        if run_from - 1e-6 <= n.start < run_to:
+            out["veena"].append(copy(n))                                   # the run, plucked
+        elif n.start < groove_from:
+            out["strings"].append(copy(n))                                 # stabs and the big hit: strings
+            out["saxophone"].append(copy(n, vel=min(127, n.velocity + 4)))
+        else:
+            lead = copy(n, shift=-12 if n.midi > 79 else 0)                 # keep the sax in its own range
+            out["saxophone"].append(lead)
+            if n.start >= second_pass - 1e-6:
+                out["violin"].append(copy(lead, shift=12, vel=max(40, n.velocity - 22)))
+    # More beat under the groove.
+    t = groove_from
+    bar = 0
+    while t < groove_end - 1e-6:
+        for s in range(1, STEPS, 2):                                       # the in-between hats: 16ths
+            out["drum_kit"].append(Note(swara="-", midi=38, start=round(t + s * st, 4), duration=st * 0.4, velocity=34))
+        out["drum_kit"].append(Note(swara="-", midi=36, start=round(t + 14 * st, 4), duration=st * 2, velocity=82))  # kick push
+        for s in (2, 6, 10, 14):
+            out["tambourine"].append(Note(swara="-", midi=61, start=round(t + s * st, 4), duration=st * 0.6, velocity=64))
+        if bar % 4 == 3:                                                   # a mridangam fill into every fifth bar
+            for i, s in enumerate((8, 10, 11, 12, 13, 14, 15)):
+                out["mridangam"].append(Note(swara="-", midi=36 + (i % 4), start=round(t + s * st, 4), duration=st,
+                                             velocity=70 + 7 * i))
+        t += bar_s
+        bar += 1
+    return out, seconds
+
+
+def render_punchy_show(silence: float = 10.0, sr: int = 44100, seed: int = 7) -> np.ndarray:
+    parts, seconds = orchestrate_show(silence)
+    total = seconds + 1.5
+    mix = dsp.silence(total, sr)
+    for key, notes in parts.items():
+        if not notes:
+            continue
+        inst = catalog.get(key)
+        if inst is None:
+            raise KeyError(f"The instrument catalog has no {key}")
+        audio = render_notes(notes, inst, sr, total_seconds=total, seed=seed)
+        gain, pan = MIX_PUNCH[key]
+        mix = dsp.mix_into(mix, dsp.pan_mono(audio * gain, pan), 0)
+    out = dsp.normalize_loudness(mix, sr, -14.0)
+    out = dsp.limiter(out, -1.0, sr)
+    return dsp.fade(out, 0.0, 1.0, sr).astype(np.float32)

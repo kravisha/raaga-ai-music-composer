@@ -69,3 +69,18 @@ def test_every_note_of_the_entrance_is_in_the_raaga(raagas):
     for part in ("electric_piano", "bass"):
         for n in parts[part]:
             assert raaga.is_allowed(n.swara), (part, n.swara)
+
+
+def test_v2_puts_a_strong_lead_on_the_hook_and_more_beat_under_it(raagas):
+    parts, _seconds = G.orchestrate_show(10.0)
+    assert "electric_piano" not in parts, "the organ-like lead is gone"
+    for key in ("saxophone", "violin", "veena", "strings", "tambourine", "mridangam"):
+        assert parts[key], key
+    raaga = raagas.require("Shanmukhapriya")
+    for key in ("saxophone", "violin", "veena", "strings"):
+        for n in parts[key]:
+            assert raaga.is_allowed(n.swara), (key, n.swara)
+    assert max(n.midi for n in parts["saxophone"]) <= 79, "the sax stays in its range"
+    _, plain, _ = G.build_show(10.0)
+    assert len(parts["drum_kit"]) > len(plain["drum_kit"]), "more beats"
+    assert min(n.start for notes in parts.values() for n in notes) >= 10.0 - 1e-6
