@@ -1,7 +1,8 @@
 # Ravanan Thirumbittaan - a write-up of the melody and the song
 
 *Composed by Claude Work for the Agentic Band, 7 Nov 2026. Krish (director) approved the words: "Words are fine." Our copyrighted
-material. Every number below comes from the code that makes the music (`raagacomposer/studio/answer.py`, `answer2.py`, `song.py`).*
+material. Krish approved the two new charanam lines of the full song too ("Approve them"), the same day. Every number below comes
+from the code that makes the music (`raagacomposer/studio/answer.py`, `answer2.py`, `song.py`, `full_song.py`).*
 
 ## The story it tells
 A young artist walks on and the crowd has already given up on him; they boo. He asks for ten seconds. In those ten seconds he
@@ -88,6 +89,8 @@ Each line is sung one syllable to a note of the hook.
 |---|---|---|
 | கூச்சல் போட்ட கூட்டமே | Koochal potta koottame | O crowd that jeered at me, |
 | பத்து நொடி கொடு என்னை பாரு | Pathu nodi kodu ennai paaru | give me ten seconds - watch me |
+| வீணை பேசும் நேரம்தான் | Veenai pesum neramdhaan | now it is the veena's turn to speak *(full song only)* |
+| மௌனம் ஆனது ஊரு | Mounam aanadhu ooru | and the whole town fell silent *(full song only)* |
 
 **Tihai**: ராவணன்டா (*Raa-va-nan-daa!*) three times, then a held Sa.
 
@@ -107,14 +110,33 @@ Krish's rule:
 | கூச்சல் போட்ட கூட்டமே | 9 | 1 | 1 |
 | பத்து நொடி கொடு என்னை பாரு | 7 | 3 | 1 |
 | ராவணன்டா | 1 | 2 | 2 |
+| வீணை பேசும் நேரம்தான் *(full song)* | 3 | 5 | 2 |
+| மௌனம் ஆனது ஊரு *(full song)* | 1 | 4 | 1 |
 
-The song leans hard: 42 vallinam letters against 18 mellinam. That fits this scene: a fierce, march-like turn of a hostile crowd,
+The song (the first eight lines) leans hard: 42 vallinam letters against 18 mellinam. That fits this scene: a fierce, march-like turn of a hostile crowd,
 in a heroic raaga. Two places deliberately soften:
 * the name ராவணன், which is evenly balanced (4 / 4 / 3);
 * the town rising and dancing (ஊரெல்லாம் எழுந்து ஆடுது), the most idaiyinam line.
 
 The jeering crowd (கூச்சல் போட்ட கூட்டமே) is the hardest line (9 vallinam), on purpose. A softer, melodious version - say, a love
 song in Sindhu Bhairavi - would rewrite toward mellinam.
+
+The full song's two new charanam lines do exactly that, on purpose: after the jeering crowd, the veena speaks and the town goes
+quiet, so the words turn soft (9 mellinam against 4 vallinam across the two lines). With them the whole lyric is 46 vallinam to
+27 mellinam.
+
+## The full song (63.4 s)
+`raagacomposer/studio/full_song.py`: veena and flute, bongos, the kit; the voice sits 1 dB over the band where it sings.
+
+| Time | Section (bars) | What happens |
+|---|---|---|
+| 0.0 | Intro (7) | One bar of boos; the hook on veena (call) and flute (answer) over stop-time; the tihai onto sam |
+| 12.0 | Pallavi (8) | The singer comes in: the four lines over the groove, twice; the second time the answer flies up |
+| 25.7 | Interlude (4) | Veena and flute with the groove: the call a beat late over 3-against-4 hats |
+| 32.6 | Charanam (6) | Half-time: the jeering-crowd lines at half speed, then the two soft new lines on the answer |
+| 42.9 | Break (2) | Khanda nadai: fives on bongos and tabla, the veena in fives |
+| 46.3 | Pallavi, lifted (8) | A whole step up (D to E), double-time hats, call and answer a bar each, whistles |
+| 60.0 | Ending (2) | Raa-va-nan-daa! three times, and the last Sa |
 
 ## Instruments and versions (all kept; none overwritten)
 | File (on the NAS, `music/20261107-raga-song-team/`) | What it is |
@@ -128,6 +150,10 @@ song in Sindhu Bhairavi - would rewrite toward mellinam.
 | `20261107-ravanas-answer-II-v6a-r2_veena-flute-tabla.wav` | v6a revised after review: the whistles back at their own level and place (the first v6 made them 6.6 dB louder and moved them left), the tabla at three-quarters of the mridangam's level |
 | `20261107-ravanas-answer-II-v6b-r2_veena-flute-bongos.wav` | v6b revised: as above, and the bongo fills now climb to the top drum instead of falling back |
 | `20261107-ravanan-thirumbittaan-song-v3_veena-flute-tabla.wav` | the song on v6a-r2 |
+| `20261107-ravanan-thirumbittaan-song-v4_veena-flute-bongos.wav` | the song on v6b-r2 (Krish's pick: bongos) |
+| `20261107-ravanan-thirumbittaan-FULL-SONG-v1_veena-flute-bongos.wav` | the full song, first cut |
+| `20261107-ravanan-thirumbittaan-FULL-SONG-v2_veena-flute-bongos.wav` | the full song after review: no veena over the flute's interlude answer, the voice set 1 dB over the band, a walking bass under the charanam |
+| `20261107-ravanan-thirumbittaan-FULL-SONG_lyrics-APPROVED-by-Krish.txt` | the full song's words, as Krish approved them |
 
 Each has an `_starts-after-20s-get-ready.mp3` beside it.
 
