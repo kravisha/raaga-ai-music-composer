@@ -35,6 +35,7 @@ from .panels.lyrics_panel import LyricsPanel
 from .panels.output_panel import OutputPanel
 from .panels.raaga_panel import RaagaPanel
 from .panels.song_team_panel import SongTeamPanel
+from .panels.band_panel import BandPanel
 from .panels.tune_panel import TunePanel
 from .panels.voice_panel import VoicePanel
 from .settings_dialog import SettingsDialog
@@ -136,6 +137,8 @@ class MainWindow(QMainWindow):
 
         # The song team (docs/SONG_TEAM.md): mood in, rough song out.
         self.song_team = SongTeamPanel(self.app)
+        # The Agentic Band's stage: one seat per agent, each with its instrument or mic.
+        self.band = BandPanel(self.app)
         self.tune = TunePanel(self.app)
         self.lyrics = LyricsPanel(self.app)
         self.voice = VoicePanel(self.app)
@@ -146,13 +149,14 @@ class MainWindow(QMainWindow):
         # separate top-level workspace, not a tab beside Tune and Lyrics.
         self.agent_panel = AgentPanel(self.app)
         self.training_panel = TrainingPanel(self.app)
-        for panel in (self.song_team, self.tune, self.lyrics, self.voice,
+        for panel in (self.song_team, self.band, self.tune, self.lyrics, self.voice,
                       self.output,
                       self.agent_panel, self.training_panel):
             panel.changed.connect(self.refresh)
 
         self.tabs = QTabWidget()
         self.tabs.addTab(self.song_team, "Song Team")
+        self.tabs.addTab(self.band, "Band")
         self.tabs.addTab(self.tune, "Tune")
         self.tabs.addTab(self.lyrics, "Lyrics")
         self.tabs.addTab(self.voice, "Voice")
