@@ -33,6 +33,7 @@ from .panels.conversation_panel import ConversationPanel
 from .panels.lyrics_panel import LyricsPanel
 from .panels.output_panel import OutputPanel
 from .panels.raaga_panel import RaagaPanel
+from .panels.song_team_panel import SongTeamPanel
 from .panels.tune_panel import TunePanel
 from .panels.voice_panel import VoicePanel
 from .settings_dialog import SettingsDialog
@@ -132,6 +133,8 @@ class MainWindow(QMainWindow):
         left_scroll.setMinimumWidth(330)
         left_scroll.setMaximumWidth(430)
 
+        # The song team (docs/SONG_TEAM.md): mood in, rough song out.
+        self.song_team = SongTeamPanel(self.app)
         self.tune = TunePanel(self.app)
         self.lyrics = LyricsPanel(self.app)
         self.voice = VoicePanel(self.app)
@@ -142,11 +145,13 @@ class MainWindow(QMainWindow):
         # separate top-level workspace, not a tab beside Tune and Lyrics.
         self.agent_panel = AgentPanel(self.app)
         self.training_panel = TrainingPanel(self.app)
-        for panel in (self.tune, self.lyrics, self.voice, self.output,
+        for panel in (self.song_team, self.tune, self.lyrics, self.voice,
+                      self.output,
                       self.agent_panel, self.training_panel):
             panel.changed.connect(self.refresh)
 
         self.tabs = QTabWidget()
+        self.tabs.addTab(self.song_team, "Song Team")
         self.tabs.addTab(self.tune, "Tune")
         self.tabs.addTab(self.lyrics, "Lyrics")
         self.tabs.addTab(self.voice, "Voice")

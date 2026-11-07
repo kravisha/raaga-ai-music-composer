@@ -100,9 +100,10 @@ def test_the_window_builds_with_every_panel(window):
                   window.training_panel, window.learn_workspace):
         assert panel is not None
     # v0.3 section 4 / TEST I: Learning left the composer's own tab bar.
-    assert window.tabs.count() == 4
-    assert [window.tabs.tabText(i) for i in range(4)] == \
-        ["Tune", "Lyrics", "Voice", "Output"]
+    # The Song Team (docs/SONG_TEAM.md) leads it: it is where a song starts.
+    assert window.tabs.count() == 5
+    assert [window.tabs.tabText(i) for i in range(5)] == \
+        ["Song Team", "Tune", "Lyrics", "Voice", "Output"]
 
 
 def test_the_window_fits_an_ordinary_screen(window):

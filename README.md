@@ -60,6 +60,19 @@ creative direction -> raaga -> TUNE -> lyrics fitted to the tune -> voice
   arrangements and mixes; region and section locks that are enforced, not
   advisory; undo/redo; autosave; crash recovery from a backup copy.
 
+## The song team (first tab in MAIN)
+
+A second, shorter way in, from Krish's direction of 7 November 2026: type a
+**mood**, and a small team of agents makes a rough song. A mood listener says
+what it heard; a lyricist and a tunesmith work at the same time (two lines of
+words; a raaga, a short alapana and a two-line phrase); a tala keeper picks
+the tala and lays a mridangam beat; then the words are fitted to the phrase
+and the rough picture plays over a tanpura. The producer can overrule the
+raaga or the tala and make it again. Drafts are written, with every agent's
+card as JSON, to `%APPDATA%\RaagaComposer\song_team\` and never change the
+open project. Simple songs only so far; prelude, fillers, bridge and more
+instruments are listed on the tab as not done. See `docs/SONG_TEAM.md`.
+
 ## The student behind the instrument
 
 Click **LEARN** in the toolbar (or `Ctrl+2`) to switch out of the composer

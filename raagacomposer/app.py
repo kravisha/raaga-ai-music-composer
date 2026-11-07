@@ -235,6 +235,12 @@ class AppController:
         #: that cached a suggestion's reasoning can tell that the reasoning
         #: it holds belongs to a ranking that no longer exists.
         self.suggestion_epoch = 0
+        #: The song team's latest draft (raagacomposer/studio): a rough song
+        #: made from a mood by several agents.  Kept apart from the project
+        #: on purpose - a draft is something to listen to, not a change to
+        #: the song that is open.
+        self.song_draft = None
+        self.on_song_draft: Callable[[object], None] | None = None
 
         # UI callbacks
         self.on_project_changed: Optional[Callable[[], None]] = None
@@ -1831,6 +1837,122 @@ class AppController:
                         f"so I did not switch to {cmd.raaga}. Unlock it first.")
             return False
         return True
+
+    # ==================================================================
+    # the song team (raagacomposer/studio, docs/SONG_TEAM.md)
+    # ==================================================================
+    def song_team(self):
+        """A song team that sings in the current voice and writes words
+        through the same language-model route as the Lyrics tab."""
+        from .studio import SongTeam
+
+        profile = self.current_voice()
+        tonic = 48 if profile.range_high < 72 else 60
+        return SongTeam(self.raagas, llm=self.providers.llm, tonic_midi=tonic,
+                        voice_range=(profile.range_low, profile.range_high))
+
+    def _song_draft_work(self, mood: str, language: str, raaga: str,
+                         tala: str, seed: int | None,
+                         ctx: JobContext | None = None):
+        """Run the team and mix the rough picture.  Worker-thread safe: it
+        reads settings and the voice, and writes nothing to the project."""
+        from .studio import rough_cut
+
+        team = self.song_team()
+        check = ctx.check if ctx is not None else None
+        if ctx is not None:
+            ctx.progress(0.1, "The mood listener is listening")
+        draft = team.run(mood, language, raaga=raaga, tala=tala, seed=seed,
+                         check=check)
+        if ctx is not None:
+            ctx.check()
+            ctx.progress(0.7, "Mixing the rough picture")
+        audio, layers = rough_cut.render(draft, self.sample_rate,
+                                         music=self.providers.music,
+                                         voice=self.providers.voice,
+                                         profile=self.current_voice(),
+                                         seed=draft.tune.seed)
+        return draft, audio, layers
+
+    def _song_draft_done(self, result, autoplay: bool = False):
+        """Keep the draft, write its audio and its cards beside each other.
+
+        Under ``config_dir()/song_team`` rather than in the project, so a
+        draft never saves or changes the song that is open, and so the
+        drafts are in one place for the showcase to find later."""
+        import json
+
+        from .core.settings import config_dir
+        from .studio import RoughCut
+
+        draft, audio, layers = result
+        folder = config_dir() / "song_team"
+        folder.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        stem = f"{stamp}_{draft.tune.raaga}_{draft.beat.tala}".replace(" ", "-")
+        wav = folder / f"{stem}.wav"
+        export_engine.write_wav(wav, audio, self.sample_rate)
+        draft.rough = RoughCut(path=str(wav),
+                               seconds=len(audio) / self.sample_rate,
+                               layers=list(layers),
+                               missing=list(draft.not_done))
+        (folder / f"{stem}.json").write_text(
+            json.dumps(draft.to_dict(), indent=2, ensure_ascii=False),
+            encoding="utf-8")
+        self.song_draft = draft
+        self._cache_render("song_draft", audio, str(wav))
+        self.status(f"Rough song ready: {draft.tune.raaga} in "
+                    f"{draft.beat.tala}, {draft.rough.seconds:.0f}s")
+        if self.on_song_draft:
+            self.on_song_draft(draft)
+        if autoplay:
+            self.play_song_draft()
+        return draft
+
+    def make_song_draft(self, mood: str, language: str = "Tamil",
+                        raaga: str = "", tala: str = "",
+                        seed: int | None = None,
+                        autoplay: bool = False) -> bool:
+        """The producer's button: mood in, rough song out, in the background.
+
+        ``raaga`` and ``tala`` are the producer's direction; empty lets the
+        tunesmith and the tala keeper choose.  False means nothing started.
+        """
+        if not " ".join(str(mood or "").split()):
+            self.status("Describe the mood in a few words first.")
+            return False
+        self.take_the_floor("make a song draft")
+        self.status("The song team is working...")
+        self.jobs.submit(
+            "song_team.draft", "song_team",
+            lambda ctx: self._song_draft_work(mood, language, raaga, tala,
+                                              seed, ctx),
+            on_done=lambda r: self._song_draft_done(r, autoplay),
+            on_error=self._song_draft_failed,
+            on_cancelled=lambda: self._song_draft_failed(None),
+            description="Make a rough song from a mood")
+        return True
+
+    def _song_draft_failed(self, exc: BaseException | None) -> None:
+        if exc is not None:
+            self.error("song team", f"The song team could not finish: {exc}")
+        # None tells the panel the run is over with nothing to show, so
+        # its Make button comes back.
+        if self.on_song_draft:
+            self.on_song_draft(None)
+
+    def make_song_draft_sync(self, mood: str, language: str = "Tamil",
+                             raaga: str = "", tala: str = "",
+                             seed: int | None = None):
+        """The same, inline - for tests and the conversational path."""
+        return self._song_draft_done(
+            self._song_draft_work(mood, language, raaga, tala, seed))
+
+    def play_song_draft(self) -> bool:
+        if self.song_draft is None:
+            self.status("There is no rough song yet.")
+            return False
+        return self.play_render("song_draft")
 
     def make_variation(self, strength: float = 0.5) -> None:
         self.take_the_floor("tune variation")
