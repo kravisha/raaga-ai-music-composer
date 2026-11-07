@@ -89,6 +89,10 @@ def test_v6_moves_the_answer_to_the_flute_and_the_strokes_to_the_hand_drum():
     assert A2.orchestrate(parts) == parts, "the defaults leave v5 as it was"
 
 
+def test_krishs_pick_is_veena_flute_and_bongos():
+    assert A2.CHOSEN["hand"] == "bongos" and A2.CHOSEN["answer"] == "flute" and A2.CHOSEN["veena"] > 1.0
+
+
 def test_v6_renders_with_tabla_and_with_bongos():
     for hand in ("tabla", "bongos"):
         audio = A2.render(sr=16000, **{**A2.V6, "hand": hand})

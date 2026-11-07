@@ -245,6 +245,8 @@ def build(seed: int = 5) -> tuple[dict[str, list[Note]], float, list[tuple[float
 #: hand drum, the kit sits back and the veena comes forward.
 V6 = {"answer": "flute", "hand": "tabla", "kit": 0.6, "veena": 1.3, "hand_gain": 0.75}
 HANDS = ("mridangam", "tabla", "bongos")
+#: Krish's pick after hearing both (7 Nov 2026): "Bongos".  The arrangement the song is now sung over.
+CHOSEN = {**V6, "hand": "bongos"}
 #: a part moved to another instrument is kept apart as "<instrument>@<where it came from>", so it keeps its own mix and seed
 #: (review: merged into the flute, the sax's mix setting made the whistles 6.6 dB louder and moved them left)
 SEP = "@"
