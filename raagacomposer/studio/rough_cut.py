@@ -46,11 +46,18 @@ def _style_for(pace: str, feel_words: list[str]) -> str:
     return "romantic"
 
 
-def tanpura_notes(tonic: int, seconds: float) -> list[Note]:
-    """P - S+ - S+ - S, repeated: the drone the raaga sits on."""
+#: The first string of a tanpura: mandra Pa, or for a raaga without Pa its Ma, then its Ni (reviewer, 7 Nov: Pa was tuned
+#: below the low Sa, and Hindolam and Vasantha have no Pa at all).
+FIRST_STRING = (("P", -5), ("M1", -7), ("M2", -6), ("N3", -1), ("N2", -2), ("N1", -3))
+
+
+def tanpura_notes(tonic: int, seconds: float, swaras=("S", "P")) -> list[Note]:
+    """First string - S - S - low S, repeated: the drone the raaga sits on."""
     out: list[Note] = []
     pluck = 0.42
-    pattern = (("P", tonic - 17), ("S", tonic), ("S", tonic), ("S", tonic - 12))
+    have = set(swaras)
+    first, below = next(((sw, d) for sw, d in FIRST_STRING if sw in have), ("S", -12))
+    pattern = ((first, tonic + below), ("S", tonic), ("S", tonic), ("S", tonic - 12))
     t = 0.0
     while t < seconds - 0.1:
         for swara, midi in pattern:
@@ -136,7 +143,8 @@ def render(draft: SongDraft, sr: int, *, music=None, voice=None,
         layers.append(f"mridangam in {draft.beat.tala} ({draft.beat.density})")
 
     # The drone, quietly, under everything.
-    drone = music.render_part(tanpura_notes(tune.tonic_midi, total - 0.5),
+    drone = music.render_part(tanpura_notes(tune.tonic_midi, total - 0.5,
+                                            list(tune.arohanam) + list(tune.avarohanam)),
                               "tanpura", sr, total_seconds=total, seed=seed + 3)
     mix = dsp.mix_into(mix, dsp.pan_mono(drone * 0.35, -0.1), 0)
     layers.append("tanpura drone")

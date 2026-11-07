@@ -144,6 +144,8 @@ class SongTeamPanel(QWidget):
 
     # -- actions -----------------------------------------------------------
     def _make(self) -> None:
+        if not self.make_btn.isEnabled():               # Enter in the mood box while a run is working
+            return
         mood = self.mood_edit.text().strip()
         if not mood:
             self.status_label.setText("Describe the mood in a few words first.")

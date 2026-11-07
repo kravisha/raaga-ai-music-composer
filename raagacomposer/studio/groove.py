@@ -106,9 +106,9 @@ def build(groove: Groove | None = None) -> Groove:
         hook_bar = bar - g.intro_bars
         if 0 <= hook_bar < len(HOOK) * g.hook_repeats:
             phrase = HOOK[hook_bar % len(HOOK)]
-            lift = 12 if hook_bar >= len(HOOK) and hook_bar % len(HOOK) in (2,) else 0   # second time round, the third bar jumps up
+            lift = 1 if hook_bar >= len(HOOK) and hook_bar % len(HOOK) in (2,) else 0    # second time round, the third bar jumps up
             for s, length, sw in phrase:
-                hook.append(_note(raaga, sw, g.tonic, t0 + s * st, length * st * 0.92, 100, lift))
+                hook.append(_note(raaga, _shift_token(sw, lift), g.tonic, t0 + s * st, length * st * 0.92, 100))
             if hook_bar >= len(HOOK):                                                     # the kanjira joins the second time
                 for s in range(STEPS):
                     kanjira.append(Note(swara="-", midi=48 + (0 if s % 4 == 0 else 2), start=t0 + s * st,
@@ -134,6 +134,15 @@ def _shift_token(token: str, octaves: int) -> str:
     return token + "+" * octaves
 
 
+def _step(raaga: Raaga, token: str, steps: int) -> str:
+    """Move a swara ``steps`` places along the raaga's own scale, so a climb never leaves the raaga (a semitone shift did:
+    the first entrance raised its stab roots by 2 and 4 semitones and three notes fell outside Shanmukhapriya)."""
+    scale = [t for t in raaga.arohanam if not t.endswith("+")]
+    base, octave = token.rstrip("+"), len(token) - len(token.rstrip("+"))
+    i = scale.index(base) + steps
+    return _shift_token(scale[i % len(scale)], octave + i // len(scale))
+
+
 def entrance(g: Groove, raaga: Raaga) -> dict[str, list[Note]]:
     st = g.step_seconds
     bar_s = STEPS * st
@@ -144,9 +153,10 @@ def entrance(g: Groove, raaga: Raaga) -> dict[str, list[Note]]:
             v = 96 + 10 * bar
             parts["drum_kit"].append(Note(swara="-", midi=36, start=t0 + s * st, duration=st * 2, velocity=min(127, v + 10)))
             parts["drum_kit"].append(Note(swara="-", midi=37, start=t0 + s * st, duration=st, velocity=v))
-            for i, sw in enumerate(chord):
-                parts["electric_piano"].append(_note(raaga, sw, g.tonic, t0 + s * st, st * 2.5, v, 2 * bar if i == 0 else 0))
-            parts["bass"].append(_note(raaga, chord[0], g.tonic - 24, t0 + s * st, st * 2, 112))
+            climbed = [_step(raaga, sw, bar) for sw in chord]           # each bar a step higher, along the raaga
+            for sw in climbed:
+                parts["electric_piano"].append(_note(raaga, sw, g.tonic, t0 + s * st, st * 2.5, v))
+            parts["bass"].append(_note(raaga, climbed[0].rstrip("+"), g.tonic - 24, t0 + s * st, st * 2, 112))
     t0 = 3 * bar_s                                                 # the roll and the run
     for s in range(2 * STEPS):
         v = int(30 + 95 * s / (2 * STEPS - 1))
@@ -256,7 +266,12 @@ def orchestrate_show(silence: float = 10.0) -> tuple[dict[str, list[Note]], floa
         out[key] = list(parts.get(key, []))
 
     def copy(n: Note, shift: int = 0, vel: int | None = None) -> Note:
-        return Note(swara=n.swara, midi=n.midi + shift, start=n.start, duration=n.duration,
+        swara = n.swara
+        if shift == 12:
+            swara = swara + "+"
+        elif shift == -12:
+            swara = swara[:-1] if swara.endswith("+") else swara + "-"
+        return Note(swara=swara, midi=n.midi + shift, start=n.start, duration=n.duration,
                     velocity=n.velocity if vel is None else vel)
 
     for n in parts["electric_piano"]:

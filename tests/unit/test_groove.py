@@ -84,3 +84,31 @@ def test_v2_puts_a_strong_lead_on_the_hook_and_more_beat_under_it(raagas):
     _, plain, _ = G.build_show(10.0)
     assert len(parts["drum_kit"]) > len(plain["drum_kit"]), "more beats"
     assert min(n.start for notes in parts.values() for n in notes) >= 10.0 - 1e-6
+
+
+def _pitch_classes(raaga):
+    from raagacomposer.raaga.library import swara_semitone
+    return {swara_semitone(x) % 12 for x in raaga.arohanam + raaga.avarohanam}
+
+
+def test_every_sounding_pitch_is_in_the_raaga_not_only_its_label(raagas):
+    # The reviewer's catch: the first entrance raised stab roots by semitones and kept the labels, so a label check passed
+    # while three notes sounded outside Shanmukhapriya.  The pitch itself is checked here.
+    raaga = raagas.require("Shanmukhapriya")
+    allowed = _pitch_classes(raaga)
+    g, plain, _ = G.build_show(10.0)
+    punchy, _ = G.orchestrate_show(10.0)
+    for parts in (plain, punchy, G.build().parts):
+        for key, notes in parts.items():
+            if key in ("drum_kit", "kanjira", "tambourine", "mridangam"):
+                continue
+            for n in notes:
+                assert (n.midi - g.tonic) % 12 in allowed, (key, n.swara, n.midi, round(n.start, 2))
+
+
+def test_the_stabs_climb_along_the_raaga():
+    raaga = __import__("raagacomposer.raaga.library", fromlist=["library"]).library().require("Shanmukhapriya")
+    assert G._step(raaga, "S", 1) == "R2"
+    assert G._step(raaga, "N2", 1) == "S+"
+    assert G._step(raaga, "P", 3) == "S+"
+    assert G._step(raaga, "D1+", 2) == "S++"

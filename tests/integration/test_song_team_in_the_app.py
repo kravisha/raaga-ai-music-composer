@@ -142,7 +142,7 @@ def test_a_failed_run_hands_the_panel_its_button_back(app, settle,
     def broken(*args, **kwargs):
         raise RuntimeError("the tunesmith is unwell")
 
-    monkeypatch.setattr(app, "song_team", broken)
+    monkeypatch.setattr(app, "_song_draft_work", broken)
     assert app.make_song_draft(LONELY, seed=1)
     settle(60)
     assert got == [None]
@@ -188,3 +188,25 @@ def test_the_song_team_tab_from_mood_to_a_playable_rough_song(app):
     assert "Mood listener" in panel.log_text.toPlainText()
     assert "Rough song" in panel.status_label.text()
     panel.close()
+
+
+def test_a_disk_error_saving_the_draft_still_hands_the_button_back(app, monkeypatch):
+    # Reviewer, 7 Nov: an OSError in the done-callback used to be swallowed by the job pump and left Make disabled.
+    from raagacomposer.audio import export as export_engine
+
+    got = []
+    app.on_song_draft = got.append
+
+    def full_disk(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(export_engine, "write_wav", full_disk)
+    assert app.make_song_draft_sync(LONELY, seed=3) is None
+    assert got == [None]
+
+
+def test_the_tanpura_uses_ma_when_the_raaga_has_no_pa():
+    notes = rough_cut.tanpura_notes(60, 3.0, ["S", "G2", "M1", "D1", "N2", "S+"])     # Hindolam: no Pa
+    assert notes[0].swara == "M1" and notes[0].midi == 53
+    notes = rough_cut.tanpura_notes(60, 3.0, ["S", "R2", "G3", "P", "D2", "S+"])
+    assert notes[0].swara == "P" and notes[0].midi == 55, "mandra Pa sits above the low Sa"

@@ -1931,24 +1931,26 @@ class AppController:
     # ==================================================================
     # the song team (raagacomposer/studio, docs/SONG_TEAM.md)
     # ==================================================================
-    def song_team(self):
-        """A song team that sings in the current voice and writes words
-        through the same language-model route as the Lyrics tab."""
+    def song_team(self, profile=None):
+        """A song team that sings in the given voice (the current one by
+        default) and writes words through the same language-model route as
+        the Lyrics tab.  UI thread: ``current_voice`` may write the project."""
         from .studio import SongTeam
 
-        profile = self.current_voice()
+        profile = profile or self.current_voice()
         tonic = 48 if profile.range_high < 72 else 60
         return SongTeam(self.raagas, llm=self.providers.llm, tonic_midi=tonic,
                         voice_range=(profile.range_low, profile.range_high))
 
     def _song_draft_work(self, mood: str, language: str, raaga: str,
-                         tala: str, seed: int | None,
+                         tala: str, seed: int | None, team, profile,
                          ctx: JobContext | None = None):
-        """Run the team and mix the rough picture.  Worker-thread safe: it
-        reads settings and the voice, and writes nothing to the project."""
+        """Run the team and mix the rough picture.  Worker-thread safe: the
+        team and the voice are settled on the UI thread before it starts
+        (reviewer, 7 Nov: ``current_voice`` can write the project, and two
+        reads could give the team and the render different singers)."""
         from .studio import rough_cut
 
-        team = self.song_team()
         check = ctx.check if ctx is not None else None
         if ctx is not None:
             ctx.progress(0.1, "The mood listener is listening")
@@ -1960,7 +1962,7 @@ class AppController:
         audio, layers = rough_cut.render(draft, self.sample_rate,
                                          music=self.providers.music,
                                          voice=self.providers.voice,
-                                         profile=self.current_voice(),
+                                         profile=profile,
                                          seed=draft.tune.seed)
         return draft, audio, layers
 
@@ -1976,19 +1978,29 @@ class AppController:
         from .studio import RoughCut
 
         draft, audio, layers = result
-        folder = config_dir() / "song_team"
-        folder.mkdir(parents=True, exist_ok=True)
-        stamp = time.strftime("%Y%m%d-%H%M%S")
-        stem = f"{stamp}_{draft.tune.raaga}_{draft.beat.tala}".replace(" ", "-")
-        wav = folder / f"{stem}.wav"
-        export_engine.write_wav(wav, audio, self.sample_rate)
-        draft.rough = RoughCut(path=str(wav),
-                               seconds=len(audio) / self.sample_rate,
-                               layers=list(layers),
-                               missing=list(draft.not_done))
-        (folder / f"{stem}.json").write_text(
-            json.dumps(draft.to_dict(), indent=2, ensure_ascii=False),
-            encoding="utf-8")
+        try:
+            folder = config_dir() / "song_team"
+            folder.mkdir(parents=True, exist_ok=True)
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            base = f"{stamp}_{draft.tune.raaga}_{draft.beat.tala}".replace(" ", "-")
+            stem, n = base, 1
+            while (folder / f"{stem}.wav").exists():          # two drafts in one second
+                n += 1
+                stem = f"{base}_{n}"
+            wav = folder / f"{stem}.wav"
+            export_engine.write_wav(wav, audio, self.sample_rate)
+            draft.rough = RoughCut(path=str(wav),
+                                   seconds=len(audio) / self.sample_rate,
+                                   layers=list(layers),
+                                   missing=list(draft.not_done))
+            (folder / f"{stem}.json").write_text(
+                json.dumps(draft.to_dict(), indent=2, ensure_ascii=False),
+                encoding="utf-8")
+        except OSError as exc:
+            # A full disk or a locked file must still hand the panel its
+            # button back and say why (reviewer, 7 Nov).
+            self._song_draft_failed(exc)
+            return None
         self.song_draft = draft
         self._cache_render("song_draft", audio, str(wav))
         self.status(f"Rough song ready: {draft.tune.raaga} in "
@@ -2013,10 +2025,12 @@ class AppController:
             return False
         self.take_the_floor("make a song draft")
         self.status("The song team is working...")
+        profile = self.current_voice()
+        team = self.song_team(profile)
         self.jobs.submit(
             "song_team.draft", "song_team",
             lambda ctx: self._song_draft_work(mood, language, raaga, tala,
-                                              seed, ctx),
+                                              seed, team, profile, ctx),
             on_done=lambda r: self._song_draft_done(r, autoplay),
             on_error=self._song_draft_failed,
             on_cancelled=lambda: self._song_draft_failed(None),
@@ -2026,6 +2040,10 @@ class AppController:
     def _song_draft_failed(self, exc: BaseException | None) -> None:
         if exc is not None:
             self.error("song team", f"The song team could not finish: {exc}")
+        # A run superseded by a newer one is not "the run is over": the
+        # newer one is still working and its button stays down.
+        if any(j.target == "song_team" for j in self.jobs.active_jobs()):
+            return
         # None tells the panel the run is over with nothing to show, so
         # its Make button comes back.
         if self.on_song_draft:
@@ -2035,8 +2053,10 @@ class AppController:
                              raaga: str = "", tala: str = "",
                              seed: int | None = None):
         """The same, inline - for tests and the conversational path."""
+        profile = self.current_voice()
         return self._song_draft_done(
-            self._song_draft_work(mood, language, raaga, tala, seed))
+            self._song_draft_work(mood, language, raaga, tala, seed,
+                                  self.song_team(profile), profile))
 
     def play_song_draft(self) -> bool:
         if self.song_draft is None:

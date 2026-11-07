@@ -87,7 +87,7 @@ def _check_cancelled(cancelled: Callable[[], bool] | None) -> None:
 
 
 def _stop_process(process: Any) -> None:
-    """Stop and reap only the process this transport started."""
+    """Stop and reap the process this transport started, and on Windows the processes it started in turn."""
     if process.poll() is not None:
         return
     pid = getattr(process, "pid", None)
@@ -97,9 +97,12 @@ def _stop_process(process: Any) -> None:
         # inherits the prompt file as stdin.  Terminating only the launcher
         # left that grandchild running and the review directory locked, so
         # the whole tree this transport started is stopped.
-        subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                       check=False, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        try:                                         # never let the helper hide the real error or stall the cancel
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False, timeout=5,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        except (OSError, subprocess.TimeoutExpired):
+            pass
     try:
         process.terminate()
     except OSError:
