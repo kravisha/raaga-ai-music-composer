@@ -119,12 +119,13 @@ def lyric_sheet() -> str:
     return "\n".join(out)
 
 
-def render(sr: int = 44100, seed: int = 5, lead_in: float = 0.0, voice: str = "female") -> np.ndarray:
-    """The song: Ravana's Answer II with the words sung over it."""
+def render(sr: int = 44100, seed: int = 5, lead_in: float = 0.0, voice: str = "female", **band_options) -> np.ndarray:
+    """The song: Ravana's Answer II with the words sung over it.  ``band_options`` re-voice the band (``**A2.V6``: veena and
+    flute, tabla)."""
     from ..providers.local import LocalVoiceProvider
     from ..voice.profiles import BUILTIN
 
-    band = A2.render(sr=sr, seed=seed, lead_in=lead_in)
+    band = A2.render(sr=sr, seed=seed, lead_in=lead_in, **band_options)
     sung, _starts, _seconds = vocal_line(seed)
     sung.sort(key=lambda p: p[0].start)
     profile = next((p for p in BUILTIN if p.gender == voice), BUILTIN[0])

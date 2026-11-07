@@ -239,18 +239,53 @@ def build(seed: int = 5) -> tuple[dict[str, list[Note]], float, list[tuple[float
     return sc.parts, total, sc.tonic_spans, starts
 
 
-def render(sr: int = 44100, seed: int = 5, lead_in: float = 0.0) -> np.ndarray:
-    parts, seconds, _spans, _starts = build(seed)
+#: v6 (Krish, 7 Nov: "make the veena a little more strong ... instead of veena and organ, make it veena and flute ... the drums are
+#: really good, but maybe bongos ... you can try tabla"; the room: "tabla first, lighter touch, so flute and veena lead; bongos as
+#: the second option").  The same score, re-voiced: the saxophone's answers go to the flute, the mridangam's strokes to the chosen
+#: hand drum, the kit sits back and the veena comes forward.
+V6 = {"answer": "flute", "hand": "tabla", "kit": 0.6, "veena": 1.3, "hand_gain": 0.75}
+HANDS = ("mridangam", "tabla", "bongos")
+#: a part moved to another instrument is kept apart as "<instrument>@<where it came from>", so it keeps its own mix and seed
+#: (review: merged into the flute, the sax's mix setting made the whistles 6.6 dB louder and moved them left)
+SEP = "@"
+
+
+def orchestrate(parts: dict[str, list[Note]], answer: str = "saxophone", hand: str = "mridangam") -> dict[str, list[Note]]:
+    """Give the saxophone's part to ``answer`` and the mridangam's strokes to ``hand``; each moved part is its own entry."""
+    out = {k: list(v) for k, v in parts.items()}
+    if answer != "saxophone" and out.get("saxophone"):
+        out[f"{answer}{SEP}saxophone"] = out.pop("saxophone")
+    if hand != "mridangam" and out.get("mridangam"):
+        inst = catalog.get(hand)
+        strokes = len(inst.hit_freqs) if inst else 1
+        # the fill's 1-2-3-4 climbs on bongos (3 strokes) end on the top drum instead of falling back to the bottom (review)
+        out[f"{hand}{SEP}mridangam"] = [Note(swara=n.swara, midi=48 + min(max(0, n.midi - 48), strokes - 1), start=n.start,
+                                             duration=n.duration, velocity=n.velocity) for n in out.pop("mridangam")]
+    return out
+
+
+def render(sr: int = 44100, seed: int = 5, lead_in: float = 0.0, *, answer: str = "saxophone", hand: str = "mridangam",
+           kit: float = 1.0, veena: float = 1.0, hand_gain: float = 1.0) -> np.ndarray:
+    """The piece as audio.  The defaults are v5 as Krish first heard it; ``render(**V6)`` is v6 (veena and flute, tabla)."""
+    base, seconds, _spans, _starts = build(seed)
+    order = sorted(base)                         # each part's seed comes from its place in v5, so v6 changes only what it means to
+    parts = orchestrate(base, answer=answer, hand=hand)
     total = lead_in + seconds + 2.5
     mix = dsp.silence(total, sr)
-    for k, (key, notes) in enumerate(sorted(parts.items())):
-        inst = catalog.get(key)
+    for key, notes in sorted(parts.items()):
+        name, _, came_from = key.partition(SEP)
+        inst = catalog.get(name)
         if inst is None:
-            raise KeyError(f"The instrument catalog has no {key}")
+            raise KeyError(f"The instrument catalog has no {name}")
         shifted = [Note(swara=n.swara, midi=n.midi, start=round(n.start + lead_in, 4), duration=n.duration, velocity=n.velocity)
                    for n in notes]
-        gain, pan = MIX.get(key, (0.6, 0.0))
-        mix = dsp.mix_into(mix, dsp.pan_mono(render_notes(shifted, inst, sr, total_seconds=total, seed=seed + k) * gain, pan), 0)
+        source = came_from or name
+        gain, pan = MIX.get(source, (0.6, 0.0))                  # a moved part sits where the part it replaces sat
+        if came_from == "saxophone":
+            gain, pan = gain * 0.95, -0.12
+        gain *= {"drum_kit": kit, "veena": veena}.get(name, 1.0) * (hand_gain if came_from == "mridangam" else 1.0)
+        part_seed = seed + order.index(source) if source in order else seed + len(order)
+        mix = dsp.mix_into(mix, dsp.pan_mono(render_notes(shifted, inst, sr, total_seconds=total, seed=part_seed) * gain, pan), 0)
     out = dsp.normalize_loudness(mix, sr, -14.0)
     out = dsp.limiter(out, -1.0, sr)
     return dsp.fade(out, 0.0, 1.5, sr).astype(np.float32)

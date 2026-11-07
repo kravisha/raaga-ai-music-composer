@@ -71,6 +71,30 @@ def test_same_seed_same_piece():
     assert {k: [(n.start, n.midi) for n in v] for k, v in a.items()} == {k: [(n.start, n.midi) for n in v] for k, v in b.items()}
 
 
+def test_v6_moves_the_answer_to_the_flute_and_the_strokes_to_the_hand_drum():
+    parts, _s, _sp, _st = A2.build()
+    for hand in ("tabla", "bongos"):
+        out = A2.orchestrate(parts, answer="flute", hand=hand)
+        assert "saxophone" not in out and "mridangam" not in out
+        assert out["flute"] == parts["flute"], "the whistles keep their own part and mix (review)"
+        assert len(out["flute@saxophone"]) == len(parts["saxophone"])
+        moved = out[f"{hand}@mridangam"]
+        assert len(moved) == len(parts["mridangam"])
+        inst = catalog.get(hand)
+        assert inst is not None
+        strokes = len(inst.hit_freqs)
+        assert all(0 <= n.midi - 48 < strokes for n in moved)
+        top = [m.midi for n, m in zip(parts["mridangam"], moved) if n.midi == 51]
+        assert all(t == 48 + strokes - 1 for t in top), "a climbing fill ends on the top drum, never back on the lowest"
+    assert A2.orchestrate(parts) == parts, "the defaults leave v5 as it was"
+
+
+def test_v6_renders_with_tabla_and_with_bongos():
+    for hand in ("tabla", "bongos"):
+        audio = A2.render(sr=16000, **{**A2.V6, "hand": hand})
+        assert audio.ndim == 2 and float(abs(audio).max()) > 0.1
+
+
 def test_it_renders():
     audio = A2.render(sr=16000, lead_in=1.0)
     assert audio.ndim == 2 and float(abs(audio[:8000]).max()) < 1e-3 and float(abs(audio).max()) > 0.1
