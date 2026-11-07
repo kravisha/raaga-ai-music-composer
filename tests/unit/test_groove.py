@@ -49,3 +49,23 @@ def test_it_renders_as_stereo_audio_of_the_right_length():
     assert audio.ndim == 2 and audio.shape[1] == 2
     assert abs(len(audio) / 22050 - (g.seconds + 1.5)) < 0.05
     assert float(abs(audio).max()) < 1.0
+
+
+def test_the_entrance_is_ten_seconds_of_silence_then_about_ten_seconds_to_win_the_crowd():
+    g, parts, seconds = G.build_show(10.0)
+    first = min(n.start for notes in parts.values() for n in notes)
+    assert abs(first - 10.0) < 1e-6, "nothing sounds before the entrance"
+    entrance_s = G.ENTRANCE_BARS * G.STEPS * g.step_seconds
+    assert 9.5 < entrance_s < 11.0
+    groove_start = 10.0 + entrance_s
+    hook = [n for n in parts["electric_piano"] if n.start >= groove_start - 1e-6]
+    assert hook, "the groove follows the entrance"
+    assert abs(seconds - (groove_start + g.seconds)) < 1e-6
+
+
+def test_every_note_of_the_entrance_is_in_the_raaga(raagas):
+    raaga = raagas.require("Shanmukhapriya")
+    _, parts, _ = G.build_show(10.0)
+    for part in ("electric_piano", "bass"):
+        for n in parts[part]:
+            assert raaga.is_allowed(n.swara), (part, n.swara)
