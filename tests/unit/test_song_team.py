@@ -111,7 +111,10 @@ def test_the_lyricist_asks_a_model_for_the_agreed_line_plan():
 
 def test_an_unsingable_model_line_is_replaced_and_said_so():
     mood = MoodListener().listen(LONELY, "Tamil")
-    sheet = Lyricist(_FakeModel(["இரவு நீளம்", "kaadhal nilavu"])).write(mood)
+    # A line with nothing to sing in it.  (Tamil script is singable on this
+    # branch - "the words the singer is given are the words that were
+    # written" - so it is no longer the example.)
+    sheet = Lyricist(_FakeModel(["... 123 ...", "kaadhal nilavu"])).write(mood)
     assert count_syllables(sheet.lines[0]) > 0          # replaced
     assert sheet.lines[1] == "kaadhal nilavu"           # kept
     assert "word lists" in sheet.written_by
