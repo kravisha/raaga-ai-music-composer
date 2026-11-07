@@ -244,6 +244,13 @@ CATALOG: List[Instrument] = [
        percussive=True, hit_freqs=[110.0, 196.0, 294.0, 440.0],
        hit_decays=[0.3, 0.18, 0.12, 0.07], noise=0.22, default_gain=0.65,
        description="Crisp and articulate; lighter than mridangam."),
+    # Krish 7 Nov 2026: "Bongos would be really nice. I like the bongos for certain kind of music." (the Jam Room's rhythm seats)
+    _i(key="bongos", name="Bongos", family="percussion",
+       aliases=["bongo", "bongo drums"], tags=["latin", "rhythm", "bright", "groove", "folk"],
+       midi_low=36, midi_high=72, roles=["rhythm"], default_role="rhythm",
+       percussive=True, hit_freqs=[260.0, 390.0, 620.0],
+       hit_decays=[0.16, 0.11, 0.04], noise=0.3, default_gain=0.55,
+       description="Two small open drums, low hembra and high macho, with a dry slap."),
     _i(key="ghatam", name="Ghatam", family="percussion",
        aliases=["clay pot"], tags=["carnatic", "rhythm", "earthy", "folk"],
        midi_low=36, midi_high=60, roles=["rhythm"], default_role="rhythm",
